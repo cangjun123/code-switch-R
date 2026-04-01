@@ -21,7 +21,7 @@
 
 | 组件 | 默认地址 | 作用 |
 |------|----------|------|
-| Web 管理界面 | `127.0.0.1:8080` | 浏览器访问的管理后台 |
+| Web 管理界面 | `0.0.0.0:8080` | 浏览器访问的管理后台 |
 | Provider Relay | `127.0.0.1:18100` | Claude Code / Codex / Gemini CLI 实际走的本机代理 |
 
 数据默认写入：
@@ -101,7 +101,7 @@ cd /home/chh/gitprojects/code-switch-R
 正常启动后会看到类似日志：
 
 ```text
-web admin listening on http://127.0.0.1:8080
+web admin listening on http://0.0.0.0:8080
 provider relay listening on http://127.0.0.1:18100
 ```
 
@@ -122,7 +122,8 @@ curl http://127.0.0.1:8080/healthz
 浏览器访问：
 
 - 本机访问：`http://127.0.0.1:8080`
-- 远端服务器场景：先做 SSH 隧道，再在本地浏览器打开 `http://127.0.0.1:8080`
+- 远程机器访问：`http://<服务器IP>:8080`
+- 如果你不想直接暴露管理端，也可以继续用 SSH 隧道
 
 SSH 隧道示例：
 
@@ -145,7 +146,7 @@ After=network.target
 Type=simple
 User=chh
 WorkingDirectory=/home/chh/gitprojects/code-switch-R
-Environment=CODE_SWITCH_WEB_ADDR=127.0.0.1:8080
+Environment=CODE_SWITCH_WEB_ADDR=0.0.0.0:8080
 ExecStart=/home/chh/gitprojects/code-switch-R/codeswitch-web
 Restart=on-failure
 RestartSec=3
@@ -181,11 +182,11 @@ sudo systemctl restart codeswitch
 
 ## 远程访问和安全建议
 
-默认配置下，Web 管理界面只监听 `127.0.0.1:8080`，这通常是最安全的默认值。
+默认配置下，Web 管理界面监听 `0.0.0.0:8080`，也就是会接受来自其他机器的访问请求。
 
 如果你要让其他机器访问这个管理界面，有两种常见方式：
 
-1. 保持默认监听，只通过 SSH 隧道访问
+1. 直接开放 `8080`，并在防火墙 / 安全组中只放行可信来源
 2. 把管理界面挂到 Nginx / Caddy 反向代理后面，并补上 TLS / 访问控制
 
 管理界面监听地址可以通过环境变量修改：
@@ -225,7 +226,7 @@ go build -o codeswitch-web .
 
 启动后会同时提供：
 
-- Web 管理后台：`http://127.0.0.1:8080`
+- Web 管理后台：`http://0.0.0.0:8080`
 - Provider Relay：`http://127.0.0.1:18100`
 
 健康检查：
@@ -236,7 +237,13 @@ curl http://127.0.0.1:8080/healthz
 
 ### 2. 远程怎么用
 
-当前版本里，`18100` 默认只监听远程机器自己的 `127.0.0.1`，所以远程最稳的方式是 SSH 隧道。
+当前版本里，`8080` 默认对外监听，`18100` 默认只监听远程机器自己的 `127.0.0.1`。
+
+如果你只是想远程打开网页后台，可以直接访问：
+
+- `http://<服务器公网IP>:8080`
+
+如果你还想在本地电脑上调远程机器的 `18100`，最稳的方式仍然是 SSH 隧道。
 
 如果服务跑在远程服务器，而你想在自己电脑上使用：
 
@@ -260,13 +267,13 @@ curl http://127.0.0.1:18100/v1/models \
 
 第一次打开网页后台：
 
-1. 浏览器打开 `http://127.0.0.1:8080`
+1. 浏览器打开 `http://127.0.0.1:8080` 或 `http://<服务器IP>:8080`
 2. 先创建管理员账号和密码
 3. 创建成功后会自动登录
 
 以后再次访问：
 
-1. 打开 `http://127.0.0.1:8080`
+1. 打开 `http://127.0.0.1:8080` 或 `http://<服务器IP>:8080`
 2. 输入管理员账号密码登录
 
 ### 4. 在网页里配置供应商

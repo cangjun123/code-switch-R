@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	defaultAdminAddr = "127.0.0.1:8080"
+	defaultAdminAddr = "0.0.0.0:8080"
 	defaultStaticDir = "frontend/dist"
 	defaultRelayAddr = "127.0.0.1:18100"
 )
