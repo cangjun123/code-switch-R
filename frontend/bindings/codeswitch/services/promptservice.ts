@@ -18,28 +18,28 @@ import * as $models from "./models.js";
  * DeletePrompt 删除提示词
  */
 export function DeletePrompt(platform: string, id: string): $CancellablePromise<void> {
-    return $Call.ByID(233228333, platform, id);
+    return $Call.ByName("codeswitch/services.PromptService.DeletePrompt", platform, id);
 }
 
 /**
  * EnablePrompt 启用指定提示词（会禁用其他所有提示词）
  */
 export function EnablePrompt(platform: string, id: string): $CancellablePromise<void> {
-    return $Call.ByID(4030428505, platform, id);
+    return $Call.ByName("codeswitch/services.PromptService.EnablePrompt", platform, id);
 }
 
 /**
  * GetCurrentFileContent 获取当前提示词文件内容
  */
 export function GetCurrentFileContent(platform: string): $CancellablePromise<string | null> {
-    return $Call.ByID(3179736812, platform);
+    return $Call.ByName("codeswitch/services.PromptService.GetCurrentFileContent", platform);
 }
 
 /**
  * GetPrompts 获取指定平台的所有提示词
  */
 export function GetPrompts(platform: string): $CancellablePromise<{ [_ in string]?: $models.Prompt }> {
-    return $Call.ByID(709954839, platform).then(($result: any) => {
+    return $Call.ByName("codeswitch/services.PromptService.GetPrompts", platform).then(($result: any) => {
         return $$createType1($result);
     });
 }
@@ -48,28 +48,28 @@ export function GetPrompts(platform: string): $CancellablePromise<{ [_ in string
  * ImportFromFile 从现有文件导入提示词
  */
 export function ImportFromFile(platform: string): $CancellablePromise<string> {
-    return $Call.ByID(3165650383, platform);
+    return $Call.ByName("codeswitch/services.PromptService.ImportFromFile", platform);
 }
 
 /**
  * Start Wails生命周期方法
  */
 export function Start(): $CancellablePromise<void> {
-    return $Call.ByID(3537442032);
+    return $Call.ByName("codeswitch/services.PromptService.Start");
 }
 
 /**
  * Stop Wails生命周期方法
  */
 export function Stop(): $CancellablePromise<void> {
-    return $Call.ByID(3274727284);
+    return $Call.ByName("codeswitch/services.PromptService.Stop");
 }
 
 /**
  * UpsertPrompt 添加或更新提示词
  */
 export function UpsertPrompt(platform: string, id: string, prompt: $models.Prompt): $CancellablePromise<void> {
-    return $Call.ByID(1167812421, platform, id, prompt);
+    return $Call.ByName("codeswitch/services.PromptService.UpsertPrompt", platform, id, prompt);
 }
 
 // Private type creation functions

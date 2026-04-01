@@ -14,27 +14,27 @@ import * as $models from "./models.js";
  * 返回新创建的 Provider 对象
  */
 export function DuplicateProvider(kind: string, sourceID: number): $CancellablePromise<$models.Provider | null> {
-    return $Call.ByID(1332089125, kind, sourceID).then(($result: any) => {
+    return $Call.ByName("codeswitch/services.ProviderService.DuplicateProvider", kind, sourceID).then(($result: any) => {
         return $$createType1($result);
     });
 }
 
 export function LoadProviders(kind: string): $CancellablePromise<$models.Provider[]> {
-    return $Call.ByID(3413098935, kind).then(($result: any) => {
+    return $Call.ByName("codeswitch/services.ProviderService.LoadProviders", kind).then(($result: any) => {
         return $$createType2($result);
     });
 }
 
 export function SaveProviders(kind: string, providers: $models.Provider[]): $CancellablePromise<void> {
-    return $Call.ByID(1034860836, kind, providers);
+    return $Call.ByName("codeswitch/services.ProviderService.SaveProviders", kind, providers);
 }
 
 export function Start(): $CancellablePromise<void> {
-    return $Call.ByID(194327613);
+    return $Call.ByName("codeswitch/services.ProviderService.Start");
 }
 
 export function Stop(): $CancellablePromise<void> {
-    return $Call.ByID(291391407);
+    return $Call.ByName("codeswitch/services.ProviderService.Stop");
 }
 
 // Private type creation functions

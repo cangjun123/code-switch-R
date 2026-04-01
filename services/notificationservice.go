@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/gen2brain/beeep"
-	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 //go:embed assets/icon.png
@@ -20,11 +19,12 @@ var notifyIconFS embed.FS
 // @author sm
 type NotificationService struct {
 	appSettings    *AppSettingsService
-	app            *application.App // Wails 应用实例，用于发送事件
+	emitter        EventEmitter
 	mu             sync.RWMutex
 	lastNotifyTime time.Time
 	minInterval    time.Duration // 通知最小间隔，防止刷屏
 	iconPath       string        // 缓存的图标路径
+	desktopNotify  bool
 }
 
 // SwitchNotification 切换通知的详细信息
@@ -46,10 +46,14 @@ func NewNotificationService(appSettings *AppSettingsService) *NotificationServic
 	return ns
 }
 
-// SetApp 设置 Wails 应用实例（用于发送事件到前端）
-// @author sm
-func (ns *NotificationService) SetApp(app *application.App) {
-	ns.app = app
+// SetEventEmitter 设置事件发送器（用于转发到 SSE/web 前端）。
+func (ns *NotificationService) SetEventEmitter(emitter EventEmitter) {
+	ns.emitter = emitter
+}
+
+// EnableDesktopNotifications 控制是否发送宿主机系统通知。
+func (ns *NotificationService) EnableDesktopNotifications(enabled bool) {
+	ns.desktopNotify = enabled
 }
 
 // ensureIconFile 确保图标文件存在于临时目录，并返回路径
@@ -134,8 +138,12 @@ func (ns *NotificationService) sendSwitchNotification(info SwitchNotification) {
 	title := "Code Switch"
 	body := fmt.Sprintf("已切换到 %s", info.ToProvider)
 
-	// 发送 Wails 事件到前端（用于点击通知后定位）
+	// 发送事件到前端（用于页面内提示与状态同步）
 	ns.emitSwitchEvent(info)
+
+	if !ns.desktopNotify {
+		return
+	}
 
 	// 使用 beeep 发送系统通知，带应用图标
 	if err := beeep.Notify(title, body, ns.iconPath); err != nil {
@@ -148,10 +156,10 @@ func (ns *NotificationService) sendSwitchNotification(info SwitchNotification) {
 // emitSwitchEvent 发送切换事件到前端
 // @author sm
 func (ns *NotificationService) emitSwitchEvent(info SwitchNotification) {
-	if ns.app == nil {
+	if ns.emitter == nil {
 		return
 	}
-	ns.app.Event.Emit("provider:switched", map[string]interface{}{
+	ns.emitter.Emit("provider:switched", map[string]interface{}{
 		"platform":     info.Platform,
 		"fromProvider": info.FromProvider,
 		"toProvider":   info.ToProvider,
@@ -171,8 +179,12 @@ func (ns *NotificationService) NotifyProviderBlacklisted(platform, providerName 
 		title := "Code Switch"
 		body := fmt.Sprintf("%s 已拉黑 %d 分钟", providerName, durationMinutes)
 
-		// 发送 Wails 事件到前端
+		// 发送事件到前端
 		ns.emitBlacklistEvent(platform, providerName, level, durationMinutes)
+
+		if !ns.desktopNotify {
+			return
+		}
 
 		// 使用 beeep 发送系统通知，带应用图标
 		if err := beeep.Notify(title, body, ns.iconPath); err != nil {
@@ -186,10 +198,10 @@ func (ns *NotificationService) NotifyProviderBlacklisted(platform, providerName 
 // emitBlacklistEvent 发送拉黑事件到前端
 // @author sm
 func (ns *NotificationService) emitBlacklistEvent(platform, providerName string, level, durationMinutes int) {
-	if ns.app == nil {
+	if ns.emitter == nil {
 		return
 	}
-	ns.app.Event.Emit("provider:blacklisted", map[string]interface{}{
+	ns.emitter.Emit("provider:blacklisted", map[string]interface{}{
 		"platform":        platform,
 		"providerName":    providerName,
 		"level":           level,

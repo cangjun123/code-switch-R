@@ -13,6 +13,7 @@ import { useI18n } from 'vue-i18n'
 import { extractErrorMessage } from '../../utils/error'
 
 const { t } = useI18n()
+const isWebRuntime = true
 
 const router = useRouter()
 // 从 localStorage 读取缓存值作为初始值，避免加载时的视觉闪烁
@@ -453,7 +454,7 @@ onMounted(async () => {
               <span></span>
             </label>
           </ListItem>
-          <ListItem :label="$t('components.general.label.autoStart')">
+          <ListItem v-if="!isWebRuntime" :label="$t('components.general.label.autoStart')">
             <label class="mac-switch">
               <input
                 type="checkbox"

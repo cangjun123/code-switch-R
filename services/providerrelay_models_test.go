@@ -4,10 +4,72 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 )
+
+var (
+	testRelayEnvOnce sync.Once
+	testRelayEnvErr  error
+)
+
+func setupRelayTestEnv(t *testing.T) {
+	t.Helper()
+
+	testRelayEnvOnce.Do(func() {
+		testHome, err := os.MkdirTemp("", "codeswitch-services-test-*")
+		if err != nil {
+			testRelayEnvErr = err
+			return
+		}
+
+		if err := os.Setenv("HOME", testHome); err != nil {
+			testRelayEnvErr = err
+			return
+		}
+
+		testRelayEnvErr = InitDatabase()
+	})
+
+	if testRelayEnvErr != nil {
+		t.Fatalf("初始化测试环境失败: %v", testRelayEnvErr)
+	}
+}
+
+func newTestRelayService(t *testing.T) (*ProviderService, *ProviderRelayService) {
+	t.Helper()
+	setupRelayTestEnv(t)
+
+	homeDir, err := getUserHomeDir()
+	if err != nil {
+		t.Fatalf("获取测试 home 目录失败: %v", err)
+	}
+	_ = os.Remove(filepath.Join(homeDir, ".code-switch", "claude-code.json"))
+	_ = os.Remove(filepath.Join(homeDir, ".code-switch", "codex.json"))
+	_ = os.RemoveAll(filepath.Join(homeDir, ".code-switch", "providers"))
+
+	providerService := NewProviderService()
+	settingsService := NewSettingsService()
+	appSettings := NewAppSettingsService(nil)
+	notificationService := NewNotificationService(appSettings)
+	blacklistService := NewBlacklistService(settingsService, notificationService)
+	geminiService := NewGeminiService("127.0.0.1:18100")
+
+	relayService := NewProviderRelayService(
+		providerService,
+		geminiService,
+		blacklistService,
+		notificationService,
+		appSettings,
+		"",
+	)
+
+	return providerService, relayService
+}
 
 // TestModelsHandler 测试 /v1/models 端点处理器
 func TestModelsHandler(t *testing.T) {
@@ -61,9 +123,7 @@ func TestModelsHandler(t *testing.T) {
 	defer upstreamServer.Close()
 
 	// 创建测试用的 ProviderService
-	providerService := NewProviderService()
-	blacklistService := NewBlacklistService()
-	notificationService := NewNotificationService()
+	providerService, relayService := newTestRelayService(t)
 
 	// 创建测试用的 provider（使用模拟服务器的 URL）
 	testProvider := Provider{
@@ -80,9 +140,6 @@ func TestModelsHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("保存 provider 配置失败: %v", err)
 	}
-
-	// 创建 ProviderRelayService
-	relayService := NewProviderRelayService(providerService, nil, blacklistService, notificationService, "")
 
 	// 创建测试路由
 	router := gin.New()
@@ -163,9 +220,7 @@ func TestCustomModelsHandler(t *testing.T) {
 	defer upstreamServer.Close()
 
 	// 创建测试用的 ProviderService
-	providerService := NewProviderService()
-	blacklistService := NewBlacklistService()
-	notificationService := NewNotificationService()
+	providerService, relayService := newTestRelayService(t)
 
 	// 创建测试用的 provider（使用模拟服务器的 URL）
 	testProvider := Provider{
@@ -184,9 +239,6 @@ func TestCustomModelsHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("保存 provider 配置失败: %v", err)
 	}
-
-	// 创建 ProviderRelayService
-	relayService := NewProviderRelayService(providerService, nil, blacklistService, notificationService, "")
 
 	// 创建测试路由
 	router := gin.New()
@@ -230,12 +282,10 @@ func TestModelsHandler_NoProviders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	// 创建空的 ProviderService
-	providerService := NewProviderService()
-	blacklistService := NewBlacklistService()
-	notificationService := NewNotificationService()
-
-	// 创建 ProviderRelayService（没有配置任何 provider）
-	relayService := NewProviderRelayService(providerService, nil, blacklistService, notificationService, "")
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders("claude", []Provider{}); err != nil {
+		t.Fatalf("清空 claude provider 配置失败: %v", err)
+	}
 
 	// 创建测试路由
 	router := gin.New()

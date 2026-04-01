@@ -18,7 +18,7 @@ import * as $models from "./models.js";
  * CheckEnvConflicts 检查指定平台的环境变量冲突
  */
 export function CheckEnvConflicts(app: string): $CancellablePromise<$models.EnvConflict[]> {
-    return $Call.ByID(1941592683, app).then(($result: any) => {
+    return $Call.ByName("codeswitch/services.EnvCheckService.CheckEnvConflicts", app).then(($result: any) => {
         return $$createType1($result);
     });
 }
@@ -27,14 +27,14 @@ export function CheckEnvConflicts(app: string): $CancellablePromise<$models.EnvC
  * Start Wails生命周期方法
  */
 export function Start(): $CancellablePromise<void> {
-    return $Call.ByID(1143131277);
+    return $Call.ByName("codeswitch/services.EnvCheckService.Start");
 }
 
 /**
  * Stop Wails生命周期方法
  */
 export function Stop(): $CancellablePromise<void> {
-    return $Call.ByID(1280229439);
+    return $Call.ByName("codeswitch/services.EnvCheckService.Stop");
 }
 
 // Private type creation functions

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -748,6 +749,11 @@ func (ss *SkillService) OpenSkillFolder(platform, location string) error {
 	// 确保目录存在
 	if err := os.MkdirAll(installPath, 0o755); err != nil {
 		return err
+	}
+
+	// Web 版通常运行在无图形环境的服务器上；此时跳过 xdg-open/open/explorer。
+	if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+		return nil
 	}
 
 	return OpenInExplorer(installPath)

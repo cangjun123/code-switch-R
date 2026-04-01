@@ -36,7 +36,7 @@
 
           <!-- 有更新可用 -->
           <template v-else-if="state.state === 'available'">
-            <button class="btn-update" @click="download">
+            <button class="btn-update" @click="isWebPolicy ? openReleaseLink() : download()">
               {{ $t('update.downloadNow') }}
             </button>
             <button class="btn-dismiss" @click="dismiss">
@@ -63,7 +63,11 @@
 
           <!-- 错误 -->
           <template v-else-if="hasError">
-            <button v-if="state.error_op === 'download'" class="btn-update" @click="download">
+            <button
+              v-if="state.error_op === 'download'"
+              class="btn-update"
+              @click="isWebPolicy ? openReleaseLink() : download()"
+            >
               {{ $t('update.retry') }}
             </button>
             <button class="btn-dismiss" @click="dismissNotification">
@@ -86,6 +90,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { Browser } from '@wailsio/runtime'
 import { useUpdateStore } from '../../composables/useUpdateStore'
 
 const {
@@ -120,6 +125,8 @@ const showNotification = computed(() => {
   return hasUpdate.value || hasError.value
 })
 
+const isWebPolicy = computed(() => state.policy === 'web')
+
 // 当状态变化时重置本地隐藏
 watch(() => state.state, () => {
   localHidden.value = false
@@ -127,6 +134,13 @@ watch(() => state.state, () => {
 
 function dismissNotification() {
   localHidden.value = true
+}
+
+function openReleaseLink() {
+  const target = state.download_url || 'https://github.com/Rogers-F/code-switch-R/releases/latest'
+  Browser.OpenURL(target).catch((error) => {
+    console.error('failed to open release url', error)
+  })
 }
 </script>
 

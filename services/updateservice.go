@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wailsapp/wails/v3/pkg/application"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -127,7 +126,7 @@ type UpdateService struct {
 	dismissedVersion string
 
 	// 事件发送
-	app *application.App
+	emitter EventEmitter
 
 	// 并发控制
 	checkGroup  singleflight.Group
@@ -142,6 +141,7 @@ type UpdateService struct {
 	// 配置
 	dataDir      string // 数据目录，用于存储临时文件和状态
 	cachedPolicy string // 缓存的更新策略，避免重复检测
+	webMode      bool
 }
 
 // 常量
@@ -188,9 +188,20 @@ func NewUpdateService(currentVersion string) *UpdateService {
 	return us
 }
 
-// SetApp 设置 Wails App 引用
-func (us *UpdateService) SetApp(app *application.App) {
-	us.app = app
+// SetEventEmitter 设置事件发送器。
+func (us *UpdateService) SetEventEmitter(emitter EventEmitter) {
+	us.emitter = emitter
+}
+
+// SetWebMode 切换到网页运行模式。
+func (us *UpdateService) SetWebMode(enabled bool) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+
+	us.webMode = enabled
+	if enabled {
+		us.cachedPolicy = "web"
+	}
 }
 
 // ==================== 公开 API ====================
@@ -256,6 +267,15 @@ func (us *UpdateService) CheckUpdate() (*UpdateInfo, error) {
 // DownloadUpdate 下载更新
 func (us *UpdateService) DownloadUpdate() error {
 	us.mu.Lock()
+
+	if us.webMode {
+		us.lastError = "automatic download is not available in web mode; open the release link instead"
+		us.errorOp = "download"
+		us.state = StateError
+		us.emitState()
+		us.mu.Unlock()
+		return fmt.Errorf("automatic download is not available in web mode")
+	}
 
 	switch us.state {
 	case StateDownloading:
@@ -343,6 +363,15 @@ func (us *UpdateService) CancelDownload() error {
 func (us *UpdateService) RequestRestart() error {
 	us.mu.Lock()
 
+	if us.webMode {
+		us.lastError = "automatic restart/apply is not available in web mode"
+		us.errorOp = "apply"
+		us.state = StateError
+		us.emitState()
+		us.mu.Unlock()
+		return fmt.Errorf("automatic restart/apply is not available in web mode")
+	}
+
 	if us.state != StateReady {
 		us.mu.Unlock()
 		return fmt.Errorf("invalid state for restart: %s (expected: ready)", us.state)
@@ -410,10 +439,6 @@ func (us *UpdateService) RequestRestart() error {
 	us.emitStateUnlocked() // P1: 改用 emitStateUnlocked（未持锁）
 
 	// P0: 退出应用，让更新脚本接管
-	if us.app != nil {
-		us.app.Quit()
-	}
-
 	return nil
 }
 
@@ -1364,21 +1389,21 @@ func (us *UpdateService) getAssetName(version string) string {
 // emitState 发送状态事件（调用前必须持有锁）
 // 使用异步发送避免死锁
 func (us *UpdateService) emitState() {
-	if us.app == nil {
+	if us.emitter == nil {
 		return
 	}
 	// 在持有锁时构建快照
 	snapshot := us.getStateLocked()
 	// 异步发送事件，避免在持有锁时阻塞
-	go us.app.Event.Emit("update:state", snapshot)
+	go us.emitter.Emit("update:state", snapshot)
 }
 
 // emitStateUnlocked 发送状态事件（调用前不持有锁）
 func (us *UpdateService) emitStateUnlocked() {
-	if us.app == nil {
+	if us.emitter == nil {
 		return
 	}
-	us.app.Event.Emit("update:state", us.GetState())
+	us.emitter.Emit("update:state", us.GetState())
 }
 
 // getStateLocked 获取状态快照（调用前必须持有锁）
@@ -1414,7 +1439,7 @@ func (us *UpdateService) getStateLocked() *UpdateStateSnapshot {
 
 // emitProgressThrottled 节流发送进度事件
 func (us *UpdateService) emitProgressThrottled(downloaded, total int64) {
-	if us.app == nil {
+	if us.emitter == nil {
 		return
 	}
 
@@ -1431,7 +1456,7 @@ func (us *UpdateService) emitProgressThrottled(downloaded, total int64) {
 		us.lastEmitPercent = percent
 		us.lastEmitState = us.state
 		us.mu.Unlock()
-		us.app.Event.Emit("update:progress", map[string]interface{}{
+		us.emitter.Emit("update:progress", map[string]interface{}{
 			"downloaded": downloaded,
 			"total":      total,
 			"percent":    percent,
@@ -1453,7 +1478,7 @@ func (us *UpdateService) emitProgressThrottled(downloaded, total int64) {
 	us.lastEmitPercent = percent
 	us.mu.Unlock()
 
-	us.app.Event.Emit("update:progress", map[string]interface{}{
+	us.emitter.Emit("update:progress", map[string]interface{}{
 		"downloaded": downloaded,
 		"total":      total,
 		"percent":    percent,

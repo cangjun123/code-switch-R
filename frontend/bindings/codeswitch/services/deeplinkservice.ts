@@ -18,7 +18,7 @@ import * as $models from "./models.js";
  * ImportProviderFromDeepLink 从深度链接导入供应商
  */
 export function ImportProviderFromDeepLink(request: $models.DeepLinkImportRequest | null): $CancellablePromise<string> {
-    return $Call.ByID(2087032230, request);
+    return $Call.ByName("codeswitch/services.DeepLinkService.ImportProviderFromDeepLink", request);
 }
 
 /**
@@ -26,7 +26,7 @@ export function ImportProviderFromDeepLink(request: $models.DeepLinkImportReques
  * 预期格式: ccswitch://v1/import?resource=provider&app=claude&name=...&homepage=...&endpoint=...&apiKey=...
  */
 export function ParseDeepLinkURL(urlStr: string): $CancellablePromise<$models.DeepLinkImportRequest | null> {
-    return $Call.ByID(3816480018, urlStr).then(($result: any) => {
+    return $Call.ByName("codeswitch/services.DeepLinkService.ParseDeepLinkURL", urlStr).then(($result: any) => {
         return $$createType1($result);
     });
 }
@@ -35,14 +35,14 @@ export function ParseDeepLinkURL(urlStr: string): $CancellablePromise<$models.De
  * Start Wails生命周期方法
  */
 export function Start(): $CancellablePromise<void> {
-    return $Call.ByID(3178862184);
+    return $Call.ByName("codeswitch/services.DeepLinkService.Start");
 }
 
 /**
  * Stop Wails生命周期方法
  */
 export function Stop(): $CancellablePromise<void> {
-    return $Call.ByID(839496268);
+    return $Call.ByName("codeswitch/services.DeepLinkService.Stop");
 }
 
 // Private type creation functions

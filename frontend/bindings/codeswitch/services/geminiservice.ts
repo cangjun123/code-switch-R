@@ -18,7 +18,7 @@ import * as $models from "./models.js";
  * AddProvider 添加供应商
  */
 export function AddProvider(provider: $models.GeminiProvider): $CancellablePromise<void> {
-    return $Call.ByID(2833198257, provider);
+    return $Call.ByName("codeswitch/services.GeminiService.AddProvider", provider);
 }
 
 /**
@@ -26,14 +26,14 @@ export function AddProvider(provider: $models.GeminiProvider): $CancellablePromi
  * 与 SwitchProvider 功能相同，仅在代理关闭时可用
  */
 export function ApplySingleProvider(id: string): $CancellablePromise<void> {
-    return $Call.ByID(3103860642, id);
+    return $Call.ByName("codeswitch/services.GeminiService.ApplySingleProvider", id);
 }
 
 /**
  * CreateProviderFromPreset 从预设创建供应商
  */
 export function CreateProviderFromPreset(presetName: string, apiKey: string): $CancellablePromise<$models.GeminiProvider | null> {
-    return $Call.ByID(974856947, presetName, apiKey).then(($result: any) => {
+    return $Call.ByName("codeswitch/services.GeminiService.CreateProviderFromPreset", presetName, apiKey).then(($result: any) => {
         return $$createType1($result);
     });
 }
@@ -42,21 +42,21 @@ export function CreateProviderFromPreset(presetName: string, apiKey: string): $C
  * DeleteProvider 删除供应商
  */
 export function DeleteProvider(id: string): $CancellablePromise<void> {
-    return $Call.ByID(758292695, id);
+    return $Call.ByName("codeswitch/services.GeminiService.DeleteProvider", id);
 }
 
 /**
  * DisableProxy 禁用代理（手术式撤销：仅移除注入的代理配置，保留用户其他编辑）
  */
 export function DisableProxy(): $CancellablePromise<void> {
-    return $Call.ByID(1809533069);
+    return $Call.ByName("codeswitch/services.GeminiService.DisableProxy");
 }
 
 /**
  * DuplicateProvider 复制供应商
  */
 export function DuplicateProvider(sourceID: string): $CancellablePromise<$models.GeminiProvider | null> {
-    return $Call.ByID(159215875, sourceID).then(($result: any) => {
+    return $Call.ByName("codeswitch/services.GeminiService.DuplicateProvider", sourceID).then(($result: any) => {
         return $$createType1($result);
     });
 }
@@ -65,7 +65,7 @@ export function DuplicateProvider(sourceID: string): $CancellablePromise<$models
  * EnableProxy 启用代理
  */
 export function EnableProxy(): $CancellablePromise<void> {
-    return $Call.ByID(3882720282);
+    return $Call.ByName("codeswitch/services.GeminiService.EnableProxy");
 }
 
 /**
@@ -76,14 +76,14 @@ export function EnableProxy(): $CancellablePromise<void> {
  *   - *string: 匹配到的 provider ID
  */
 export function GetDirectAppliedProviderID(): $CancellablePromise<string | null> {
-    return $Call.ByID(1240445803);
+    return $Call.ByName("codeswitch/services.GeminiService.GetDirectAppliedProviderID");
 }
 
 /**
  * GetPresets 获取预设供应商列表
  */
 export function GetPresets(): $CancellablePromise<$models.GeminiPreset[]> {
-    return $Call.ByID(2578586649).then(($result: any) => {
+    return $Call.ByName("codeswitch/services.GeminiService.GetPresets").then(($result: any) => {
         return $$createType3($result);
     });
 }
@@ -92,7 +92,7 @@ export function GetPresets(): $CancellablePromise<$models.GeminiPreset[]> {
  * GetProviders 获取已配置的供应商列表
  */
 export function GetProviders(): $CancellablePromise<$models.GeminiProvider[]> {
-    return $Call.ByID(4102812223).then(($result: any) => {
+    return $Call.ByName("codeswitch/services.GeminiService.GetProviders").then(($result: any) => {
         return $$createType4($result);
     });
 }
@@ -101,7 +101,7 @@ export function GetProviders(): $CancellablePromise<$models.GeminiProvider[]> {
  * GetStatus 获取当前 Gemini 配置状态
  */
 export function GetStatus(): $CancellablePromise<$models.GeminiStatus | null> {
-    return $Call.ByID(278805041).then(($result: any) => {
+    return $Call.ByName("codeswitch/services.GeminiService.GetStatus").then(($result: any) => {
         return $$createType6($result);
     });
 }
@@ -110,7 +110,7 @@ export function GetStatus(): $CancellablePromise<$models.GeminiStatus | null> {
  * ProxyStatus 获取代理状态
  */
 export function ProxyStatus(): $CancellablePromise<$models.GeminiProxyStatus | null> {
-    return $Call.ByID(615836637).then(($result: any) => {
+    return $Call.ByName("codeswitch/services.GeminiService.ProxyStatus").then(($result: any) => {
         return $$createType8($result);
     });
 }
@@ -119,21 +119,21 @@ export function ProxyStatus(): $CancellablePromise<$models.GeminiProxyStatus | n
  * ReorderProviders 重新排序供应商（按传入的 ID 顺序）
  */
 export function ReorderProviders(ids: string[]): $CancellablePromise<void> {
-    return $Call.ByID(1005362802, ids);
+    return $Call.ByName("codeswitch/services.GeminiService.ReorderProviders", ids);
 }
 
 /**
  * Start Wails生命周期方法
  */
 export function Start(): $CancellablePromise<void> {
-    return $Call.ByID(2631735887);
+    return $Call.ByName("codeswitch/services.GeminiService.Start");
 }
 
 /**
  * Stop Wails生命周期方法
  */
 export function Stop(): $CancellablePromise<void> {
-    return $Call.ByID(303555861);
+    return $Call.ByName("codeswitch/services.GeminiService.Stop");
 }
 
 /**
@@ -141,14 +141,14 @@ export function Stop(): $CancellablePromise<void> {
  * 注意：代理启用时禁止切换（与 Claude/Codex 保持一致）
  */
 export function SwitchProvider(id: string): $CancellablePromise<void> {
-    return $Call.ByID(3824145224, id);
+    return $Call.ByName("codeswitch/services.GeminiService.SwitchProvider", id);
 }
 
 /**
  * UpdateProvider 更新供应商
  */
 export function UpdateProvider(provider: $models.GeminiProvider): $CancellablePromise<void> {
-    return $Call.ByID(2675358193, provider);
+    return $Call.ByName("codeswitch/services.GeminiService.UpdateProvider", provider);
 }
 
 // Private type creation functions

@@ -18,14 +18,14 @@ import * as $models from "./models.js";
  * Start Wails生命周期方法
  */
 export function Start(): $CancellablePromise<void> {
-    return $Call.ByID(336583549);
+    return $Call.ByName("codeswitch/services.SpeedTestService.Start");
 }
 
 /**
  * Stop Wails生命周期方法
  */
 export function Stop(): $CancellablePromise<void> {
-    return $Call.ByID(4077816815);
+    return $Call.ByName("codeswitch/services.SpeedTestService.Stop");
 }
 
 /**
@@ -33,7 +33,7 @@ export function Stop(): $CancellablePromise<void> {
  * 使用并发请求，每个端点先进行一次热身请求，再测量第二次请求的延迟
  */
 export function TestEndpoints(urls: string[], timeoutSecs: number | null): $CancellablePromise<$models.EndpointLatency[]> {
-    return $Call.ByID(846920271, urls, timeoutSecs).then(($result: any) => {
+    return $Call.ByName("codeswitch/services.SpeedTestService.TestEndpoints", urls, timeoutSecs).then(($result: any) => {
         return $$createType1($result);
     });
 }
