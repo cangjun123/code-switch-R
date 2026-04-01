@@ -26,7 +26,7 @@ type ConfigFile struct {
 	ID        string `json:"id"`
 	Label     string `json:"label"`
 	Path      string `json:"path"`
-	Format    string `json:"format"`              // json | toml | env
+	Format    string `json:"format"` // json | toml | env
 	IsPrimary bool   `json:"isPrimary,omitempty"`
 }
 
@@ -536,21 +536,7 @@ func (s *CustomCliService) getToolLocked(id string) (*CustomCliTool, error) {
 }
 
 func (s *CustomCliService) baseURL() string {
-	addr := strings.TrimSpace(s.relayAddr)
-	if addr == "" {
-		addr = ":18100"
-	}
-	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
-		return addr
-	}
-	host := addr
-	if strings.HasPrefix(host, ":") {
-		host = "127.0.0.1" + host
-	}
-	if !strings.Contains(host, "://") {
-		host = "http://" + host
-	}
-	return host
+	return RelayClientBaseURL(s.relayAddr)
 }
 
 // baseURLWithToolPath 返回包含 /custom/{toolId} 路径的完整代理 URL

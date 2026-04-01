@@ -21,7 +21,9 @@ func main() {
 
 	server := newAdminServer(runtime)
 	log.Printf("web admin listening on http://%s", runtime.adminAddr)
-	log.Printf("provider relay listening on http://%s", defaultRelayAddr)
+	if runtime.providerRelay != nil {
+		log.Printf("provider relay listening on http://%s", runtime.providerRelay.Addr())
+	}
 
 	serverErr := make(chan error, 1)
 	go func() {

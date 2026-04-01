@@ -93,10 +93,23 @@ func NewNetworkService(
 
 // defaultSettings 默认网络设置
 func (ns *NetworkService) defaultSettings() NetworkSettings {
+	currentAddress := RelayListenAddr(ns.relayAddr)
+	listenMode := ListenModeCustom
+	customAddress := currentAddress
+
+	switch currentAddress {
+	case "127.0.0.1:18100", "localhost:18100":
+		listenMode = ListenModeLocalhost
+		customAddress = ""
+	case "0.0.0.0:18100", "[::]:18100", ":::18100":
+		listenMode = ListenModeLAN
+		customAddress = ""
+	}
+
 	return NetworkSettings{
-		ListenMode:     ListenModeLocalhost,
-		CustomAddress:  "",
-		CurrentAddress: "127.0.0.1:18100",
+		ListenMode:     listenMode,
+		CustomAddress:  customAddress,
+		CurrentAddress: currentAddress,
 		WSLAutoConfig:  false, // 默认关闭
 		TargetCli: TargetCli{
 			ClaudeCode: true,

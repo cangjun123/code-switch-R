@@ -639,21 +639,7 @@ func (s *CliConfigService) RestoreDefault(platform string) error {
 
 // baseURL 获取代理 URL
 func (s *CliConfigService) baseURL() string {
-	addr := strings.TrimSpace(s.relayAddr)
-	if addr == "" {
-		addr = ":18100"
-	}
-	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
-		return addr
-	}
-	host := addr
-	if strings.HasPrefix(host, ":") {
-		host = "127.0.0.1" + host
-	}
-	if !strings.Contains(host, "://") {
-		host = "http://" + host
-	}
-	return host
+	return RelayClientBaseURL(s.relayAddr)
 }
 
 // geminiBaseURL 获取 Gemini 代理 URL（包含 /gemini 前缀）

@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 )
 
 const (
 	defaultAdminAddr = "0.0.0.0:8080"
 	defaultStaticDir = "frontend/dist"
-	defaultRelayAddr = "127.0.0.1:18100"
+	defaultRelayAddr = services.DefaultRelayBindAddr
 )
 
 type AppService struct{}
@@ -70,12 +71,19 @@ func newAppRuntime() (*appRuntime, error) {
 	appSettings := services.NewAppSettingsService(nil)
 	adminAuth := services.NewAdminAuthService(appSettings)
 	codexRelayKeys := services.NewCodexRelayKeyService()
+	bootstrapNetworkService := services.NewNetworkService(defaultRelayAddr, nil, nil, nil, codexRelayKeys)
+	relayAddr := defaultRelayAddr
+	if networkSettings, err := bootstrapNetworkService.GetNetworkSettings(); err != nil {
+		log.Printf("读取网络监听设置失败（使用默认 relay 地址）: %v", err)
+	} else if addr := strings.TrimSpace(networkSettings.CurrentAddress); addr != "" {
+		relayAddr = addr
+	}
 	eventHub := services.NewEventHub()
 	notificationService := services.NewNotificationService(appSettings)
 	notificationService.SetEventEmitter(eventHub)
 	blacklistService := services.NewBlacklistService(settingsService, notificationService)
-	geminiService := services.NewGeminiService(defaultRelayAddr)
-	providerRelay := services.NewProviderRelayService(providerService, geminiService, codexRelayKeys, blacklistService, notificationService, appSettings, defaultRelayAddr)
+	geminiService := services.NewGeminiService(relayAddr)
+	providerRelay := services.NewProviderRelayService(providerService, geminiService, codexRelayKeys, blacklistService, notificationService, appSettings, relayAddr)
 	claudeSettings := services.NewClaudeSettingsService(providerRelay.Addr())
 	codexSettings := services.NewCodexSettingsService(providerRelay.Addr(), codexRelayKeys)
 	cliConfigService := services.NewCliConfigService(providerRelay.Addr(), codexRelayKeys)

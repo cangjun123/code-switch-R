@@ -48,7 +48,7 @@ var errClientAbort = errors.New("client aborted, skip failure count")
 
 func NewProviderRelayService(providerService *ProviderService, geminiService *GeminiService, codexRelayKeys *CodexRelayKeyService, blacklistService *BlacklistService, notificationService *NotificationService, appSettings *AppSettingsService, addr string) *ProviderRelayService {
 	if addr == "" {
-		addr = "127.0.0.1:18100" // 【安全修复】仅监听本地回环地址，防止 API Key 暴露到局域网
+		addr = DefaultRelayBindAddr
 	}
 	if codexRelayKeys == nil {
 		codexRelayKeys = NewCodexRelayKeyService()

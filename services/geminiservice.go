@@ -14,10 +14,10 @@ import (
 type GeminiAuthType string
 
 const (
-	GeminiAuthOAuth      GeminiAuthType = "oauth-personal"   // Google 官方 OAuth
-	GeminiAuthAPIKey     GeminiAuthType = "gemini-api-key"   // API Key 认证
-	GeminiAuthPackycode  GeminiAuthType = "packycode"        // PackyCode 合作方
-	GeminiAuthGeneric    GeminiAuthType = "generic"          // 通用第三方
+	GeminiAuthOAuth     GeminiAuthType = "oauth-personal" // Google 官方 OAuth
+	GeminiAuthAPIKey    GeminiAuthType = "gemini-api-key" // API Key 认证
+	GeminiAuthPackycode GeminiAuthType = "packycode"      // PackyCode 合作方
+	GeminiAuthGeneric   GeminiAuthType = "generic"        // 通用第三方
 )
 
 // GeminiProvider Gemini 供应商配置
@@ -33,9 +33,9 @@ type GeminiProvider struct {
 	Category            string            `json:"category,omitempty"`            // official, third_party, custom
 	PartnerPromotionKey string            `json:"partnerPromotionKey,omitempty"` // 用于识别供应商类型
 	Enabled             bool              `json:"enabled"`
-	Level               int               `json:"level,omitempty"`               // 优先级分组 (1-10, 默认 1)
-	EnvConfig           map[string]string `json:"envConfig,omitempty"`           // .env 配置
-	SettingsConfig      map[string]any    `json:"settingsConfig,omitempty"`      // settings.json 配置
+	Level               int               `json:"level,omitempty"`          // 优先级分组 (1-10, 默认 1)
+	EnvConfig           map[string]string `json:"envConfig,omitempty"`      // .env 配置
+	SettingsConfig      map[string]any    `json:"settingsConfig,omitempty"` // settings.json 配置
 }
 
 // GeminiPreset 预设供应商
@@ -53,12 +53,12 @@ type GeminiPreset struct {
 
 // GeminiStatus Gemini 配置状态
 type GeminiStatus struct {
-	Enabled        bool           `json:"enabled"`
+	Enabled         bool           `json:"enabled"`
 	CurrentProvider string         `json:"currentProvider,omitempty"`
-	AuthType       GeminiAuthType `json:"authType"`
-	HasAPIKey      bool           `json:"hasApiKey"`
-	HasBaseURL     bool           `json:"hasBaseUrl"`
-	Model          string         `json:"model,omitempty"`
+	AuthType        GeminiAuthType `json:"authType"`
+	HasAPIKey       bool           `json:"hasApiKey"`
+	HasBaseURL      bool           `json:"hasBaseUrl"`
+	Model           string         `json:"model,omitempty"`
 }
 
 // GeminiService Gemini 配置管理服务
@@ -908,21 +908,7 @@ func (s *GeminiService) fallbackCleanupEnv(envConfig map[string]string) bool {
 
 // buildProxyURL 构建代理 URL（包含 /gemini 前缀）
 func buildProxyURL(relayAddr string) string {
-	addr := strings.TrimSpace(relayAddr)
-	if addr == "" {
-		addr = ":18100"
-	}
-	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
-		return addr + "/gemini"
-	}
-	host := addr
-	if strings.HasPrefix(host, ":") {
-		host = "127.0.0.1" + host
-	}
-	if !strings.Contains(host, "://") {
-		host = "http://" + host
-	}
-	return host + "/gemini"
+	return RelayClientBaseURL(relayAddr) + "/gemini"
 }
 
 // DuplicateProvider 复制供应商
