@@ -329,6 +329,7 @@ func (prs *ProviderRelayService) registerRoutes(router gin.IRouter) {
 	codexAuth := prs.codexRelayAuthMiddleware()
 
 	router.POST("/v1/messages", prs.proxyHandler("claude", "/v1/messages"))
+	router.POST("/v1/messages/count_tokens", prs.proxyHandler("claude", "/v1/messages/count_tokens"))
 	router.POST("/responses", codexAuth, prs.proxyHandler("codex", "/responses"))
 
 	// /v1/models 端点（OpenAI-compatible API）
@@ -345,6 +346,20 @@ func (prs *ProviderRelayService) registerRoutes(router gin.IRouter) {
 
 	// 自定义 CLI 工具的 /v1/models 端点
 	router.GET("/custom/:toolId/v1/models", prs.customModelsHandler())
+}
+
+func (prs *ProviderRelayService) resolveRelayEndpoint(kind string, provider Provider, routeEndpoint string) string {
+	if strings.TrimSpace(provider.APIEndpoint) != "" {
+		return provider.GetEffectiveEndpoint(routeEndpoint)
+	}
+
+	if strings.EqualFold(kind, "claude") &&
+		routeEndpoint == "/v1/messages" &&
+		provider.GetUpstreamProtocol() == UpstreamProtocolOpenAIChat {
+		return "/v1/responses"
+	}
+
+	return provider.GetEffectiveEndpoint(routeEndpoint)
 }
 
 func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.HandlerFunc {
@@ -503,7 +518,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 					}
 
 					// 获取有效端点
-					effectiveEndpoint := provider.GetEffectiveEndpoint(endpoint)
+					effectiveEndpoint := prs.resolveRelayEndpoint(kind, provider, endpoint)
 
 					// 同 Provider 内重试循环
 					for retryCount := 0; retryCount < maxRetryPerProvider; retryCount++ {
@@ -644,7 +659,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 
 				// 尝试发送请求
 				// 获取有效的端点（用户配置优先）
-				effectiveEndpoint := provider.GetEffectiveEndpoint(endpoint)
+				effectiveEndpoint := prs.resolveRelayEndpoint(kind, provider, endpoint)
 				startTime := time.Now()
 				ok, err := prs.forwardRequest(c, kind, provider, effectiveEndpoint, query, clientHeaders, currentBodyBytes, isStream, effectiveModel)
 				duration := time.Since(startTime)
@@ -755,20 +770,52 @@ func (prs *ProviderRelayService) forwardRequest(
 
 	// ========== 协议转换检测 ==========
 	upstreamProtocol := provider.ResolveUpstreamProtocol(endpoint)
-	var sseConverter *OpenAIToAnthropicSSEConverter
+	var sseConverter SSEProtocolConverter
+	useResponsesTransform := false
 	var convertInfo ConvertInfo
+	webSearchFallback, hasWebSearchFallback := claudeWebSearchFallbackRequest{}, false
+	if kind == "claude" && upstreamProtocol == UpstreamProtocolOpenAIChat {
+		webSearchFallback, hasWebSearchFallback = detectClaudeWebSearchFallbackRequest(bodyBytes)
+	}
 
-	// 如果上游是 OpenAI Chat，需要转换请求体
+	if kind == "claude" && strings.HasSuffix(endpoint, "/count_tokens") && upstreamProtocol != UpstreamProtocolAnthropic {
+		return false, NewClientRequestRejectedError("当前 OpenAI Compatible Claude 供应商暂不支持 /v1/messages/count_tokens")
+	}
+
+	// 如果上游是 OpenAI Compatible，需要转换请求体
 	if upstreamProtocol == UpstreamProtocolOpenAIChat {
-		fmt.Printf("[协议转换] Provider %s 使用 OpenAI Chat 协议\n", provider.Name)
+		fmt.Printf("[协议转换] Provider %s 使用 OpenAI Compatible 协议\n", provider.Name)
 
-		// 转换请求体
-		opts := DefaultConvertOptions()
-		convertedBody, info, err := ConvertAnthropicToOpenAI(bodyBytes, opts)
+		var (
+			convertedBody []byte
+			info          ConvertInfo
+			err           error
+		)
+
+		if isResponsesEndpoint(endpoint) {
+			convertedBody, info, err = ConvertAnthropicToOpenAIResponses(bodyBytes, ResponsesConvertOptions{
+				AllowWebSearch: provider.SupportsWebSearch || hasWebSearchFallback,
+				ProviderName:   provider.Name,
+			})
+			if err == nil {
+				useResponsesTransform = true
+				if isStream {
+					sseConverter = NewResponsesToAnthropicSSEConverter(model)
+				}
+			}
+		} else {
+			opts := DefaultConvertOptions()
+			convertedBody, info, err = ConvertAnthropicToOpenAI(bodyBytes, opts)
+			if err == nil && isStream {
+				sseConverter = NewOpenAIToAnthropicSSEConverter(model)
+			}
+		}
+
 		if err != nil {
 			// 客户端请求被拒绝（不支持的功能）
 			return false, err
 		}
+
 		bodyBytes = convertedBody
 		convertInfo = info
 
@@ -783,8 +830,6 @@ func (prs *ProviderRelayService) forwardRequest(
 			fmt.Printf("[协议转换] metadata.user_id -> user: %s\n", info.MappedUser)
 		}
 
-		// 创建 SSE 转换器（用于响应处理）
-		sseConverter = NewOpenAIToAnthropicSSEConverter(model)
 	}
 	_ = convertInfo // 避免未使用警告
 
@@ -812,9 +857,9 @@ func (prs *ProviderRelayService) forwardRequest(
 
 	// OpenAI 协议时移除 Anthropic 专用头
 	if upstreamProtocol == UpstreamProtocolOpenAIChat {
-		delete(headers, "anthropic-version")
-		delete(headers, "anthropic-beta")
-		delete(headers, "x-api-key")
+		deleteHeaderCaseInsensitive(headers, "anthropic-version")
+		deleteHeaderCaseInsensitive(headers, "anthropic-beta")
+		deleteHeaderCaseInsensitive(headers, "x-api-key")
 		// 确保使用 Bearer 认证
 		if headers["Authorization"] == "" {
 			headers["Authorization"] = fmt.Sprintf("Bearer %s", provider.APIKey)
@@ -870,6 +915,11 @@ func (prs *ProviderRelayService) forwardRequest(
 		}
 	}()
 
+	if hasWebSearchFallback {
+		fmt.Printf("[WebSearchFallback] Provider %s 命中 Claude WebSearch 请求，直接使用本地 fallback\n", provider.Name)
+		return prs.serveClaudeWebSearchFallback(c, webSearchFallback, isStream, model, requestLog)
+	}
+
 	req := xrequest.New().
 		SetHeaders(headers).
 		SetQueryParams(query).
@@ -884,6 +934,11 @@ func (prs *ProviderRelayService) forwardRequest(
 	// 无论成功失败，先尝试记录 HttpCode
 	if resp != nil {
 		requestLog.HttpCode = resp.StatusCode()
+	}
+
+	if hasWebSearchFallback && isUnsupportedWebSearchToolError(resp, err) {
+		fmt.Printf("[WebSearchFallback] Provider %s 不支持 web_search_preview，切换到本地 fallback\n", provider.Name)
+		return prs.serveClaudeWebSearchFallback(c, webSearchFallback, isStream, model, requestLog)
 	}
 
 	if err != nil {
@@ -930,7 +985,9 @@ func (prs *ProviderRelayService) forwardRequest(
 	if status == 0 {
 		fmt.Printf("[WARN] Provider %s 返回状态码 0，但无错误，当作成功处理\n", provider.Name)
 		var copyErr error
-		if sseConverter != nil && isStream {
+		if useResponsesTransform && !isStream {
+			copyErr = writeTransformedJSONResponse(c.Writer, resp, requestLog)
+		} else if sseConverter != nil && isStream {
 			// 使用协议转换 Hook
 			_, copyErr = resp.ToHttpResponseWriter(c.Writer, protocolConvertHook(sseConverter, kind, requestLog))
 		} else {
@@ -944,7 +1001,9 @@ func (prs *ProviderRelayService) forwardRequest(
 
 	if status >= http.StatusOK && status < http.StatusMultipleChoices {
 		var copyErr error
-		if sseConverter != nil && isStream {
+		if useResponsesTransform && !isStream {
+			copyErr = writeTransformedJSONResponse(c.Writer, resp, requestLog)
+		} else if sseConverter != nil && isStream {
 			// 使用协议转换 Hook
 			_, copyErr = resp.ToHttpResponseWriter(c.Writer, protocolConvertHook(sseConverter, kind, requestLog))
 		} else {
@@ -962,6 +1021,41 @@ func (prs *ProviderRelayService) forwardRequest(
 		return false, fmt.Errorf("upstream status %d: %s", status, upstreamBody)
 	}
 	return false, fmt.Errorf("upstream status %d", status)
+}
+
+func isResponsesEndpoint(endpoint string) bool {
+	return strings.Contains(strings.ToLower(endpoint), "/responses")
+}
+
+func writeTransformedJSONResponse(w http.ResponseWriter, resp *xrequest.Response, requestLog *ReqeustLog) error {
+	if resp == nil || resp.RawResponse == nil {
+		return fmt.Errorf("empty upstream response")
+	}
+
+	transformedBody, err := ConvertOpenAIResponsesToAnthropic(resp.Bytes())
+	if err != nil {
+		return err
+	}
+
+	ClaudeCodeParseTokenUsageFromResponse(string(transformedBody), requestLog)
+
+	for key, values := range resp.Headers() {
+		lowerKey := strings.ToLower(key)
+		switch lowerKey {
+		case "content-length", "content-encoding", "transfer-encoding", "connection":
+			continue
+		}
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Del("Content-Length")
+	w.WriteHeader(resp.StatusCode())
+
+	_, err = w.Write(transformedBody)
+	return err
 }
 
 // extractUpstreamError 从供应商响应中提取原始错误信息（最多 512 字节）
@@ -1010,6 +1104,14 @@ func cloneHeaders(header http.Header) map[string]string {
 		}
 	}
 	return cloned
+}
+
+func deleteHeaderCaseInsensitive(headers map[string]string, target string) {
+	for key := range headers {
+		if strings.EqualFold(key, target) {
+			delete(headers, key)
+		}
+	}
 }
 
 func cloneMap(m map[string]string) map[string]string {
@@ -1100,9 +1202,9 @@ func ensureRequestLogTableWithDB(db *sql.DB) error {
 	return nil
 }
 
-// protocolConvertHook 协议转换 Hook：将 OpenAI SSE 转换为 Anthropic SSE，并提取 usage
+// protocolConvertHook 协议转换 Hook：将上游 SSE 转换为 Anthropic SSE，并提取 usage
 // 注意：xrequest 的 hook 是逐行回调（每次收到一行 SSE 数据）
-func protocolConvertHook(converter *OpenAIToAnthropicSSEConverter, kind string, usage *ReqeustLog) func(data []byte) (bool, []byte) {
+func protocolConvertHook(converter SSEProtocolConverter, kind string, usage *ReqeustLog) func(data []byte) (bool, []byte) {
 	return func(data []byte) (bool, []byte) {
 		// xrequest 逐行回调，直接传给 ProcessLine
 		line := string(data)
@@ -1182,6 +1284,13 @@ func ClaudeCodeParseTokenUsageFromResponse(data string, usage *ReqeustLog) {
 
 	usage.InputTokens += int(gjson.Get(data, "usage.input_tokens").Int())
 	usage.OutputTokens += int(gjson.Get(data, "usage.output_tokens").Int())
+	usage.CacheCreateTokens += int(gjson.Get(data, "usage.cache_creation_input_tokens").Int())
+	cacheReadTokens := gjson.Get(data, "usage.cache_read_input_tokens").Int()
+	if cacheReadTokens == 0 {
+		cacheReadTokens = gjson.Get(data, "usage.input_tokens_details.cached_tokens").Int()
+	}
+	usage.CacheReadTokens += int(cacheReadTokens)
+	usage.ReasoningTokens += int(gjson.Get(data, "usage.output_tokens_details.reasoning_tokens").Int())
 }
 
 // codex usage parser

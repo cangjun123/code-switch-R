@@ -97,6 +97,26 @@ func decodeJSON[T any](t *testing.T, recorder *httptest.ResponseRecorder) T {
 	return value
 }
 
+func TestAdminSessionCookieNameIncludesHostAndPort(t *testing.T) {
+	rt := newTestWebRuntime(t)
+
+	req8080 := httptest.NewRequest(http.MethodGet, "http://localhost:8080/api/admin/status", nil)
+	req8081 := httptest.NewRequest(http.MethodGet, "http://localhost:8081/api/admin/status", nil)
+
+	name8080 := adminSessionCookieNameForRequest(req8080, rt.adminSecurity)
+	name8081 := adminSessionCookieNameForRequest(req8081, rt.adminSecurity)
+
+	if name8080 != "code_switch_admin_session_localhost_8080" {
+		t.Fatalf("expected 8080 cookie name to include port, got %q", name8080)
+	}
+	if name8081 != "code_switch_admin_session_localhost_8081" {
+		t.Fatalf("expected 8081 cookie name to include port, got %q", name8081)
+	}
+	if name8080 == name8081 {
+		t.Fatalf("expected distinct cookie names for different ports, got %q", name8080)
+	}
+}
+
 func TestAdminServerProtectsRoutes(t *testing.T) {
 	rt := newTestWebRuntime(t)
 	server := newAdminServer(rt)
@@ -218,6 +238,55 @@ func TestAdminServerInitializeAndManageCodexKeys(t *testing.T) {
 	}
 	if listPayload.Keys[0].ID == firstKey.ID {
 		t.Fatalf("expected deleted key %q to be absent from list", firstKey.ID)
+	}
+}
+
+func TestAdminSessionCookiesAreIsolatedPerHost(t *testing.T) {
+	rt := newTestWebRuntime(t)
+	server := newAdminServer(rt)
+
+	initialize := performRequestWithOptions(t, server.Handler, http.MethodPost, "/api/admin/initialize", map[string]string{
+		"username": "admin",
+		"password": "password123",
+	}, requestOptions{
+		RemoteAddr: "127.0.0.1:12345",
+		Host:       "localhost:8080",
+	})
+	if initialize.Code != http.StatusOK {
+		t.Fatalf("expected initialize on localhost:8080 to return 200, got %d: %s", initialize.Code, initialize.Body.String())
+	}
+
+	cookies := initialize.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("expected initialize response to set an admin session cookie")
+	}
+	adminCookie := cookies[0]
+	if adminCookie.Name != "code_switch_admin_session_localhost_8080" {
+		t.Fatalf("expected host-specific cookie name, got %q", adminCookie.Name)
+	}
+
+	sameHost := performRequestWithOptions(t, server.Handler, http.MethodPost, "/api/wails/call", map[string]any{
+		"name": "codeswitch/services.AppSettingsService.GetAppSettings",
+		"args": []any{},
+	}, requestOptions{
+		Cookies:    []*http.Cookie{adminCookie},
+		RemoteAddr: "127.0.0.1:12345",
+		Host:       "localhost:8080",
+	})
+	if sameHost.Code != http.StatusOK {
+		t.Fatalf("expected host-matched cookie to authenticate, got %d: %s", sameHost.Code, sameHost.Body.String())
+	}
+
+	otherHost := performRequestWithOptions(t, server.Handler, http.MethodPost, "/api/wails/call", map[string]any{
+		"name": "codeswitch/services.AppSettingsService.GetAppSettings",
+		"args": []any{},
+	}, requestOptions{
+		Cookies:    []*http.Cookie{adminCookie},
+		RemoteAddr: "127.0.0.1:12345",
+		Host:       "localhost:8081",
+	})
+	if otherHost.Code != http.StatusUnauthorized {
+		t.Fatalf("expected localhost:8081 to reject localhost:8080 cookie, got %d: %s", otherHost.Code, otherHost.Body.String())
 	}
 }
 

@@ -9,7 +9,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const adminSessionCookieName = "code_switch_admin_session"
+const (
+	legacyAdminSessionCookieName = "code_switch_admin_session"
+	adminSessionCookieNamePrefix = legacyAdminSessionCookieName + "_"
+)
 
 type adminLoginRequest struct {
 	Username string `json:"username"`
@@ -38,7 +41,7 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 
 	router.GET("/api/admin/status", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
-		sessionToken := adminSessionTokenFromRequest(c.Request)
+		sessionToken := adminSessionTokenFromRequest(c.Request, rt.adminSecurity)
 		status, err := rt.adminAuth.GetStatus(sessionToken)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, apiErrorResponse{
@@ -46,7 +49,7 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 			})
 			return
 		}
-		if sessionToken != "" && !status.Authenticated {
+		if adminSessionCookiePresent(c.Request, rt.adminSecurity) && !status.Authenticated {
 			clearAdminSessionCookie(c, rt.adminSecurity)
 		}
 		c.JSON(http.StatusOK, status)
@@ -119,7 +122,7 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 
 	router.POST("/api/admin/logout", originRequired, authRequired, func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
-		if err := rt.adminAuth.Logout(adminSessionTokenFromRequest(c.Request)); err != nil {
+		if err := rt.adminAuth.Logout(adminSessionTokenFromRequest(c.Request, rt.adminSecurity)); err != nil {
 			c.JSON(http.StatusInternalServerError, apiErrorResponse{
 				Error: apiError{Code: "logout_failed", Message: err.Error()},
 			})
@@ -235,7 +238,7 @@ func requireAdminSession(authService *services.AdminAuthService, security *admin
 			return
 		}
 
-		username, ok, err := authService.ValidateSession(adminSessionTokenFromRequest(c.Request))
+		username, ok, err := authService.ValidateSession(adminSessionTokenFromRequest(c.Request, security))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, apiErrorResponse{
 				Error: apiError{Code: "auth_failed", Message: err.Error()},
@@ -257,11 +260,67 @@ func requireAdminSession(authService *services.AdminAuthService, security *admin
 	}
 }
 
-func adminSessionTokenFromRequest(r *http.Request) string {
+func sanitizeCookieNamePart(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(value))
+
+	lastUnderscore := false
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') {
+			builder.WriteByte(ch)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			builder.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+
+	return strings.Trim(builder.String(), "_")
+}
+
+func adminSessionCookieNameForRequest(r *http.Request, security *adminSecurity) string {
+	host := ""
+	if security != nil {
+		host = security.effectiveHost(r)
+	}
+	if host == "" && r != nil {
+		host = strings.TrimSpace(r.Host)
+	}
+
+	suffix := sanitizeCookieNamePart(host)
+	if suffix == "" {
+		return legacyAdminSessionCookieName
+	}
+
+	return adminSessionCookieNamePrefix + suffix
+}
+
+func adminSessionCookiePresent(r *http.Request, security *adminSecurity) bool {
+	if r == nil {
+		return false
+	}
+	if _, err := r.Cookie(adminSessionCookieNameForRequest(r, security)); err == nil {
+		return true
+	}
+	if _, err := r.Cookie(legacyAdminSessionCookieName); err == nil {
+		return true
+	}
+	return false
+}
+
+func adminSessionTokenFromRequest(r *http.Request, security *adminSecurity) string {
 	if r == nil {
 		return ""
 	}
-	cookie, err := r.Cookie(adminSessionCookieName)
+	cookie, err := r.Cookie(adminSessionCookieNameForRequest(r, security))
 	if err != nil {
 		return ""
 	}
@@ -269,8 +328,9 @@ func adminSessionTokenFromRequest(r *http.Request) string {
 }
 
 func setAdminSessionCookie(c *gin.Context, security *adminSecurity, token string) {
+	name := adminSessionCookieNameForRequest(c.Request, security)
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     adminSessionCookieName,
+		Name:     name,
 		Value:    token,
 		Path:     "/",
 		MaxAge:   int(services.AdminSessionTTL / time.Second),
@@ -278,11 +338,25 @@ func setAdminSessionCookie(c *gin.Context, security *adminSecurity, token string
 		Secure:   adminSessionCookieSecure(c.Request, security),
 		SameSite: http.SameSiteStrictMode,
 	})
+	if name != legacyAdminSessionCookieName {
+		clearAdminSessionCookieByName(c, security, legacyAdminSessionCookieName)
+	}
 }
 
 func clearAdminSessionCookie(c *gin.Context, security *adminSecurity) {
+	name := adminSessionCookieNameForRequest(c.Request, security)
+	clearAdminSessionCookieByName(c, security, name)
+	if name != legacyAdminSessionCookieName {
+		clearAdminSessionCookieByName(c, security, legacyAdminSessionCookieName)
+	}
+}
+
+func clearAdminSessionCookieByName(c *gin.Context, security *adminSecurity, name string) {
+	if c == nil || strings.TrimSpace(name) == "" {
+		return
+	}
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     adminSessionCookieName,
+		Name:     name,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,

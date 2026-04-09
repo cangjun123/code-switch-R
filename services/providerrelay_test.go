@@ -129,19 +129,19 @@ func TestModelMappingEndToEnd(t *testing.T) {
 	provider := Provider{
 		Name: "OpenRouter",
 		SupportedModels: map[string]bool{
-			"anthropic/claude-sonnet-4":     true,
-			"anthropic/claude-opus-4":       true,
-			"openai/gpt-4":                  true,
-			"google/gemini-pro":             true,
-			"meta-llama/llama-3.1-405b":     true,
-			"anthropic/claude-3.5-sonnet":   true,
-			"anthropic/claude-3.5-haiku":    true,
+			"anthropic/claude-sonnet-4":   true,
+			"anthropic/claude-opus-4":     true,
+			"openai/gpt-4":                true,
+			"google/gemini-pro":           true,
+			"meta-llama/llama-3.1-405b":   true,
+			"anthropic/claude-3.5-sonnet": true,
+			"anthropic/claude-3.5-haiku":  true,
 		},
 		ModelMapping: map[string]string{
-			"claude-*":                     "anthropic/claude-*",
-			"gpt-*":                        "openai/gpt-*",
-			"gemini-*":                     "google/gemini-*",
-			"llama-*":                      "meta-llama/llama-*",
+			"claude-*": "anthropic/claude-*",
+			"gpt-*":    "openai/gpt-*",
+			"gemini-*": "google/gemini-*",
+			"llama-*":  "meta-llama/llama-*",
 		},
 	}
 
@@ -250,6 +250,66 @@ func TestProviderConfigValidation(t *testing.T) {
 	errors = wildcardProvider.ValidateConfiguration()
 	if len(errors) != 0 {
 		t.Errorf("通配符配置不应有错误，但返回了: %v", errors)
+	}
+}
+
+func TestClaudeCodeParseTokenUsageFromResponse(t *testing.T) {
+	var usage ReqeustLog
+
+	ClaudeCodeParseTokenUsageFromResponse(`{
+		"usage": {
+			"input_tokens": 10,
+			"output_tokens": 6,
+			"cache_creation_input_tokens": 2,
+			"input_tokens_details": {"cached_tokens": 3},
+			"output_tokens_details": {"reasoning_tokens": 4}
+		}
+	}`, &usage)
+
+	if usage.InputTokens != 10 {
+		t.Fatalf("InputTokens = %d, want 10", usage.InputTokens)
+	}
+	if usage.OutputTokens != 6 {
+		t.Fatalf("OutputTokens = %d, want 6", usage.OutputTokens)
+	}
+	if usage.CacheCreateTokens != 2 {
+		t.Fatalf("CacheCreateTokens = %d, want 2", usage.CacheCreateTokens)
+	}
+	if usage.CacheReadTokens != 3 {
+		t.Fatalf("CacheReadTokens = %d, want 3", usage.CacheReadTokens)
+	}
+	if usage.ReasoningTokens != 4 {
+		t.Fatalf("ReasoningTokens = %d, want 4", usage.ReasoningTokens)
+	}
+}
+
+func TestDeleteHeaderCaseInsensitive(t *testing.T) {
+	headers := map[string]string{
+		"Authorization":     "Bearer upstream-key",
+		"X-Api-Key":         "code-switch-r",
+		"Anthropic-Version": "2023-06-01",
+		"anthropic-beta":    "tools-2024-04-04",
+		"Content-Type":      "application/json",
+	}
+
+	deleteHeaderCaseInsensitive(headers, "x-api-key")
+	deleteHeaderCaseInsensitive(headers, "anthropic-version")
+	deleteHeaderCaseInsensitive(headers, "anthropic-beta")
+
+	if _, ok := headers["X-Api-Key"]; ok {
+		t.Fatalf("expected X-Api-Key to be removed")
+	}
+	if _, ok := headers["Anthropic-Version"]; ok {
+		t.Fatalf("expected Anthropic-Version to be removed")
+	}
+	if _, ok := headers["anthropic-beta"]; ok {
+		t.Fatalf("expected anthropic-beta to be removed")
+	}
+	if headers["Authorization"] != "Bearer upstream-key" {
+		t.Fatalf("expected Authorization to be preserved")
+	}
+	if headers["Content-Type"] != "application/json" {
+		t.Fatalf("expected Content-Type to be preserved")
 	}
 }
 

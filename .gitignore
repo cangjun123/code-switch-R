@@ -5,3 +5,11 @@ frontend/dist
 bin
 CLAUDE.md
 .ace-tool/
+reference/
+codeswitch-web
+/.claude/worktrees/
+/.test/
+/build.sh
+/*.exe
+/*.out
+/*.test

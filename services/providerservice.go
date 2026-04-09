@@ -66,9 +66,15 @@ type Provider struct {
 
 	// 上游协议类型 - anthropic / openai_chat / auto
 	// anthropic: 上游使用 Anthropic Messages API（默认）
-	// openai_chat: 上游使用 OpenAI Chat Completions API，自动转换请求/响应格式
-	// auto: 根据 APIEndpoint 自动检测（包含 /chat/completions 则为 openai_chat）
+	// openai_chat: 上游使用 OpenAI Compatible API（/responses 或 /chat/completions），自动转换请求/响应格式
+	// auto: 根据 APIEndpoint 自动检测（包含 /responses 或 /chat/completions 则为 openai_chat）
 	UpstreamProtocol string `json:"upstreamProtocol,omitempty"`
+
+	// Claude WebSearch 兼容开关
+	// 仅用于 Claude -> OpenAI Responses 协议适配。
+	// 为 true 时，允许把 Claude hosted web_search 工具映射为 Responses API 的 web_search_preview。
+	// 默认 false，避免对不支持该工具类型的 OpenAI-compatible 中转盲目透传并触发上游 400。
+	SupportsWebSearch bool `json:"supportsWebSearch,omitempty"`
 
 	// ========== 旧字段（已废弃，仅用于读取迁移） ==========
 	// 这些字段在保存时不再写入，但读取时会自动迁移到新字段
@@ -396,19 +402,20 @@ func (ps *ProviderService) DuplicateProvider(kind string, sourceID int64) (*Prov
 
 	// 5. 克隆配置（深拷贝）
 	cloned := &Provider{
-		ID:      newID,
-		Name:    source.Name + " (副本)",
-		APIURL:  source.APIURL,
-		APIKey:  source.APIKey,
-		Site:    source.Site,
-		Icon:    source.Icon,
-		Tint:    source.Tint,
-		Accent:  source.Accent,
-		Enabled: false, // 默认禁用，避免与源供应商冲突
-		Level:   source.Level,
+		ID:                   newID,
+		Name:                 source.Name + " (副本)",
+		APIURL:               source.APIURL,
+		APIKey:               source.APIKey,
+		Site:                 source.Site,
+		Icon:                 source.Icon,
+		Tint:                 source.Tint,
+		Accent:               source.Accent,
+		Enabled:              false, // 默认禁用，避免与源供应商冲突
+		Level:                source.Level,
 		APIEndpoint:          source.APIEndpoint,          // 复制端点配置
-		UpstreamProtocol:      source.UpstreamProtocol,      // 复制上游协议配置
-		ConnectivityAuthType:  source.ConnectivityAuthType,  // 复制认证方式
+		UpstreamProtocol:     source.UpstreamProtocol,     // 复制上游协议配置
+		SupportsWebSearch:    source.SupportsWebSearch,    // 复制 WebSearch 兼容开关
+		ConnectivityAuthType: source.ConnectivityAuthType, // 复制认证方式
 		// 可用性监控配置
 		AvailabilityMonitorEnabled: source.AvailabilityMonitorEnabled,
 		ConnectivityAutoBlacklist:  false, // 副本默认关闭自动拉黑
@@ -449,7 +456,7 @@ func (ps *ProviderService) DuplicateProvider(kind string, sourceID int64) (*Prov
 
 // IsModelSupported 检查 provider 是否支持指定的模型
 // 支持条件：1) 模型在 SupportedModels 中（精确或通配符匹配）
-//          2) 模型在 ModelMapping 的 key 中（精确或通配符匹配）
+//  2. 模型在 ModelMapping 的 key 中（精确或通配符匹配）
 func (p *Provider) IsModelSupported(modelName string) bool {
 	// 向后兼容：如果未配置白名单和映射，假设支持所有模型
 	if (p.SupportedModels == nil || len(p.SupportedModels) == 0) &&
@@ -540,7 +547,7 @@ type UpstreamProtocolType string
 const (
 	// UpstreamProtocolAnthropic Anthropic Messages API（默认）
 	UpstreamProtocolAnthropic UpstreamProtocolType = "anthropic"
-	// UpstreamProtocolOpenAIChat OpenAI Chat Completions API
+	// UpstreamProtocolOpenAIChat OpenAI Compatible API（/responses 或 /chat/completions）
 	UpstreamProtocolOpenAIChat UpstreamProtocolType = "openai_chat"
 	// UpstreamProtocolAuto 自动检测
 	UpstreamProtocolAuto UpstreamProtocolType = "auto"
@@ -564,8 +571,8 @@ func (p *Provider) GetUpstreamProtocol() UpstreamProtocolType {
 // 用于 auto 模式的启发式判断
 func DetectUpstreamProtocol(endpoint string) UpstreamProtocolType {
 	ep := strings.ToLower(endpoint)
-	// 检测 OpenAI Chat Completions 端点
-	if strings.Contains(ep, "/chat/completions") {
+	// 检测 OpenAI Compatible 端点
+	if strings.Contains(ep, "/chat/completions") || strings.Contains(ep, "/responses") {
 		return UpstreamProtocolOpenAIChat
 	}
 	// 默认 Anthropic
@@ -652,7 +659,8 @@ func matchWildcard(pattern, text string) bool {
 // applyWildcardMapping 应用通配符映射
 // 将 pattern 中的 * 匹配部分替换到 replacement 的 * 位置
 // 示例: pattern="claude-*", replacement="anthropic/claude-*", input="claude-sonnet-4"
-//      输出: "anthropic/claude-sonnet-4"
+//
+//	输出: "anthropic/claude-sonnet-4"
 func applyWildcardMapping(pattern, replacement, input string) string {
 	// 如果 pattern 或 replacement 没有通配符，直接返回 replacement
 	if !strings.Contains(pattern, "*") || !strings.Contains(replacement, "*") {

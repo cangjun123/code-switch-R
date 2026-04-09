@@ -118,18 +118,10 @@ func ConvertAnthropicToOpenAI(body []byte, opts ConvertOptions) ([]byte, Convert
 		}
 	}
 
-	// metadata.user_id → user
-	if userId := parsed.Get("metadata.user_id"); userId.Exists() && userId.String() != "" {
-		openAIReq["user"] = userId.String()
-		info.MappedUser = userId.String()
-	}
-
 	// 记录被丢弃的 metadata 键
 	if metadata := parsed.Get("metadata"); metadata.Exists() && metadata.IsObject() {
 		metadata.ForEach(func(key, value gjson.Result) bool {
-			if key.String() != "user_id" {
-				info.DroppedMetadataKeys = append(info.DroppedMetadataKeys, key.String())
-			}
+			info.DroppedMetadataKeys = append(info.DroppedMetadataKeys, key.String())
 			return true
 		})
 	}

@@ -14,6 +14,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -66,16 +67,16 @@ type HealthCheckHistory struct {
 
 // ProviderTimeline Provider 时间线（用于前端展示）
 type ProviderTimeline struct {
-	ProviderID                 int64                `json:"providerId"`
-	ProviderName               string               `json:"providerName"`
-	Platform                   string               `json:"platform"`
-	AvailabilityMonitorEnabled bool                 `json:"availabilityMonitorEnabled"`
-	ConnectivityAutoBlacklist  bool                 `json:"connectivityAutoBlacklist"`
-	AvailabilityConfig         *AvailabilityConfig  `json:"availabilityConfig,omitempty"` // 高级配置
-	Items                      []HealthCheckResult  `json:"items"`                        // 历史记录
-	Latest                     *HealthCheckResult   `json:"latest"`                       // 最新一条
-	Uptime                     float64              `json:"uptime"`                       // 可用率
-	AvgLatencyMs               int                  `json:"avgLatencyMs"`                 // 平均延迟
+	ProviderID                 int64               `json:"providerId"`
+	ProviderName               string              `json:"providerName"`
+	Platform                   string              `json:"platform"`
+	AvailabilityMonitorEnabled bool                `json:"availabilityMonitorEnabled"`
+	ConnectivityAutoBlacklist  bool                `json:"connectivityAutoBlacklist"`
+	AvailabilityConfig         *AvailabilityConfig `json:"availabilityConfig,omitempty"` // 高级配置
+	Items                      []HealthCheckResult `json:"items"`                        // 历史记录
+	Latest                     *HealthCheckResult  `json:"latest"`                       // 最新一条
+	Uptime                     float64             `json:"uptime"`                       // 可用率
+	AvgLatencyMs               int                 `json:"avgLatencyMs"`                 // 平均延迟
 }
 
 // AvailabilityFailureCounter 可用性失败计数器（独立于真实请求）
@@ -93,7 +94,7 @@ type HealthCheckService struct {
 	settingsService  *SettingsService
 
 	mu            sync.RWMutex
-	failCounters  map[string]*AvailabilityFailureCounter // key: platform:providerName
+	failCounters  map[string]*AvailabilityFailureCounter  // key: platform:providerName
 	latestResults map[string]map[int64]*HealthCheckResult // platform -> providerID -> result
 
 	// 后台轮询
@@ -529,13 +530,14 @@ func (hcs *HealthCheckService) checkProvider(ctx context.Context, provider Provi
 	// 获取有效的测试参数
 	model := hcs.getEffectiveModel(&provider, platform)
 	endpoint := hcs.getEffectiveEndpoint(&provider, platform)
+	upstreamProtocol := provider.ResolveUpstreamProtocol(endpoint)
 	timeout := hcs.getEffectiveTimeout(&provider)
 
 	result.Model = model
 	result.Endpoint = endpoint
 
 	// 构建请求体
-	reqBody := hcs.buildTestRequest(platform, model)
+	reqBody := hcs.buildTestRequest(platform, endpoint, model)
 	if reqBody == nil {
 		result.ErrorMessage = "无法构建测试请求"
 		return result
@@ -562,17 +564,14 @@ func (hcs *HealthCheckService) checkProvider(ctx context.Context, provider Provi
 		authTypeRaw := strings.TrimSpace(provider.ConnectivityAuthType)
 		authType := strings.ToLower(authTypeRaw)
 		if authType == "" {
-			// 空值时使用平台默认（claude: x-api-key, codex: bearer）
-			if strings.ToLower(platform) == "claude" {
-				authType = "x-api-key"
-			} else {
-				authType = "bearer"
-			}
+			authType = "bearer"
 		}
 		switch authType {
 		case "x-api-key":
 			req.Header.Set("x-api-key", provider.APIKey)
-			req.Header.Set("anthropic-version", "2023-06-01")
+			if upstreamProtocol == UpstreamProtocolAnthropic {
+				req.Header.Set("anthropic-version", "2023-06-01")
+			}
 		case "bearer":
 			req.Header.Set("Authorization", "Bearer "+provider.APIKey)
 		default:
@@ -675,6 +674,15 @@ func (hcs *HealthCheckService) getEffectiveModel(provider *Provider, platform st
 	// 平台默认模型
 	switch strings.ToLower(platform) {
 	case "claude":
+		if provider.GetUpstreamProtocol() == UpstreamProtocolOpenAIChat {
+			if mapped := provider.GetEffectiveModel("claude-haiku-4-5-20251001"); mapped != "" && mapped != "claude-haiku-4-5-20251001" {
+				return mapped
+			}
+			if fallback := firstHealthcheckProviderModel(provider); fallback != "" {
+				return fallback
+			}
+			return "gpt-4.1-mini"
+		}
 		return "claude-haiku-4-5-20251001"
 	case "codex":
 		return "gpt-4o-mini"
@@ -689,6 +697,12 @@ func (hcs *HealthCheckService) getEffectiveModel(provider *Provider, platform st
 func (hcs *HealthCheckService) getEffectiveEndpoint(provider *Provider, platform string) string {
 	// 优先级 1：用户配置的健康检查专用端点
 	if provider.AvailabilityConfig != nil && provider.AvailabilityConfig.TestEndpoint != "" {
+		if strings.ToLower(platform) == "claude" &&
+			provider.GetUpstreamProtocol() == UpstreamProtocolOpenAIChat &&
+			strings.EqualFold(provider.AvailabilityConfig.TestEndpoint, "/v1/messages") &&
+			strings.TrimSpace(provider.APIEndpoint) == "" {
+			return "/v1/responses"
+		}
 		return provider.AvailabilityConfig.TestEndpoint
 	}
 
@@ -700,6 +714,9 @@ func (hcs *HealthCheckService) getEffectiveEndpoint(provider *Provider, platform
 	// 优先级 3：平台默认端点
 	switch strings.ToLower(platform) {
 	case "claude":
+		if provider.GetUpstreamProtocol() == UpstreamProtocolOpenAIChat {
+			return "/v1/responses"
+		}
 		return "/v1/messages"
 	case "codex":
 		return "/responses"
@@ -718,14 +735,33 @@ func (hcs *HealthCheckService) getEffectiveTimeout(provider *Provider) int {
 }
 
 // buildTestRequest 构建测试请求体
-func (hcs *HealthCheckService) buildTestRequest(platform, model string) []byte {
+func (hcs *HealthCheckService) buildTestRequest(platform, endpoint, model string) []byte {
+	endpoint = strings.ToLower(endpoint)
+
 	// Anthropic 格式
-	if platform == "claude" {
+	if platform == "claude" && strings.Contains(endpoint, "/messages") {
 		reqBody := map[string]interface{}{
 			"model":      model,
 			"max_tokens": 1,
 			"messages": []map[string]string{
 				{"role": "user", "content": "hi"},
+			},
+		}
+		data, _ := json.Marshal(reqBody)
+		return data
+	}
+
+	if strings.Contains(endpoint, "/responses") {
+		reqBody := map[string]interface{}{
+			"model":             model,
+			"max_output_tokens": 1,
+			"input": []map[string]interface{}{
+				{
+					"role": "user",
+					"content": []map[string]string{
+						{"type": "input_text", "text": "hi"},
+					},
+				},
 			},
 		}
 		data, _ := json.Marshal(reqBody)
@@ -742,6 +778,21 @@ func (hcs *HealthCheckService) buildTestRequest(platform, model string) []byte {
 	}
 	data, _ := json.Marshal(reqBody)
 	return data
+}
+
+func firstHealthcheckProviderModel(provider *Provider) string {
+	candidates := make([]string, 0, len(provider.SupportedModels)+len(provider.ModelMapping))
+	for model := range provider.SupportedModels {
+		candidates = append(candidates, model)
+	}
+	for _, model := range provider.ModelMapping {
+		candidates = append(candidates, model)
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	sort.Strings(candidates)
+	return candidates[0]
 }
 
 // saveResult 保存检测结果到数据库

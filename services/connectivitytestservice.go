@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -114,6 +115,7 @@ func (cts *ConnectivityTestService) TestProvider(ctx context.Context, provider P
 
 	// 根据用户配置的端点拼接目标 URL
 	targetURL := cts.buildTargetURL(&provider, platform)
+	upstreamProtocol := provider.ResolveUpstreamProtocol(cts.getEffectiveEndpoint(&provider, platform))
 	authType := cts.getEffectiveAuthType(&provider, platform)
 
 	// 调试日志：打印最终请求信息
@@ -138,7 +140,9 @@ func (cts *ConnectivityTestService) TestProvider(ctx context.Context, provider P
 		switch authTypeLower {
 		case "x-api-key":
 			req.Header.Set("x-api-key", provider.APIKey)
-			req.Header.Set("anthropic-version", "2023-06-01")
+			if upstreamProtocol == UpstreamProtocolAnthropic {
+				req.Header.Set("anthropic-version", "2023-06-01")
+			}
 		case "bearer":
 			req.Header.Set("Authorization", "Bearer "+provider.APIKey)
 		default:
@@ -202,11 +206,24 @@ func (cts *ConnectivityTestService) TestProvider(ctx context.Context, provider P
 func (cts *ConnectivityTestService) getEffectiveEndpoint(provider *Provider, platform string) string {
 	endpoint := strings.TrimSpace(provider.ConnectivityTestEndpoint)
 	if endpoint != "" {
+		if strings.ToLower(platform) == "claude" &&
+			provider.GetUpstreamProtocol() == UpstreamProtocolOpenAIChat &&
+			strings.EqualFold(endpoint, "/v1/messages") &&
+			strings.TrimSpace(provider.APIEndpoint) == "" {
+			return "/v1/responses"
+		}
 		return endpoint
+	}
+
+	if strings.TrimSpace(provider.APIEndpoint) != "" {
+		return provider.GetEffectiveEndpoint("")
 	}
 	// 平台默认端点
 	switch strings.ToLower(platform) {
 	case "claude":
+		if provider.GetUpstreamProtocol() == UpstreamProtocolOpenAIChat {
+			return "/v1/responses"
+		}
 		return "/v1/messages"
 	case "codex":
 		return "/responses"
@@ -222,23 +239,15 @@ func (cts *ConnectivityTestService) getEffectiveAuthType(provider *Provider, pla
 	if authType != "" {
 		return authType
 	}
-	// 平台默认认证方式
-	if strings.ToLower(platform) == "claude" {
-		return "x-api-key"
-	}
+	// 平台默认认证方式：统一使用 Bearer，与实际 relay 行为一致
 	return "bearer"
 }
 
 // buildTestRequest 根据端点构建测试请求体
 func (cts *ConnectivityTestService) buildTestRequest(platform string, provider *Provider) ([]byte, string) {
-	model := strings.TrimSpace(provider.ConnectivityTestModel)
+	model := cts.getEffectiveModel(provider, platform)
 	if model == "" {
-		// 仅 Claude 平台提供默认模型，其他平台需用户自行配置
-		if strings.ToLower(platform) == "claude" {
-			model = "claude-haiku-4-5-20251001"
-		} else {
-			return nil, ""
-		}
+		return nil, ""
 	}
 
 	// 获取有效端点（含平台默认值）
@@ -260,14 +269,19 @@ func (cts *ConnectivityTestService) buildTestRequest(platform string, provider *
 	// Codex 格式: /responses
 	if strings.Contains(endpoint, "/responses") {
 		reqBody := map[string]interface{}{
-			"model":      model,
-			"max_tokens": 1,
-			"messages": []map[string]string{
-				{"role": "user", "content": "hi"},
+			"model":             model,
+			"max_output_tokens": 1,
+			"input": []map[string]interface{}{
+				{
+					"role": "user",
+					"content": []map[string]string{
+						{"type": "input_text", "text": "hi"},
+					},
+				},
 			},
 		}
 		data, _ := json.Marshal(reqBody)
-		return data, "choices"
+		return data, "output"
 	}
 
 	// 默认 OpenAI 格式: /v1/chat/completions
@@ -355,6 +369,44 @@ func (cts *ConnectivityTestService) buildTargetURL(provider *Provider, platform 
 		endpoint = "/" + endpoint
 	}
 	return baseURL + endpoint
+}
+
+func (cts *ConnectivityTestService) getEffectiveModel(provider *Provider, platform string) string {
+	model := strings.TrimSpace(provider.ConnectivityTestModel)
+	if model != "" {
+		return model
+	}
+
+	switch strings.ToLower(platform) {
+	case "claude":
+		if provider.GetUpstreamProtocol() == UpstreamProtocolOpenAIChat {
+			if mapped := provider.GetEffectiveModel("claude-haiku-4-5-20251001"); mapped != "" && mapped != "claude-haiku-4-5-20251001" {
+				return mapped
+			}
+			if fallback := firstConfiguredProviderModel(provider); fallback != "" {
+				return fallback
+			}
+			return "gpt-4.1-mini"
+		}
+		return "claude-haiku-4-5-20251001"
+	default:
+		return ""
+	}
+}
+
+func firstConfiguredProviderModel(provider *Provider) string {
+	candidates := make([]string, 0, len(provider.SupportedModels)+len(provider.ModelMapping))
+	for model := range provider.SupportedModels {
+		candidates = append(candidates, model)
+	}
+	for _, model := range provider.ModelMapping {
+		candidates = append(candidates, model)
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	sort.Strings(candidates)
+	return candidates[0]
 }
 
 // isTimeoutError 检测错误是否为超时类型

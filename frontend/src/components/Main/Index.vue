@@ -2343,7 +2343,10 @@ const testingConnectivity = ref(false)
 const connectivityTestResult = ref<{ success: boolean; message: string } | null>(null)
 
 // 获取平台默认端点
-const getDefaultEndpoint = (platform: string) => {
+const getDefaultEndpoint = (platform: string, upstreamProtocol = 'auto') => {
+  if (platform === 'claude' && upstreamProtocol === 'openai_chat') {
+    return '/v1/responses'
+  }
   const defaults: Record<string, string> = {
     claude: '/v1/messages',
     codex: '/responses',
@@ -2367,7 +2370,7 @@ const handleTestConnectivity = async () => {
       modalState.form.apiUrl,
       modalState.form.apiKey,
       modalState.form.connectivityTestModel || '',
-      modalState.form.connectivityTestEndpoint || getDefaultEndpoint(platform),
+      modalState.form.connectivityTestEndpoint || getDefaultEndpoint(platform, modalState.form.upstreamProtocol || 'auto'),
       resolveEffectiveAuthType()
     )
 
@@ -2443,6 +2446,24 @@ const getGithubTooltip = () => {
   return t('components.main.controls.github')
 }
 
+const syncDefaultTestEndpoint = (
+  platform: string,
+  nextProtocol: string,
+  previousPlatform: string,
+  prevProtocol: string
+) => {
+  const availabilityConfig = modalState.form.availabilityConfig
+  if (!availabilityConfig) return
+
+  const previousDefault = getDefaultEndpoint(previousPlatform, prevProtocol || 'auto')
+  const nextDefault = getDefaultEndpoint(platform, nextProtocol || 'auto')
+  const currentValue = availabilityConfig.testEndpoint || ''
+
+  if (!currentValue || currentValue === previousDefault) {
+    availabilityConfig.testEndpoint = nextDefault
+  }
+}
+
 type VendorForm = {
   name: string
   apiUrl: string
@@ -2505,7 +2526,7 @@ const defaultFormValues = (platform?: string): VendorForm => ({
   connectivityAutoBlacklist: false,
   availabilityConfig: {
     testModel: '',
-    testEndpoint: getDefaultEndpoint(platform || 'claude'),
+    testEndpoint: getDefaultEndpoint(platform || 'claude', 'auto'),
     timeout: 15000,
   },
   // 旧连通性字段（已废弃，置空）
@@ -2624,7 +2645,7 @@ const openEditModal = (card: AutomationCard) => {
       testEndpoint:
         card.availabilityConfig?.testEndpoint ||
         card.connectivityTestEndpoint ||
-        getDefaultEndpoint(activeTab.value),
+        getDefaultEndpoint(activeTab.value, card.upstreamProtocol || 'auto'),
       timeout: card.availabilityConfig?.timeout || 15000,
     },
     // 旧连通性字段不再写入表单
@@ -2651,6 +2672,16 @@ const openEditModal = (card: AutomationCard) => {
   modalState.errors.apiUrl = ''
   modalState.open = true
 }
+
+watch(
+  () => [modalState.open, modalState.tabId, modalState.form.upstreamProtocol] as const,
+  ([open, platform, nextProtocol], [prevOpen, prevPlatform, prevProtocol]) => {
+    if (!open) return
+    const previousPlatform = prevOpen ? prevPlatform : platform
+    const previousProtocol = prevOpen ? (prevProtocol || 'auto') : (nextProtocol || 'auto')
+    syncDefaultTestEndpoint(platform, nextProtocol || 'auto', previousPlatform, previousProtocol)
+  }
+)
 
 const closeModal = () => {
   modalState.open = false
@@ -2701,7 +2732,7 @@ const submitModal = async (): Promise<boolean> => {
         testModel: modalState.form.availabilityConfig?.testModel || '',
         testEndpoint:
           modalState.form.availabilityConfig?.testEndpoint ||
-          getDefaultEndpoint(modalState.tabId),
+          getDefaultEndpoint(modalState.tabId, modalState.form.upstreamProtocol || 'auto'),
         timeout: modalState.form.availabilityConfig?.timeout || 15000,
       },
       // 旧连通性字段清空（避免再次写入）
@@ -2742,7 +2773,7 @@ const submitModal = async (): Promise<boolean> => {
         testModel: modalState.form.availabilityConfig?.testModel || '',
         testEndpoint:
           modalState.form.availabilityConfig?.testEndpoint ||
-          getDefaultEndpoint(modalState.tabId),
+          getDefaultEndpoint(modalState.tabId, modalState.form.upstreamProtocol || 'auto'),
         timeout: modalState.form.availabilityConfig?.timeout || 15000,
       },
       // 旧连通性字段清空
