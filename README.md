@@ -96,7 +96,6 @@ go build -o codeswitch-web .
 
 ```bash
 cd /home/chh/gitprojects/code-switch-R
-export BOCHA_API_KEY='your-bocha-api-key'
 ./codeswitch-web
 ```
 
@@ -110,18 +109,13 @@ provider relay listening on http://0.0.0.0:18100
 
 如果管理员账号已经初始化过，就不会再输出 `admin setup token`。
 
-如果你要启用 Claude WebSearch 的本地 fallback，启动前还需要配置：
-
-```bash
-export BOCHA_API_KEY='your-bocha-api-key'
-```
+Claude WebSearch 的本地 fallback 现在固定使用 `cn.bing.com` 的“国际版模式”。
 
 说明：
 
-- `BOCHA_API_KEY` 用于调用博查 `Web Search API`
-- 只影响 Claude WebSearch fallback，不影响普通对话转发
-- 兼容别名环境变量 `BOCHA_SEARCH_API_KEY`
-- 如需改博查接口地址，可额外设置 `BOCHA_WEB_SEARCH_URL`
+- 本地 fallback 会默认过滤一部分低质量站点结果，例如 `csdn.net`、`cnblogs.com`
+- 请求会固定带 `ensearch=1`，并直接访问 `cn.bing.com`
+- 这些行为只影响 Claude WebSearch fallback，不影响普通对话转发
 
 ### 5. 验证服务
 
@@ -166,7 +160,6 @@ User=chh
 WorkingDirectory=/home/chh/gitprojects/code-switch-R
 Environment=CODE_SWITCH_WEB_ADDR=127.0.0.1:8080
 Environment=CODE_SWITCH_SETUP_TOKEN=replace-with-a-long-random-token
-Environment=BOCHA_API_KEY=replace-with-your-bocha-api-key
 ExecStart=/home/chh/gitprojects/code-switch-R/codeswitch-web
 Restart=on-failure
 RestartSec=3
@@ -236,13 +229,7 @@ export CODE_SWITCH_SETUP_TOKEN='change-this-to-a-long-random-token'
 
 如果不设置，程序会在“管理员尚未初始化”时自动生成一次并打印到启动日志。
 
-如果你要启用 Claude WebSearch 的本地 fallback，再补一个博查搜索 API Key：
-
-```bash
-export BOCHA_API_KEY='your-bocha-api-key'
-```
-
-`BOCHA_SEARCH_API_KEY` 也可以作为兼容别名使用。
+Claude WebSearch 的本地 fallback 固定使用 Bing 国际站。
 
 如果你的 HTTPS 反代不在同一台机器上，或者是 Docker / 容器网段转发，需要把代理地址加入受信列表，例如：
 
