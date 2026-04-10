@@ -512,19 +512,8 @@ func translateAnthropicThinkingToResponses(thinkingValue interface{}) map[string
 		return nil
 	}
 
-	budget := asInt64(thinking["budget_tokens"])
-	effort := "minimal"
-	switch {
-	case budget >= 10000:
-		effort = "high"
-	case budget >= 5000:
-		effort = "medium"
-	case budget >= 2000:
-		effort = "low"
-	}
-
 	reasoning := map[string]interface{}{
-		"effort":  effort,
+		"effort":  "xhigh",
 		"summary": "detailed",
 	}
 	if summary := asString(thinking["summary"]); summary != "" {

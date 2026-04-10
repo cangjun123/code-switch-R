@@ -75,8 +75,8 @@ func TestConvertAnthropicToOpenAIResponses(t *testing.T) {
 	if got := result.Get("tool_choice.type").String(); got != "required" {
 		t.Fatalf("tool_choice.type = %q, want required", got)
 	}
-	if got := result.Get("reasoning.effort").String(); got != "medium" {
-		t.Fatalf("reasoning.effort = %q, want medium", got)
+	if got := result.Get("reasoning.effort").String(); got != "xhigh" {
+		t.Fatalf("reasoning.effort = %q, want xhigh", got)
 	}
 	if got := result.Get("text.format.type").String(); got != "json_schema" {
 		t.Fatalf("text.format.type = %q, want json_schema", got)

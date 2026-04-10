@@ -408,6 +408,26 @@ curl http://127.0.0.1:18100/v1/models \
 3. 按需配置模型支持和模型映射
 4. 保存
 
+如果你要把一个 OpenAI 风格的中转站，作为 Claude 的供应商来用 GPT-5.4，可以直接这样填：
+
+1. 进入 `Claude Code` 这一栏
+2. 点击右上角 `+`
+3. 填写基础信息：
+   - `名称`：例如 `my-gpt54-for-claude`
+   - `API URL`：填供应商的 base URL，例如 `https://api.example.com`
+   - `API Key`：填你的 `sk-...`
+4. 关键兼容项这样配：
+   - `上游协议类型`：选 `OpenAI Compatible`
+   - `API Endpoint`：填 `/v1/responses`
+   - `模型映射`：至少加一条 `claude-*` -> `gpt-5.4`
+5. 保存后，在 Claude 代理里选择或启用这个供应商即可
+
+补充说明：
+
+- `API URL` 填 base URL，不要把 `/v1/responses` 直接拼进去；路径放到 `API Endpoint`
+- 如果你只想把某个 Claude 模型映射到 GPT-5.4，也可以写成精确映射，例如 `claude-sonnet-4-6` -> `gpt-5.4`
+- Claude 开启 `thinking` 后，当前网关会把它默认映射成 OpenAI Responses 的 `reasoning.effort = xhigh`
+
 推荐至少配置两个供应商，这样自动降级才有意义。
 
 ### 5. 在网页里打开对应 CLI 的代理
