@@ -782,8 +782,12 @@ func (prs *ProviderRelayService) forwardRequest(
 		return false, NewClientRequestRejectedError("当前 OpenAI Compatible Claude 供应商暂不支持 /v1/messages/count_tokens")
 	}
 
+	// Codex 客户端本身就是 OpenAI Responses 协议，请求体和响应体都应直接透传。
+	// 只有 Claude / 自定义 CLI 的 Anthropic Messages 入口才需要做协议转换。
+	shouldConvertOpenAICompatiblePayload := kind != "codex"
+
 	// 如果上游是 OpenAI Compatible，需要转换请求体
-	if upstreamProtocol == UpstreamProtocolOpenAIChat {
+	if upstreamProtocol == UpstreamProtocolOpenAIChat && shouldConvertOpenAICompatiblePayload {
 		fmt.Printf("[协议转换] Provider %s 使用 OpenAI Compatible 协议\n", provider.Name)
 
 		var (

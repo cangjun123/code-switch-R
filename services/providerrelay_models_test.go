@@ -2,6 +2,7 @@ package services
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -308,6 +309,13 @@ func TestCodexResponsesRequireManagedKey(t *testing.T) {
 		if got := r.Header.Get(codexRelayKeyHeader); got != "" {
 			t.Errorf("relay key 不应继续转发到上游，收到 %q", got)
 		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("读取上游请求体失败: %v", err)
+		}
+		if string(body) != `{"model":"gpt-5-codex","input":"hello"}` {
+			t.Errorf("Codex 请求体应原样透传，收到 %s", string(body))
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -318,12 +326,13 @@ func TestCodexResponsesRequireManagedKey(t *testing.T) {
 	providerService, relayService := newTestRelayService(t)
 	err := providerService.SaveProviders("codex", []Provider{
 		{
-			ID:      1,
-			Name:    "CodexProvider",
-			APIURL:  upstreamServer.URL,
-			APIKey:  "provider-api-key",
-			Enabled: true,
-			Level:   1,
+			ID:               1,
+			Name:             "CodexProvider",
+			APIURL:           upstreamServer.URL,
+			APIKey:           "provider-api-key",
+			Enabled:          true,
+			Level:            1,
+			UpstreamProtocol: "auto",
 		},
 	})
 	if err != nil {
