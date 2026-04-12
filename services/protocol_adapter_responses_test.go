@@ -137,6 +137,69 @@ func TestConvertAnthropicToOpenAIResponsesDropsUnsupportedContextManagementEdits
 	}
 }
 
+func TestConvertAnthropicToOpenAIResponsesMapsExplicitEffort(t *testing.T) {
+	tests := []struct {
+		name       string
+		effortJSON string
+		want       string
+	}{
+		{name: "low", effortJSON: `"low"`, want: "low"},
+		{name: "medium", effortJSON: `"medium"`, want: "medium"},
+		{name: "high", effortJSON: `"high"`, want: "high"},
+		{name: "max", effortJSON: `"max"`, want: "xhigh"},
+		{name: "numeric", effortJSON: `120`, want: "xhigh"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{
+				"model": "gpt-5.4",
+				"messages": [
+					{"role":"user","content":[{"type":"text","text":"hello"}]}
+				],
+				"output_config": {"effort": ` + tt.effortJSON + `}
+			}`)
+
+			converted, _, err := ConvertAnthropicToOpenAIResponses(body)
+			if err != nil {
+				t.Fatalf("ConvertAnthropicToOpenAIResponses returned error: %v", err)
+			}
+
+			result := gjson.ParseBytes(converted)
+			if got := result.Get("reasoning.effort").String(); got != tt.want {
+				t.Fatalf("reasoning.effort = %q, want %q", got, tt.want)
+			}
+			if result.Get("reasoning.summary").Exists() {
+				t.Fatalf("reasoning.summary should not be set without thinking, got %q", result.Get("reasoning.summary").String())
+			}
+		})
+	}
+}
+
+func TestConvertAnthropicToOpenAIResponsesExplicitEffortOverridesThinkingDefault(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"messages": [
+			{"role":"user","content":[{"type":"text","text":"hello"}]}
+		],
+		"thinking": {"type":"enabled","summary":"auto"},
+		"output_config": {"effort": "medium"}
+	}`)
+
+	converted, _, err := ConvertAnthropicToOpenAIResponses(body)
+	if err != nil {
+		t.Fatalf("ConvertAnthropicToOpenAIResponses returned error: %v", err)
+	}
+
+	result := gjson.ParseBytes(converted)
+	if got := result.Get("reasoning.effort").String(); got != "medium" {
+		t.Fatalf("reasoning.effort = %q, want medium", got)
+	}
+	if got := result.Get("reasoning.summary").String(); got != "auto" {
+		t.Fatalf("reasoning.summary = %q, want auto", got)
+	}
+}
+
 func TestConvertAnthropicToOpenAIResponsesRejectsWebSearchByDefault(t *testing.T) {
 	body := []byte(`{
 		"model": "gpt-5.4",

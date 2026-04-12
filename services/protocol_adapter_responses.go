@@ -80,7 +80,7 @@ func ConvertAnthropicToOpenAIResponses(body []byte, opts ...ResponsesConvertOpti
 		responsesReq["tool_choice"] = toolChoice
 	}
 
-	if reasoning := translateAnthropicThinkingToResponses(req["thinking"]); reasoning != nil {
+	if reasoning := translateAnthropicReasoningToResponses(req); reasoning != nil {
 		responsesReq["reasoning"] = reasoning
 	}
 
@@ -506,21 +506,79 @@ func translateAnthropicToolChoiceToResponses(toolChoiceValue interface{}) (map[s
 	}
 }
 
-func translateAnthropicThinkingToResponses(thinkingValue interface{}) map[string]interface{} {
-	thinking, ok := thinkingValue.(map[string]interface{})
-	if !ok || asString(thinking["type"]) != "enabled" {
+func translateAnthropicReasoningToResponses(req map[string]interface{}) map[string]interface{} {
+	reasoning := map[string]interface{}{}
+
+	if effort := translateAnthropicEffortToResponses(getNestedMapValue(req, "output_config", "effort")); effort != "" {
+		reasoning["effort"] = effort
+	}
+
+	thinking, ok := req["thinking"].(map[string]interface{})
+	if ok && asString(thinking["type"]) == "enabled" {
+		if _, exists := reasoning["effort"]; !exists {
+			reasoning["effort"] = "xhigh"
+		}
+
+		reasoning["summary"] = "detailed"
+		if summary := asString(thinking["summary"]); summary != "" {
+			reasoning["summary"] = summary
+		}
+	}
+
+	if len(reasoning) == 0 {
 		return nil
 	}
 
-	reasoning := map[string]interface{}{
-		"effort":  "xhigh",
-		"summary": "detailed",
-	}
-	if summary := asString(thinking["summary"]); summary != "" {
-		reasoning["summary"] = summary
+	return reasoning
+}
+
+func translateAnthropicEffortToResponses(effortValue interface{}) string {
+	switch value := effortValue.(type) {
+	case string:
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "low":
+			return "low"
+		case "medium":
+			return "medium"
+		case "high":
+			return "high"
+		case "max":
+			return "xhigh"
+		}
+	case json.Number:
+		if numeric, err := value.Int64(); err == nil {
+			return mapNumericAnthropicEffortToResponses(numeric)
+		}
+	case float64:
+		return mapNumericAnthropicEffortToResponses(int64(value))
+	case float32:
+		return mapNumericAnthropicEffortToResponses(int64(value))
+	case int:
+		return mapNumericAnthropicEffortToResponses(int64(value))
+	case int8:
+		return mapNumericAnthropicEffortToResponses(int64(value))
+	case int16:
+		return mapNumericAnthropicEffortToResponses(int64(value))
+	case int32:
+		return mapNumericAnthropicEffortToResponses(int64(value))
+	case int64:
+		return mapNumericAnthropicEffortToResponses(value)
 	}
 
-	return reasoning
+	return ""
+}
+
+func mapNumericAnthropicEffortToResponses(value int64) string {
+	if value <= 50 {
+		return "low"
+	}
+	if value <= 85 {
+		return "medium"
+	}
+	if value <= 100 {
+		return "high"
+	}
+	return "xhigh"
 }
 
 func translateAnthropicOutputFormatToResponses(req map[string]interface{}) map[string]interface{} {
