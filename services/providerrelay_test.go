@@ -2,8 +2,14 @@ package services
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/daodao97/xgo/xrequest"
 	"github.com/tidwall/gjson"
 )
 
@@ -119,6 +125,107 @@ func TestReplaceModelInRequestBody(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type streamingRecorder struct {
+	header  http.Header
+	mu      sync.Mutex
+	body    strings.Builder
+	status  int
+	wroteCh chan struct{}
+	flushCh chan struct{}
+}
+
+func newStreamingRecorder() *streamingRecorder {
+	return &streamingRecorder{
+		header:  make(http.Header),
+		wroteCh: make(chan struct{}, 1),
+		flushCh: make(chan struct{}, 1),
+	}
+}
+
+func (r *streamingRecorder) Header() http.Header {
+	return r.header
+}
+
+func (r *streamingRecorder) Write(data []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, err := r.body.Write(data)
+	select {
+	case r.wroteCh <- struct{}{}:
+	default:
+	}
+	return n, err
+}
+
+func (r *streamingRecorder) WriteHeader(statusCode int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.status = statusCode
+}
+
+func (r *streamingRecorder) Flush() {
+	select {
+	case r.flushCh <- struct{}{}:
+	default:
+	}
+}
+
+func (r *streamingRecorder) BodyString() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.body.String()
+}
+
+func TestWriteStreamingResponseFlushesFirstLineImmediately(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pr.Close()
+
+	resp := xrequest.NewResponse(&http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"text/event-stream"},
+		},
+		Body: pr,
+	})
+
+	recorder := newStreamingRecorder()
+	done := make(chan error, 1)
+	go func() {
+		_, err := writeStreamingResponse(recorder, resp)
+		done <- err
+	}()
+
+	if _, err := pw.Write([]byte("data: {\"type\":\"message_start\"}\n")); err != nil {
+		t.Fatalf("write first SSE line: %v", err)
+	}
+
+	select {
+	case <-recorder.wroteCh:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("first SSE line was not written promptly")
+	}
+
+	if got := recorder.BodyString(); !strings.Contains(got, "message_start") {
+		t.Fatalf("expected first line in response body, got %q", got)
+	}
+
+	if recorder.header.Get("X-Accel-Buffering") != "no" {
+		t.Fatalf("expected X-Accel-Buffering=no, got %q", recorder.header.Get("X-Accel-Buffering"))
+	}
+
+	if err := pw.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("writeStreamingResponse returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("writeStreamingResponse did not return after upstream EOF")
 	}
 }
 
@@ -310,6 +417,34 @@ func TestDeleteHeaderCaseInsensitive(t *testing.T) {
 	}
 	if headers["Content-Type"] != "application/json" {
 		t.Fatalf("expected Content-Type to be preserved")
+	}
+}
+
+func TestRemoveInboundAuthHeaders(t *testing.T) {
+	headers := map[string]string{
+		"Authorization":        "Bearer relay-key",
+		"X-Api-Key":            "relay-key",
+		"X-Code-Switch-Key":    "relay-key",
+		"Anthropic-Version":    "2023-06-01",
+		"Content-Type":         "application/json",
+		"X-Provider-Trace-Tag": "keep",
+	}
+
+	removeInboundAuthHeaders(headers)
+
+	for _, key := range []string{"Authorization", "X-Api-Key", "X-Code-Switch-Key"} {
+		if _, ok := headers[key]; ok {
+			t.Fatalf("expected %s to be removed", key)
+		}
+	}
+	if headers["Anthropic-Version"] != "2023-06-01" {
+		t.Fatalf("expected Anthropic-Version to be preserved")
+	}
+	if headers["Content-Type"] != "application/json" {
+		t.Fatalf("expected Content-Type to be preserved")
+	}
+	if headers["X-Provider-Trace-Tag"] != "keep" {
+		t.Fatalf("expected unrelated headers to be preserved")
 	}
 }
 

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -36,6 +38,7 @@ type ProviderRelayService struct {
 	blacklistService    *BlacklistService
 	notificationService *NotificationService
 	appSettings         *AppSettingsService // 应用设置服务（用于获取轮询开关状态）
+	httpClient          *http.Client
 	server              *http.Server
 	addr                string
 	lastUsed            map[string]*LastUsedProvider // 各平台最后使用的供应商
@@ -65,6 +68,7 @@ func NewProviderRelayService(providerService *ProviderService, geminiService *Ge
 		blacklistService:    blacklistService,
 		notificationService: notificationService,
 		appSettings:         appSettings,
+		httpClient:          newRelayHTTPClient(),
 		addr:                addr,
 		lastUsed: map[string]*LastUsedProvider{
 			"claude": nil,
@@ -73,6 +77,24 @@ func NewProviderRelayService(providerService *ProviderService, geminiService *Ge
 		},
 		rrLastStart: make(map[string]string),
 	}
+}
+
+func newRelayHTTPClient() *http.Client {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          200,
+		MaxIdleConnsPerHost:   50,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
+	return &http.Client{Transport: transport}
 }
 
 // setLastUsedProvider 记录最后使用的供应商
@@ -851,6 +873,8 @@ func (prs *ProviderRelayService) forwardRequest(
 	}
 	_ = convertInfo // 避免未使用警告
 
+	removeInboundAuthHeaders(headers)
+
 	// 根据认证方式设置请求头（默认 Bearer，与 v2.2.x 保持一致）
 	authType := strings.ToLower(strings.TrimSpace(provider.ConnectivityAuthType))
 	switch authType {
@@ -942,7 +966,8 @@ func (prs *ProviderRelayService) forwardRequest(
 		SetHeaders(headers).
 		SetQueryParams(query).
 		SetRetry(1, 500*time.Millisecond).
-		SetTimeout(32 * time.Hour) // 32小时超时，适配超大型项目分析
+		SetClient(prs.httpClient).
+		WithContext(c.Request.Context())
 
 	reqBody := bytes.NewReader(bodyBytes)
 	req = req.SetBody(reqBody)
@@ -1007,7 +1032,9 @@ func (prs *ProviderRelayService) forwardRequest(
 			copyErr = writeTransformedJSONResponse(c.Writer, resp, requestLog)
 		} else if sseConverter != nil && isStream {
 			// 使用协议转换 Hook
-			_, copyErr = resp.ToHttpResponseWriter(c.Writer, protocolConvertHook(sseConverter, kind, requestLog))
+			_, copyErr = writeStreamingResponse(c.Writer, resp, protocolConvertHook(sseConverter, kind, requestLog))
+		} else if isStreamResponse(resp, isStream) {
+			_, copyErr = writeStreamingResponse(c.Writer, resp, ReqeustLogHook(c, kind, requestLog))
 		} else {
 			_, copyErr = resp.ToHttpResponseWriter(c.Writer, ReqeustLogHook(c, kind, requestLog))
 		}
@@ -1023,7 +1050,9 @@ func (prs *ProviderRelayService) forwardRequest(
 			copyErr = writeTransformedJSONResponse(c.Writer, resp, requestLog)
 		} else if sseConverter != nil && isStream {
 			// 使用协议转换 Hook
-			_, copyErr = resp.ToHttpResponseWriter(c.Writer, protocolConvertHook(sseConverter, kind, requestLog))
+			_, copyErr = writeStreamingResponse(c.Writer, resp, protocolConvertHook(sseConverter, kind, requestLog))
+		} else if isStreamResponse(resp, isStream) {
+			_, copyErr = writeStreamingResponse(c.Writer, resp, ReqeustLogHook(c, kind, requestLog))
 		} else {
 			_, copyErr = resp.ToHttpResponseWriter(c.Writer, ReqeustLogHook(c, kind, requestLog))
 		}
@@ -1043,6 +1072,110 @@ func (prs *ProviderRelayService) forwardRequest(
 
 func isResponsesEndpoint(endpoint string) bool {
 	return strings.Contains(strings.ToLower(endpoint), "/responses")
+}
+
+func isStreamResponse(resp *xrequest.Response, requestedStream bool) bool {
+	if requestedStream {
+		return true
+	}
+	if resp == nil || resp.RawResponse == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(resp.RawResponse.Header.Get("Content-Type")), "text/event-stream")
+}
+
+func writeStreamingResponse(w http.ResponseWriter, resp *xrequest.Response, hooks ...xrequest.ResponseHook) (int64, error) {
+	if resp == nil || resp.RawResponse == nil {
+		return 0, fmt.Errorf("empty upstream response")
+	}
+
+	raw := resp.RawResponse
+	if raw.Body != nil {
+		defer raw.Body.Close()
+	}
+
+	copyStreamingResponseHeaders(w.Header(), raw.Header)
+	status := resp.StatusCode()
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
+
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	if raw.Body == nil {
+		return 0, nil
+	}
+
+	reader := bufio.NewReader(raw.Body)
+	totalBytes := int64(0)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			n, writeErr := writeStreamingLine(w, line, hooks...)
+			totalBytes += n
+			if writeErr != nil {
+				return totalBytes, writeErr
+			}
+		}
+
+		if err != nil {
+			if err == io.EOF {
+				return totalBytes, nil
+			}
+			return totalBytes, fmt.Errorf("error streaming response: %w", err)
+		}
+	}
+}
+
+func writeStreamingLine(w http.ResponseWriter, line []byte, hooks ...xrequest.ResponseHook) (int64, error) {
+	originalLine := make([]byte, len(line))
+	copy(originalLine, line)
+
+	trimmedLine := bytes.TrimRight(line, "\n")
+	outputLine := originalLine
+	if len(bytes.TrimSpace(trimmedLine)) > 0 {
+		flush := true
+		processedLine := trimmedLine
+		for _, hook := range hooks {
+			flush, processedLine = hook(processedLine)
+		}
+		if !flush {
+			return 0, nil
+		}
+		if bytes.HasSuffix(originalLine, []byte("\n")) {
+			processedLine = append(processedLine, '\n')
+		}
+		outputLine = processedLine
+	}
+
+	n, err := w.Write(outputLine)
+	if err != nil {
+		return int64(n), fmt.Errorf("error writing streaming response: %w", err)
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return int64(n), nil
+}
+
+func copyStreamingResponseHeaders(dst, src http.Header) {
+	for key, values := range src {
+		switch strings.ToLower(key) {
+		case "content-length", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+			"te", "trailer", "transfer-encoding", "upgrade":
+			continue
+		}
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+	dst.Set("X-Accel-Buffering", "no")
+	if dst.Get("Cache-Control") == "" {
+		dst.Set("Cache-Control", "no-cache")
+	}
 }
 
 func writeTransformedJSONResponse(w http.ResponseWriter, resp *xrequest.Response, requestLog *ReqeustLog) error {
@@ -1130,6 +1263,12 @@ func deleteHeaderCaseInsensitive(headers map[string]string, target string) {
 			delete(headers, key)
 		}
 	}
+}
+
+func removeInboundAuthHeaders(headers map[string]string) {
+	deleteHeaderCaseInsensitive(headers, "authorization")
+	deleteHeaderCaseInsensitive(headers, "x-api-key")
+	deleteHeaderCaseInsensitive(headers, codexRelayKeyHeader)
 }
 
 func cloneMap(m map[string]string) map[string]string {
