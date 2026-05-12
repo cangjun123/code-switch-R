@@ -47,7 +47,7 @@ func applyOpenAIImagesCORS(c *gin.Context) {
 	}
 
 	c.Header("Access-Control-Allow-Origin", origin)
-	c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Code-Switch-Key, X-API-Key, X-Requested-With")
+	c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Cache-Control, X-Code-Switch-Key, X-API-Key, X-Requested-With")
 	c.Header("Access-Control-Allow-Methods", "POST, OPTIONS")
 	c.Header("Access-Control-Max-Age", "86400")
 	if origin != "*" {
@@ -65,6 +65,7 @@ func (prs *ProviderRelayService) openAIImagesProxyHandler(endpoint string) gin.H
 		c.Request.Body = io.NopCloser(bytes.NewReader(body))
 
 		model := extractOpenAIImagesModel(c.Request, body)
+		streamRequested := openAIImagesStreamRequested(c.Request, body)
 		candidates, skipped, err := prs.openAIImageProviderCandidates(model)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load providers"})
@@ -115,10 +116,13 @@ func (prs *ProviderRelayService) openAIImagesProxyHandler(endpoint string) gin.H
 					currentHeaders["Content-Type"] = contentType
 				}
 			}
+			if streamRequested {
+				currentHeaders["Accept"] = "text/event-stream"
+			}
 
 			effectiveEndpoint := resolveOpenAIImageEndpoint(candidate.provider, endpoint)
 			start := time.Now()
-			ok, err := prs.forwardOpenAIImageRequest(c, candidate.kind, candidate.provider, effectiveEndpoint, query, currentHeaders, currentBody, effectiveModel)
+			ok, err := prs.forwardOpenAIImageRequest(c, candidate.kind, candidate.provider, effectiveEndpoint, query, currentHeaders, currentBody, effectiveModel, streamRequested)
 			duration := time.Since(start)
 			if ok {
 				if prs.blacklistService != nil {
@@ -314,6 +318,54 @@ func extractOpenAIImagesModel(req *http.Request, body []byte) string {
 	return ""
 }
 
+func openAIImagesStreamRequested(req *http.Request, body []byte) bool {
+	if req == nil {
+		return false
+	}
+	if strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/event-stream") {
+		return true
+	}
+	if isTruthyString(req.URL.Query().Get("stream")) {
+		return true
+	}
+	if isJSONContentType(req.Header.Get("Content-Type")) {
+		stream := gjson.GetBytes(body, "stream")
+		return stream.Bool() || isTruthyString(stream.String())
+	}
+
+	mediaType, params, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	if err != nil || !strings.HasPrefix(strings.ToLower(mediaType), "multipart/") {
+		return false
+	}
+	boundary := params["boundary"]
+	if boundary == "" {
+		return false
+	}
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	for {
+		part, err := reader.NextPart()
+		if err != nil {
+			return false
+		}
+		if part.FormName() != "stream" || part.FileName() != "" {
+			_ = part.Close()
+			continue
+		}
+		value, _ := io.ReadAll(io.LimitReader(part, 32))
+		_ = part.Close()
+		return isTruthyString(string(value))
+	}
+}
+
+func isTruthyString(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func isJSONContentType(contentType string) bool {
 	return strings.Contains(strings.ToLower(contentType), "application/json")
 }
@@ -413,6 +465,7 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 	clientHeaders map[string]string,
 	bodyBytes []byte,
 	model string,
+	streamRequested bool,
 ) (bool, error) {
 	targetURL := joinURL(provider.APIURL, endpoint)
 	headers := cloneMap(clientHeaders)
@@ -420,6 +473,9 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 	injectProviderAuthHeaders(headers, provider, false)
 	if _, ok := headers["Accept"]; !ok {
 		headers["Accept"] = "application/json"
+	}
+	if streamRequested {
+		headers["Accept"] = "text/event-stream"
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
@@ -445,7 +501,7 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 		Platform: kind,
 		Provider: provider.Name,
 		Model:    model,
-		IsStream: false,
+		IsStream: streamRequested,
 	}
 	start := time.Now()
 	defer prs.writeRelayRequestLog(requestLog, start)
@@ -460,21 +516,74 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 	defer resp.Body.Close()
 	requestLog.HttpCode = resp.StatusCode
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return false, err
-	}
-
 	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		if streamRequested || isOpenAIImageStreamingResponse(resp) {
+			if err := streamOpenAIImageResponse(c.Writer, resp, streamRequested); err != nil {
+				fmt.Printf("[Images] 流式响应转发中断: %v\n", err)
+			}
+			return true, nil
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return false, err
+		}
 		copyOpenAIImageResponseHeaders(c.Writer.Header(), resp.Header)
 		c.Data(resp.StatusCode, firstNonEmpty(resp.Header.Get("Content-Type"), "application/json"), body)
 		return true, nil
 	}
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, err
+	}
 	if len(body) > 512 {
 		body = append(body[:512], []byte("...")...)
 	}
 	return false, fmt.Errorf("upstream status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+}
+
+func isOpenAIImageStreamingResponse(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
+}
+
+func streamOpenAIImageResponse(w http.ResponseWriter, resp *http.Response, forceSSE bool) error {
+	if resp == nil {
+		return fmt.Errorf("empty upstream response")
+	}
+
+	copyStreamingResponseHeaders(w.Header(), resp.Header)
+	if forceSSE && w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "text/event-stream")
+	}
+	w.WriteHeader(resp.StatusCode)
+
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				return fmt.Errorf("%w: %v", errClientAbort, writeErr)
+			}
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+
+		if readErr != nil {
+			if readErr == io.EOF {
+				return nil
+			}
+			return fmt.Errorf("error streaming upstream image response: %w", readErr)
+		}
+	}
 }
 
 func injectProviderAuthHeaders(headers map[string]string, provider Provider, anthropicVersion bool) {

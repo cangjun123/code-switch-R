@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -459,6 +461,108 @@ func TestOpenAIImagesGenerationsProxy(t *testing.T) {
 	}
 	if upstreamHits != 1 {
 		t.Fatalf("期望命中上游 1 次，实际 %d", upstreamHits)
+	}
+}
+
+func TestOpenAIImagesGenerationsStreamsSSEPromptly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstreamDone := make(chan struct{})
+	var closeUpstreamDone sync.Once
+	defer closeUpstreamDone.Do(func() { close(upstreamDone) })
+
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Accept"); !strings.Contains(got, "text/event-stream") {
+			t.Errorf("流式图片请求应转发 Accept: text/event-stream，收到 %q", got)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte("data: {\"type\":\"image_generation.partial_image\"}\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+
+		<-upstreamDone
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}))
+	defer upstreamServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders("codex", []Provider{
+		{
+			ID:      1,
+			Name:    "StreamingImageProvider",
+			APIURL:  upstreamServer.URL,
+			APIKey:  "provider-api-key",
+			Enabled: true,
+			SupportedModels: map[string]bool{
+				"gpt-image-2": true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+	relayServer := httptest.NewServer(router)
+	defer relayServer.Close()
+
+	req, err := http.NewRequest(http.MethodPost, relayServer.URL+"/v1/images/generations", strings.NewReader(`{"model":"gpt-image-2","prompt":"stream image","stream":true,"partial_images":1}`))
+	if err != nil {
+		t.Fatalf("创建请求失败: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := relayServer.Client().Do(req)
+	if err != nil {
+		t.Fatalf("请求 relay 失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("期望 200，实际 %d，响应体: %s", resp.StatusCode, string(body))
+	}
+	if got := resp.Header.Get("X-Accel-Buffering"); got != "no" {
+		t.Fatalf("期望关闭代理缓冲，收到 X-Accel-Buffering=%q", got)
+	}
+
+	lineCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		line, err := bufio.NewReader(resp.Body).ReadString('\n')
+		if err != nil {
+			errCh <- err
+			return
+		}
+		lineCh <- line
+	}()
+
+	select {
+	case line := <-lineCh:
+		if !strings.Contains(line, "image_generation.partial_image") {
+			t.Fatalf("首个 SSE 事件不正确: %q", line)
+		}
+		closeUpstreamDone.Do(func() { close(upstreamDone) })
+	case err := <-errCh:
+		t.Fatalf("读取首个 SSE 事件失败: %v", err)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("relay 没有及时透传上游首个 SSE 事件")
 	}
 }
 
