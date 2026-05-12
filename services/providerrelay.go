@@ -355,6 +355,10 @@ func (prs *ProviderRelayService) registerRoutes(router gin.IRouter) {
 	router.POST("/v1/messages", claudeAuth, prs.proxyHandler("claude", "/v1/messages"))
 	router.POST("/v1/messages/count_tokens", claudeAuth, prs.proxyHandler("claude", "/v1/messages/count_tokens"))
 	router.POST("/responses", codexAuth, prs.proxyHandler("codex", "/responses"))
+	router.OPTIONS("/v1/images/generations", prs.openAIImagesOptionsHandler())
+	router.OPTIONS("/v1/images/edits", prs.openAIImagesOptionsHandler())
+	router.POST("/v1/images/generations", prs.openAIImagesCORSMiddleware(), codexAuth, prs.openAIImagesProxyHandler("/v1/images/generations"))
+	router.POST("/v1/images/edits", prs.openAIImagesCORSMiddleware(), codexAuth, prs.openAIImagesProxyHandler("/v1/images/edits"))
 
 	// /v1/models 端点（OpenAI-compatible API）
 	// 支持 Claude 和 Codex 平台
@@ -2530,6 +2534,7 @@ func (prs *ProviderRelayService) forwardModelsRequest(
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("读取响应失败: %v", err)})
 		return fmt.Errorf("failed to read response: %w", err)
 	}
+	body = prs.appendConfiguredImageModelsToModelList(body, kind)
 
 	// 复制响应头
 	for key, values := range resp.Header {
