@@ -1,0 +1,14 @@
+* text=auto eol=lf
+
+# Binary assets
+*.db binary
+*.exe binary
+*.gz binary
+*.icns binary
+*.ico binary
+*.jpeg binary
+*.jpg binary
+*.png binary
+*.tar binary
+*.webp binary
+*.zip binary
