@@ -465,6 +465,60 @@ func TestOpenAIImagesGenerationsProxy(t *testing.T) {
 	}
 }
 
+func TestOpenAIImagesGenerationsProxyWithoutConfiguredEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var upstreamHits int
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		if r.URL.Path != "/v1/images/generations" {
+			t.Errorf("期望路径 /v1/images/generations，收到 %s", r.URL.Path)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"bm8tZW5kcG9pbnQ="}]}`))
+	}))
+	defer upstreamServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindGPTImage, []Provider{
+		{
+			ID:      1,
+			Name:    "ImageProvider",
+			APIURL:  upstreamServer.URL,
+			APIKey:  "provider-api-key",
+			Enabled: true,
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"gpt-image-2","prompt":"a red apple"}`))
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"b64_json":"bm8tZW5kcG9pbnQ="`) {
+		t.Fatalf("响应体不包含上游图片数据: %s", w.Body.String())
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("期望命中上游 1 次，实际 %d", upstreamHits)
+	}
+}
+
 func TestOpenAIImagesOnlyUseGPTImageProviders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -699,6 +753,80 @@ func TestOpenAIImagesEditsProxyMultipart(t *testing.T) {
 		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), `"b64_json":"ZWRpdA=="`) {
+		t.Fatalf("响应体不包含上游图片数据: %s", w.Body.String())
+	}
+}
+
+func TestOpenAIImagesEditsKeepsRequestEndpointWhenProviderConfiguredForGenerations(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var upstreamPath string
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath = r.URL.Path
+		if r.URL.Path != "/v1/images/edits" {
+			t.Errorf("期望路径 /v1/images/edits，收到 %s", r.URL.Path)
+		}
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			t.Fatalf("解析 multipart 失败: %v", err)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"ZWRpdHMtZW5kcG9pbnQ="}]}`))
+	}))
+	defer upstreamServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindGPTImage, []Provider{
+		{
+			ID:          1,
+			Name:        "ImageProvider",
+			APIURL:      upstreamServer.URL,
+			APIKey:      "provider-api-key",
+			Enabled:     true,
+			APIEndpoint: "/v1/images/generations",
+			SupportedModels: map[string]bool{
+				"gpt-image-2": true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("model", "gpt-image-2")
+	_ = writer.WriteField("prompt", "edit this")
+	part, err := writer.CreateFormFile("image[]", "one.png")
+	if err != nil {
+		t.Fatalf("创建 image[] 字段失败: %v", err)
+	}
+	_, _ = part.Write([]byte("image"))
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭 multipart writer 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", &body)
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if upstreamPath != "/v1/images/edits" {
+		t.Fatalf("edits 请求不应被 provider APIEndpoint 覆盖，实际路径: %s", upstreamPath)
+	}
+	if !strings.Contains(w.Body.String(), `"b64_json":"ZWRpdHMtZW5kcG9pbnQ="`) {
 		t.Fatalf("响应体不包含上游图片数据: %s", w.Body.String())
 	}
 }

@@ -248,6 +248,9 @@ func providerMayHandleImageModel(kind string, provider Provider, model string) b
 	if model == "" && hasModelConfig {
 		return providerLooksImageCapable(provider)
 	}
+	if strings.EqualFold(kind, ProviderKindGPTImage) {
+		return true
+	}
 	if strings.EqualFold(kind, "codex") {
 		return true
 	}
@@ -448,6 +451,9 @@ func cloneMIMEHeader(header textproto.MIMEHeader) textproto.MIMEHeader {
 func resolveOpenAIImageEndpoint(provider Provider, defaultEndpoint string) string {
 	endpoint := strings.TrimSpace(provider.APIEndpoint)
 	if endpoint == "" || !strings.Contains(strings.ToLower(endpoint), "/images/") {
+		return defaultEndpoint
+	}
+	if strings.Contains(strings.ToLower(defaultEndpoint), "/images/") {
 		return defaultEndpoint
 	}
 	return provider.GetEffectiveEndpoint(defaultEndpoint)

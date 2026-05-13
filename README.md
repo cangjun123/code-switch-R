@@ -193,9 +193,11 @@ claude-* -> gpt-5.4
 
 - `API URL`: 上游 base URL
 - `API Key`: 上游 key
-- `API Endpoint`: `/v1/images/generations`
+- `API Endpoint`: 通常留空即可；只有上游使用特殊路径时才需要覆盖
 - 认证方式：`Bearer`
 - 模型白名单/映射可按需填写
+
+relay 会按客户端请求路径转发到上游：`/v1/images/generations` 走文生图，`/v1/images/edits` 走图片编辑。即使 provider 里填了 `/v1/images/generations`，也不会把 edits 请求错转到 generations。
 
 普通 base64 返回：
 
@@ -314,7 +316,7 @@ npm run build
 
 1. provider 是否启用。
 2. `API URL` 和 `API Key` 是否非空。
-3. `API Endpoint` 是否填了 `/v1/images/generations`。
+3. 如果填写了 `API Endpoint`，确认它是相对路径，不是完整 URL。
 4. 如果配置了白名单/映射，请确认请求模型能匹配。
 
 ### 如何备份配置？
