@@ -44,7 +44,7 @@ export type AutomationCard = {
   upstreamProtocol?: string
 }
 
-export const automationCardGroups: Record<'claude' | 'codex', AutomationCard[]> = {
+export const automationCardGroups: Record<'claude' | 'codex' | 'gpt-image', AutomationCard[]> = {
   claude: [
     {
       id: 100,
@@ -102,6 +102,24 @@ export const automationCardGroups: Record<'claude' | 'codex', AutomationCard[]> 
       tint: 'rgba(236, 72, 153, 0.16)',
       accent: '#ec4899',
       enabled: false,
+    },
+  ],
+  'gpt-image': [
+    {
+      id: 401,
+      name: 'GPT Image Provider',
+      apiUrl: '',
+      apiKey: '',
+      officialSite: '',
+      icon: 'openai',
+      tint: 'rgba(16, 185, 129, 0.14)',
+      accent: '#10b981',
+      enabled: false,
+      supportedModels: {
+        'gpt-image-2': true,
+      },
+      apiEndpoint: '/v1/images/generations',
+      connectivityAuthType: 'bearer',
     },
   ],
 }

@@ -189,7 +189,7 @@
         </div>
         <div class="section-controls">
           <div class="relay-toggle" :aria-label="currentProxyLabel">
-            <div class="relay-switch">
+            <div v-if="showProxyToggle" class="relay-switch">
               <label class="mac-switch sm">
                 <input
                   type="checkbox"
@@ -484,7 +484,7 @@
             </label>
             <!-- 直连应用按钮 -->
             <button
-              v-if="activeTab !== 'others'"
+              v-if="activeTab !== 'others' && activeTab !== 'gpt-image'"
               class="ghost-icon direct-apply-btn"
               :class="{ 'is-active': isDirectApplied(card) && !activeProxyState }"
               :disabled="activeProxyState"
@@ -759,14 +759,16 @@
                 </div>
 
                 <div class="form-field">
-                  <CLIConfigEditor
-                    :platform="activeTab as CLIPlatform"
-                    v-model="modalState.form.cliConfig"
-                    :provider-config="{
-                      apiKey: modalState.form.apiKey,
-                      baseUrl: modalState.form.apiUrl
-                    }"
-                  />
+                  <template v-if="modalState.tabId !== 'gpt-image'">
+                    <CLIConfigEditor
+                      :platform="activeTab as CLIPlatform"
+                      v-model="modalState.form.cliConfig"
+                      :provider-config="{
+                        apiKey: modalState.form.apiKey,
+                        baseUrl: modalState.form.apiUrl
+                      }"
+                    />
+                  </template>
                 </div>
 
                 <div class="form-field switch-field">
@@ -828,7 +830,7 @@
                   </BaseButton>
                   <!-- 保存并应用：仅在编辑模式、非代理模式、非 others 平台时显示 -->
                   <BaseButton
-                    v-if="modalState.editingId && modalState.tabId !== 'others' && !activeProxyState"
+                    v-if="modalState.editingId && modalState.tabId !== 'others' && modalState.tabId !== 'gpt-image' && !activeProxyState"
                     type="button"
                     variant="primary"
                     @click="submitAndApplyModal"
@@ -1098,12 +1100,14 @@ const tooltipRef = ref<HTMLElement | null>(null)
 const proxyStates = reactive<Record<ProviderTab, boolean>>({
   claude: false,
   codex: false,
+  'gpt-image': false,
   gemini: false,
   others: false,
 })
 const proxyBusy = reactive<Record<ProviderTab, boolean>>({
   claude: false,
   codex: false,
+  'gpt-image': false,
   gemini: false,
   others: false,
 })
@@ -1112,6 +1116,7 @@ const proxyBusy = reactive<Record<ProviderTab, boolean>>({
 const directAppliedIds = reactive<Record<ProviderTab, string | number | null>>({
   claude: null,
   codex: null,
+  'gpt-image': null,
   gemini: null,
   others: null,
 })
@@ -1172,18 +1177,21 @@ const isDirectApplied = (card: AutomationCard) => {
 const providerStatsMap = reactive<Record<ProviderTab, Record<string, ProviderDailyStat>>>({
   claude: {},
   codex: {},
+  'gpt-image': {},
   gemini: {},
   others: {},
 })
 const providerStatsLoading = reactive<Record<ProviderTab, boolean>>({
   claude: false,
   codex: false,
+  'gpt-image': false,
   gemini: false,
   others: false,
 })
 const providerStatsLoaded = reactive<Record<ProviderTab, boolean>>({
   claude: false,
   codex: false,
+  'gpt-image': false,
   gemini: false,
   others: false,
 })
@@ -1217,6 +1225,7 @@ const onConfigFileSaved = () => {
 const blacklistStatusMap = reactive<Record<ProviderTab, Record<string, BlacklistStatus>>>({
   claude: {},
   codex: {},
+  'gpt-image': {},
   gemini: {},
   others: {},
 })
@@ -1226,6 +1235,7 @@ let blacklistTimer: number | undefined
 const connectivityResultsMap = reactive<Record<ProviderTab, Record<number, ConnectivityResult>>>({
   claude: {},
   codex: {},
+  'gpt-image': {},
   gemini: {},
   others: {},
 })
@@ -1234,6 +1244,7 @@ const connectivityResultsMap = reactive<Record<ProviderTab, Record<number, Conne
 const availabilityResultsMap = reactive<Record<ProviderTab, Record<number, ProviderTimeline>>>({
   claude: {},
   codex: {},
+  'gpt-image': {},
   gemini: {},
   others: {},
 })
@@ -1507,6 +1518,7 @@ interface GeminiProvider {
 const tabs = [
   { id: 'claude', label: 'Claude Code' },
   { id: 'codex', label: 'Codex' },
+  { id: 'gpt-image', label: 'GPT生图' },
   { id: 'gemini', label: 'Gemini' },
   { id: 'others', label: '其他' },
 ] as const
@@ -1516,6 +1528,7 @@ const providerTabIds = tabs.map((tab) => tab.id) as ProviderTab[]
 const cards = reactive<Record<ProviderTab, AutomationCard[]>>({
   claude: createAutomationCards(automationCardGroups.claude),
   codex: createAutomationCards(automationCardGroups.codex),
+  'gpt-image': createAutomationCards(automationCardGroups['gpt-image']),
   gemini: [],
   others: [],
 })
@@ -1781,6 +1794,8 @@ const refreshProxyState = async (tab: ProviderTab) => {
       } else {
         proxyStates[tab] = false
       }
+    } else if (tab === 'gpt-image') {
+      proxyStates[tab] = false
     } else if (tab === 'gemini') {
       const status = await fetchGeminiProxyStatus()
       proxyStates[tab] = Boolean(status?.enabled)
@@ -1812,6 +1827,8 @@ const onProxyToggle = async () => {
         await disableCustomCliProxy(selectedToolId.value)
       }
       customCliProxyStates[selectedToolId.value] = nextState
+    } else if (tab === 'gpt-image') {
+      proxyStates[tab] = false
     } else if (tab === 'gemini') {
       if (nextState) {
         await enableGeminiProxy()
@@ -1842,8 +1859,8 @@ const loadProviderStats = async (tab: ProviderTab) => {
 
   providerStatsLoading[tab] = true
   try {
-    // Gemini 统计数据目前通过相同的日志接口，直接查询
-    const stats = await fetchProviderDailyStats(tab as 'claude' | 'codex' | 'gemini')
+    // Gemini/GPT生图统计数据目前通过相同的日志接口，直接查询
+    const stats = await fetchProviderDailyStats(tab as 'claude' | 'codex' | 'gemini' | 'gpt-image')
     const mapped: Record<string, ProviderDailyStat> = {}
     ;(stats ?? []).forEach((stat) => {
       mapped[normalizeProviderKey(stat.provider)] = stat
@@ -2326,6 +2343,7 @@ const connectivityTestModelOptions = computed(() => {
   const options: Record<string, string[]> = {
     claude: ['claude-haiku-4-5-20251001', 'claude-sonnet-4-5-20250929'],
     codex: ['gpt-5.1', 'gpt-5.1-codex'],
+    'gpt-image': ['gpt-image-2'],
     gemini: ['gemini-2.5-flash', 'gemini-2.5-pro'],
   }
   return options[modalState.tabId] || options.claude
@@ -2336,6 +2354,7 @@ const connectivityEndpointOptions = [
   { value: '/v1/messages', label: '/v1/messages (Anthropic)' },
   { value: '/v1/chat/completions', label: '/v1/chat/completions (OpenAI)' },
   { value: '/responses', label: '/responses (Codex)' },
+  { value: '/v1/images/generations', label: '/v1/images/generations (Images)' },
 ]
 
 // 连通性测试状态
@@ -2350,6 +2369,7 @@ const getDefaultEndpoint = (platform: string, upstreamProtocol = 'auto') => {
   const defaults: Record<string, string> = {
     claude: '/v1/messages',
     codex: '/responses',
+    'gpt-image': '/v1/images/generations',
   }
   return defaults[platform] || '/v1/chat/completions'
 }
@@ -2401,6 +2421,8 @@ const currentProxyLabel = computed(() => {
     return t('components.main.relayToggle.hostClaude')
   } else if (tab === 'codex') {
     return t('components.main.relayToggle.hostCodex')
+  } else if (tab === 'gpt-image') {
+    return 'GPT生图'
   } else if (tab === 'gemini') {
     return t('components.main.relayToggle.hostGemini')
   } else if (tab === 'others') {
@@ -2410,6 +2432,7 @@ const currentProxyLabel = computed(() => {
   }
   return t('components.main.relayToggle.hostCodex')
 })
+const showProxyToggle = computed(() => activeTab.value !== 'gpt-image')
 const activeProxyState = computed(() => proxyStates[activeTab.value])
 const activeProxyBusy = computed(() => proxyBusy[activeTab.value])
 
@@ -2795,7 +2818,7 @@ const submitModal = async (): Promise<boolean> => {
 
   // 保存 CLI 配置（仅支持 claude/codex/gemini 平台）
   const cliConfig = modalState.form.cliConfig
-  const supportedPlatforms: CLIPlatform[] = ['claude', 'codex', 'gemini']
+  const supportedPlatforms: string[] = ['claude', 'codex', 'gemini']
   if (cliConfig && Object.keys(cliConfig).length > 0 && supportedPlatforms.includes(modalState.tabId as CLIPlatform)) {
     try {
       await saveCLIConfig(modalState.tabId as CLIPlatform, cliConfig)
@@ -2816,7 +2839,7 @@ const submitAndApplyModal = async () => {
   // 1. 执行普通保存逻辑
   const editingId = modalState.editingId
   const tabId = modalState.tabId as ProviderTab
-  if (!editingId || tabId === 'others') return
+  if (!editingId || tabId === 'others' || tabId === 'gpt-image') return
 
   // 获取当前编辑的卡片
   const editingCard = cards[tabId]?.find(c => c.id === editingId)

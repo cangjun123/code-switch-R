@@ -41,6 +41,7 @@
             <option value="claude">Claude</option>
             <option value="codex">Codex</option>
             <option value="gemini">Gemini</option>
+            <option value="gpt-image">GPT生图</option>
           </select>
         </label>
         <label class="filter-field">

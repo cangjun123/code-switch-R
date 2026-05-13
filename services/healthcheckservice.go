@@ -192,7 +192,7 @@ func (hcs *HealthCheckService) GetLatestResults() (map[string][]ProviderTimeline
 	results := make(map[string][]ProviderTimeline)
 
 	// 遍历所有平台
-	for _, platform := range []string{"claude", "codex"} {
+	for _, platform := range providerServicePlatforms {
 		providers, err := hcs.providerService.LoadProviders(platform)
 		if err != nil {
 			log.Printf("[HealthCheck] 加载 %s 供应商失败: %v", platform, err)
@@ -455,7 +455,7 @@ func (hcs *HealthCheckService) RunSingleCheck(platform string, providerID int64)
 func (hcs *HealthCheckService) RunAllChecks() (map[string][]HealthCheckResult, error) {
 	results := make(map[string][]HealthCheckResult)
 
-	for _, platform := range []string{"claude", "codex"} {
+	for _, platform := range providerServicePlatforms {
 		platformResults := hcs.checkAllProviders(platform)
 		results[platform] = platformResults
 	}
@@ -686,6 +686,11 @@ func (hcs *HealthCheckService) getEffectiveModel(provider *Provider, platform st
 		return "claude-haiku-4-5-20251001"
 	case "codex":
 		return "gpt-4o-mini"
+	case "gpt-image":
+		if mapped := provider.GetEffectiveModel(defaultOpenAIImageModel); mapped != "" {
+			return mapped
+		}
+		return defaultOpenAIImageModel
 	case "gemini":
 		return "gemini-1.5-flash"
 	default:
@@ -720,6 +725,8 @@ func (hcs *HealthCheckService) getEffectiveEndpoint(provider *Provider, platform
 		return "/v1/messages"
 	case "codex":
 		return "/responses"
+	case "gpt-image":
+		return "/v1/images/generations"
 	default:
 		return "/v1/chat/completions"
 	}
@@ -737,6 +744,17 @@ func (hcs *HealthCheckService) getEffectiveTimeout(provider *Provider) int {
 // buildTestRequest 构建测试请求体
 func (hcs *HealthCheckService) buildTestRequest(platform, endpoint, model string) []byte {
 	endpoint = strings.ToLower(endpoint)
+
+	if platform == "gpt-image" || strings.Contains(endpoint, "/images/generations") {
+		reqBody := map[string]interface{}{
+			"model":  model,
+			"prompt": "health check",
+			"size":   "1024x1024",
+			"n":      1,
+		}
+		data, _ := json.Marshal(reqBody)
+		return data
+	}
 
 	// Anthropic 格式
 	if platform == "claude" && strings.Contains(endpoint, "/messages") {
@@ -990,8 +1008,7 @@ func (hcs *HealthCheckService) SetAutoAvailabilityPolling(enabled bool) {
 
 // runAllPlatformChecks 执行所有平台的检测
 func (hcs *HealthCheckService) runAllPlatformChecks() {
-	platforms := []string{"claude", "codex"}
-	for _, platform := range platforms {
+	for _, platform := range providerServicePlatforms {
 		hcs.checkAllProviders(platform)
 	}
 }

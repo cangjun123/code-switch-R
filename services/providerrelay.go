@@ -290,7 +290,7 @@ func (prs *ProviderRelayService) Start() error {
 func (prs *ProviderRelayService) validateConfig() []string {
 	warnings := make([]string, 0)
 
-	for _, kind := range []string{"claude", "codex"} {
+	for _, kind := range []string{ProviderKindClaude, ProviderKindCodex, ProviderKindGPTImage} {
 		providers, err := prs.providerService.LoadProviders(kind)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("[%s] 加载配置失败: %v", kind, err))
@@ -2442,6 +2442,9 @@ func (prs *ProviderRelayService) forwardModelsRequest(
 	}
 
 	if len(activeProviders) == 0 {
+		if prs.writeConfiguredImageModelsResponse(c, kind) {
+			return nil
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "no providers available"})
 		return fmt.Errorf("no providers available")
 	}
@@ -2473,6 +2476,9 @@ func (prs *ProviderRelayService) forwardModelsRequest(
 	}
 
 	if selectedProvider == nil {
+		if prs.writeConfiguredImageModelsResponse(c, kind) {
+			return nil
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "no providers available"})
 		return fmt.Errorf("no providers available after filtering")
 	}

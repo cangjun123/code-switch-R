@@ -56,6 +56,7 @@ func newTestRelayService(t *testing.T) (*ProviderService, *ProviderRelayService)
 	}
 	_ = os.Remove(filepath.Join(homeDir, ".code-switch", "claude-code.json"))
 	_ = os.Remove(filepath.Join(homeDir, ".code-switch", "codex.json"))
+	_ = os.Remove(filepath.Join(homeDir, ".code-switch", "gpt-image.json"))
 	_ = os.Remove(filepath.Join(homeDir, ".code-switch", codexRelayKeysFile))
 	_ = os.RemoveAll(filepath.Join(homeDir, ".code-switch", "providers"))
 	_ = os.Remove(filepath.Join(homeDir, ".codex", "config.toml"))
@@ -418,7 +419,7 @@ func TestOpenAIImagesGenerationsProxy(t *testing.T) {
 	defer upstreamServer.Close()
 
 	providerService, relayService := newTestRelayService(t)
-	err := providerService.SaveProviders("codex", []Provider{
+	err := providerService.SaveProviders(ProviderKindGPTImage, []Provider{
 		{
 			ID:      1,
 			Name:    "ImageProvider",
@@ -464,6 +465,55 @@ func TestOpenAIImagesGenerationsProxy(t *testing.T) {
 	}
 }
 
+func TestOpenAIImagesOnlyUseGPTImageProviders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var codexHits int
+	codexServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		codexHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"Y29kZXg="}]}`))
+	}))
+	defer codexServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders("codex", []Provider{
+		{
+			ID:      1,
+			Name:    "OldCodexImageProvider",
+			APIURL:  codexServer.URL,
+			APIKey:  "provider-api-key",
+			Enabled: true,
+			SupportedModels: map[string]bool{
+				"gpt-image-2": true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 codex provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"gpt-image-2","prompt":"a red apple"}`))
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("没有 gpt-image provider 时应返回 404，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if codexHits != 0 {
+		t.Fatalf("图片请求不应再命中 codex provider，实际命中 %d 次", codexHits)
+	}
+}
+
 func TestOpenAIImagesGenerationsStreamsSSEPromptly(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -495,7 +545,7 @@ func TestOpenAIImagesGenerationsStreamsSSEPromptly(t *testing.T) {
 	defer upstreamServer.Close()
 
 	providerService, relayService := newTestRelayService(t)
-	if err := providerService.SaveProviders("codex", []Provider{
+	if err := providerService.SaveProviders(ProviderKindGPTImage, []Provider{
 		{
 			ID:      1,
 			Name:    "StreamingImageProvider",
@@ -596,7 +646,7 @@ func TestOpenAIImagesEditsProxyMultipart(t *testing.T) {
 	defer upstreamServer.Close()
 
 	providerService, relayService := newTestRelayService(t)
-	if err := providerService.SaveProviders("codex", []Provider{
+	if err := providerService.SaveProviders(ProviderKindGPTImage, []Provider{
 		{
 			ID:      1,
 			Name:    "ImageProvider",
@@ -688,7 +738,7 @@ func TestModelsHandlerAppendsConfiguredImageModels(t *testing.T) {
 	defer upstreamServer.Close()
 
 	providerService, relayService := newTestRelayService(t)
-	if err := providerService.SaveProviders("claude", []Provider{
+	if err := providerService.SaveProviders(ProviderKindGPTImage, []Provider{
 		{
 			ID:      1,
 			Name:    "ModelsProvider",
@@ -700,7 +750,7 @@ func TestModelsHandlerAppendsConfiguredImageModels(t *testing.T) {
 			},
 		},
 	}); err != nil {
-		t.Fatalf("保存 claude provider 失败: %v", err)
+		t.Fatalf("保存 gpt-image provider 失败: %v", err)
 	}
 
 	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()

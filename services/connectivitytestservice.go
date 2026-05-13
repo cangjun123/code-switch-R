@@ -227,6 +227,8 @@ func (cts *ConnectivityTestService) getEffectiveEndpoint(provider *Provider, pla
 		return "/v1/messages"
 	case "codex":
 		return "/responses"
+	case "gpt-image":
+		return "/v1/images/generations"
 	default:
 		return "/v1/chat/completions"
 	}
@@ -252,6 +254,17 @@ func (cts *ConnectivityTestService) buildTestRequest(platform string, provider *
 
 	// 获取有效端点（含平台默认值）
 	endpoint := strings.ToLower(cts.getEffectiveEndpoint(provider, platform))
+
+	if strings.ToLower(platform) == "gpt-image" || strings.Contains(endpoint, "/images/generations") {
+		reqBody := map[string]interface{}{
+			"model":  model,
+			"prompt": "health check",
+			"size":   "1024x1024",
+			"n":      1,
+		}
+		data, _ := json.Marshal(reqBody)
+		return data, "data"
+	}
 
 	// Anthropic 格式: /v1/messages
 	if strings.Contains(endpoint, "/messages") {
@@ -389,6 +402,13 @@ func (cts *ConnectivityTestService) getEffectiveModel(provider *Provider, platfo
 			return "gpt-4.1-mini"
 		}
 		return "claude-haiku-4-5-20251001"
+	case "codex":
+		return "gpt-4o-mini"
+	case "gpt-image":
+		if mapped := provider.GetEffectiveModel(defaultOpenAIImageModel); mapped != "" {
+			return mapped
+		}
+		return defaultOpenAIImageModel
 	default:
 		return ""
 	}
@@ -655,8 +675,7 @@ func (cts *ConnectivityTestService) stopAutoTest() {
 func (cts *ConnectivityTestService) runAllPlatformTests() {
 	// 仅轮询 ProviderService 支持的平台，避免无意义的错误日志
 	// Gemini 使用独立的 GeminiService，暂未接入
-	platforms := []string{"claude", "codex"}
-	for _, platform := range platforms {
+	for _, platform := range providerServicePlatforms {
 		cts.TestAll(platform)
 	}
 }

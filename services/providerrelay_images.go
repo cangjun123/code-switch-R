@@ -164,47 +164,44 @@ func (prs *ProviderRelayService) openAIImagesProxyHandler(endpoint string) gin.H
 }
 
 func (prs *ProviderRelayService) openAIImageProviderCandidates(model string) ([]imageProviderCandidate, int, error) {
-	kinds := []string{"codex", "claude"}
 	candidates := make([]imageProviderCandidate, 0)
 	skipped := 0
 
-	for _, kind := range kinds {
-		providers, err := prs.providerService.LoadProviders(kind)
-		if err != nil {
-			return nil, skipped, err
-		}
+	providers, err := prs.providerService.LoadProviders(ProviderKindGPTImage)
+	if err != nil {
+		return nil, skipped, err
+	}
 
-		active := make([]Provider, 0, len(providers))
-		for _, provider := range providers {
-			if !provider.Enabled || provider.APIURL == "" || provider.APIKey == "" {
-				skipped++
-				continue
-			}
-			if errs := provider.ValidateConfiguration(); len(errs) > 0 {
-				fmt.Printf("[Images] Provider %s/%s 配置验证失败，已跳过: %v\n", kind, provider.Name, errs)
-				skipped++
-				continue
-			}
-			if !providerMayHandleImageModel(kind, provider, model) {
-				skipped++
-				continue
-			}
-			if prs.blacklistService != nil {
-				if isBlacklisted, until := prs.blacklistService.IsBlacklisted(kind, provider.Name); isBlacklisted {
-					fmt.Printf("[Images] Provider %s/%s 已拉黑，过期时间: %v\n", kind, provider.Name, until.Format("15:04:05"))
-					skipped++
-					continue
-				}
-			}
-			active = append(active, provider)
+	active := make([]Provider, 0, len(providers))
+	for _, provider := range providers {
+		if !provider.Enabled || provider.APIURL == "" || provider.APIKey == "" {
+			skipped++
+			continue
 		}
+		if errs := provider.ValidateConfiguration(); len(errs) > 0 {
+			fmt.Printf("[Images] Provider %s/%s 配置验证失败，已跳过: %v\n", ProviderKindGPTImage, provider.Name, errs)
+			skipped++
+			continue
+		}
+		if !providerMayHandleImageModel(ProviderKindGPTImage, provider, model) {
+			skipped++
+			continue
+		}
+		if prs.blacklistService != nil {
+			if isBlacklisted, until := prs.blacklistService.IsBlacklisted(ProviderKindGPTImage, provider.Name); isBlacklisted {
+				fmt.Printf("[Images] Provider %s/%s 已拉黑，过期时间: %v\n", ProviderKindGPTImage, provider.Name, until.Format("15:04:05"))
+				skipped++
+				continue
+			}
+		}
+		active = append(active, provider)
+	}
 
-		for _, provider := range orderProvidersForRelay(kind, active, prs) {
-			candidates = append(candidates, imageProviderCandidate{
-				kind:     kind,
-				provider: provider,
-			})
-		}
+	for _, provider := range orderProvidersForRelay(ProviderKindGPTImage, active, prs) {
+		candidates = append(candidates, imageProviderCandidate{
+			kind:     ProviderKindGPTImage,
+			provider: provider,
+		})
 	}
 
 	return candidates, skipped, nil
@@ -717,47 +714,49 @@ func (prs *ProviderRelayService) appendConfiguredImageModelsToModelList(body []b
 	return encoded
 }
 
+func (prs *ProviderRelayService) writeConfiguredImageModelsResponse(c *gin.Context, kind string) bool {
+	payload := map[string]interface{}{
+		"object": "list",
+		"data":   []map[string]interface{}{},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return false
+	}
+	body = prs.appendConfiguredImageModelsToModelList(body, kind)
+	if !strings.Contains(string(body), `"id"`) {
+		return false
+	}
+	c.Data(http.StatusOK, "application/json", body)
+	return true
+}
+
 func (prs *ProviderRelayService) hasOpenAIImageProvider(model string) bool {
 	candidates, _, err := prs.openAIImageProviderCandidates(model)
 	return err == nil && len(candidates) > 0
 }
 
 func (prs *ProviderRelayService) configuredImageModels(preferredKind string) []string {
-	kinds := []string{preferredKind}
-	if preferredKind != "codex" {
-		kinds = append(kinds, "codex")
-	}
-	if preferredKind != "claude" {
-		kinds = append(kinds, "claude")
-	}
-
-	seenKind := map[string]bool{}
 	seenModel := map[string]bool{}
 	models := make([]string, 0)
-	for _, kind := range kinds {
-		if kind == "" || seenKind[kind] {
+	providers, err := prs.providerService.LoadProviders(ProviderKindGPTImage)
+	if err != nil {
+		return models
+	}
+	for _, provider := range providers {
+		if !provider.Enabled || provider.APIURL == "" || provider.APIKey == "" {
 			continue
 		}
-		seenKind[kind] = true
-		providers, err := prs.providerService.LoadProviders(kind)
-		if err != nil {
-			continue
+		for model := range provider.SupportedModels {
+			if isLikelyImageModel(model) && !seenModel[model] {
+				models = append(models, model)
+				seenModel[model] = true
+			}
 		}
-		for _, provider := range providers {
-			if !provider.Enabled || provider.APIURL == "" || provider.APIKey == "" {
-				continue
-			}
-			for model := range provider.SupportedModels {
-				if isLikelyImageModel(model) && !seenModel[model] {
-					models = append(models, model)
-					seenModel[model] = true
-				}
-			}
-			for externalModel := range provider.ModelMapping {
-				if isLikelyImageModel(externalModel) && !seenModel[externalModel] {
-					models = append(models, externalModel)
-					seenModel[externalModel] = true
-				}
+		for externalModel := range provider.ModelMapping {
+			if isLikelyImageModel(externalModel) && !seenModel[externalModel] {
+				models = append(models, externalModel)
+				seenModel[externalModel] = true
 			}
 		}
 	}

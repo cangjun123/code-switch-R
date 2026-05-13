@@ -1,6 +1,6 @@
 import { Call } from '@wailsio/runtime'
 
-export type LogPlatform = 'claude' | 'codex' | 'gemini'
+export type LogPlatform = 'claude' | 'codex' | 'gemini' | 'gpt-image'
 
 export type RequestLog = {
   id: number
