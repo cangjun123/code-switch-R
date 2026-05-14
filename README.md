@@ -7,6 +7,7 @@ Code Switch 是一个适合部署在 Linux 服务器上的 Web 管理台 + API r
 ## 功能概览
 
 - 管理 Claude Code / Codex / Gemini CLI / 自定义 CLI provider
+- 支持 OpenAI Chat Completions 兼容中转，可按模型路由到 Codex provider 池
 - 独立管理 `GPT生图` provider，支持 OpenAI Images API 兼容中转
 - 支持 provider 优先级、模型白名单、模型映射和自动降级
 - 支持 Codex relay key，前端不暴露上游 API Key
@@ -178,6 +179,35 @@ https://api.example.com
 ```text
 gpt-image-2 -> upstream-image-model
 claude-* -> gpt-5.4
+```
+
+## OpenAI Chat Completions
+
+OpenAI Chat Completions 兼容客户端可以直接请求：
+
+- `POST /v1/chat/completions`
+- `OPTIONS /v1/chat/completions`
+
+这个入口使用 `Codex` provider 池和 `csk_...` relay key。relay 会按请求体里的 `model` 筛选 provider，并把 Chat Completions 请求原样转发给上游。
+
+适合接入只支持 `/v1/chat/completions` 的上游，例如 OpenAI 兼容聊天模型。配置建议：
+
+- `API URL`: 上游 base URL
+- `API Endpoint`: `/v1/chat/completions`
+- `认证方式`: `Bearer`
+- `适用模型`: 上游模型名，或使用模型映射
+
+示例：
+
+```bash
+curl http://127.0.0.1:18100/v1/chat/completions \
+  -H "Authorization: Bearer csk_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "mimo-v2.5-pro",
+    "messages": [{"role":"user","content":"你好"}],
+    "stream": false
+  }'
 ```
 
 ## GPT 生图

@@ -355,6 +355,8 @@ func (prs *ProviderRelayService) registerRoutes(router gin.IRouter) {
 	router.POST("/v1/messages", claudeAuth, prs.proxyHandler("claude", "/v1/messages"))
 	router.POST("/v1/messages/count_tokens", claudeAuth, prs.proxyHandler("claude", "/v1/messages/count_tokens"))
 	router.POST("/responses", codexAuth, prs.proxyHandler("codex", "/responses"))
+	router.OPTIONS("/v1/chat/completions", prs.openAIChatCompletionsOptionsHandler())
+	router.POST("/v1/chat/completions", prs.openAIChatCompletionsCORSMiddleware(), codexAuth, prs.proxyHandler("codex", "/v1/chat/completions"))
 	router.OPTIONS("/v1/images/generations", prs.openAIImagesOptionsHandler())
 	router.OPTIONS("/v1/images/edits", prs.openAIImagesOptionsHandler())
 	router.POST("/v1/images/generations", prs.openAIImagesCORSMiddleware(), codexAuth, prs.openAIImagesProxyHandler("/v1/images/generations"))
@@ -374,6 +376,35 @@ func (prs *ProviderRelayService) registerRoutes(router gin.IRouter) {
 
 	// 自定义 CLI 工具的 /v1/models 端点
 	router.GET("/custom/:toolId/v1/models", prs.customModelsHandler())
+}
+
+func (prs *ProviderRelayService) openAIChatCompletionsOptionsHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		applyOpenAIChatCompletionsCORS(c)
+		c.Status(http.StatusNoContent)
+	}
+}
+
+func (prs *ProviderRelayService) openAIChatCompletionsCORSMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		applyOpenAIChatCompletionsCORS(c)
+		c.Next()
+	}
+}
+
+func applyOpenAIChatCompletionsCORS(c *gin.Context) {
+	origin := strings.TrimSpace(c.GetHeader("Origin"))
+	if origin == "" {
+		origin = "*"
+	}
+
+	c.Header("Access-Control-Allow-Origin", origin)
+	c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Cache-Control, X-Code-Switch-Key, X-API-Key, X-Requested-With")
+	c.Header("Access-Control-Allow-Methods", "POST, OPTIONS")
+	c.Header("Access-Control-Max-Age", "86400")
+	if origin != "*" {
+		c.Header("Vary", "Origin")
+	}
 }
 
 func (prs *ProviderRelayService) resolveRelayEndpoint(kind string, provider Provider, routeEndpoint string) string {

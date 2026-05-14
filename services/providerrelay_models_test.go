@@ -381,6 +381,128 @@ func TestCodexResponsesRequireManagedKey(t *testing.T) {
 	}
 }
 
+func TestOpenAIChatCompletionsProxyUsesCodexProviders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var upstreamHits int
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		if r.Method != http.MethodPost {
+			t.Errorf("期望 POST 请求，收到 %s", r.Method)
+		}
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("期望路径 /v1/chat/completions，收到 %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer provider-api-key" {
+			t.Errorf("上游 Authorization 头不正确，收到 %q", got)
+		}
+		if got := r.Header.Get(codexRelayKeyHeader); got != "" {
+			t.Errorf("relay key 不应转发到上游，收到 %q", got)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("读取上游请求体失败: %v", err)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("上游请求体不是 JSON: %v", err)
+		}
+		if payload["model"] != "mimo-upstream" {
+			t.Fatalf("模型映射未生效，收到 %v", payload["model"])
+		}
+		if _, ok := payload["messages"].([]interface{}); !ok {
+			t.Fatalf("OpenAI Chat 请求应原样包含 messages，实际: %s", string(body))
+		}
+		if _, exists := payload["input"]; exists {
+			t.Fatalf("OpenAI Chat 请求不应被改成 Responses input，实际: %s", string(body))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}]}`))
+	}))
+	defer upstreamServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindCodex, []Provider{
+		{
+			ID:      1,
+			Name:    "OtherProvider",
+			APIURL:  upstreamServer.URL,
+			APIKey:  "other-key",
+			Enabled: true,
+			SupportedModels: map[string]bool{
+				"gpt-5-codex": true,
+			},
+		},
+		{
+			ID:          2,
+			Name:        "Xiaomi",
+			APIURL:      upstreamServer.URL,
+			APIKey:      "provider-api-key",
+			Enabled:     true,
+			APIEndpoint: "/v1/chat/completions",
+			SupportedModels: map[string]bool{
+				"mimo-upstream": true,
+			},
+			ModelMapping: map[string]string{
+				"mimo-v2.5-pro": "mimo-upstream",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"mimo-v2.5-pro","messages":[{"role":"user","content":"ping"}]}`))
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"object":"chat.completion"`) {
+		t.Fatalf("响应体不是 Chat Completions 格式: %s", w.Body.String())
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("期望只命中支持 mimo 的 provider 一次，实际 %d", upstreamHits)
+	}
+}
+
+func TestOpenAIChatCompletionsCORSPreflight(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_, relayService := newTestRelayService(t)
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
+	req.Header.Set("Origin", "https://client.example")
+	req.Header.Set("Access-Control-Request-Headers", "authorization,content-type")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("期望 204，实际 %d", w.Code)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://client.example" {
+		t.Fatalf("CORS Allow-Origin 错误: %q", got)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, "OPTIONS") || !strings.Contains(got, "POST") {
+		t.Fatalf("CORS Allow-Methods 错误: %q", got)
+	}
+}
+
 func TestOpenAIImagesGenerationsProxy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
