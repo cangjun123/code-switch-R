@@ -293,15 +293,86 @@ curl http://127.0.0.1:18100/responses \
 
 ## 更新部署
 
-建议本地构建、打包，再上传服务器解压：
+推荐使用 `deploy` 分支部署。`main` 保留源码，`deploy` 分支额外包含 Linux amd64 构建产物：
+
+- `codeswitch-web`
+- `frontend/dist/`
+
+### 服务器首次切换到 deploy 分支
+
+如果服务器上已经 clone 了本仓库，不需要重新 clone，直接切换分支：
+
+```bash
+cd /opt/codeswitch/current
+git fetch origin
+git switch deploy
+git pull
+chmod +x codeswitch-web
+sudo systemctl restart codeswitch
+```
+
+旧版 Git 可使用：
+
+```bash
+git checkout -b deploy origin/deploy
+```
+
+确认当前分支：
+
+```bash
+git branch --show-current
+```
+
+应输出：
+
+```text
+deploy
+```
+
+### 服务器日常更新
+
+后续服务器只需要拉取部署分支并重启服务：
+
+```bash
+cd /opt/codeswitch/current
+git pull
+chmod +x codeswitch-web
+sudo systemctl restart codeswitch
+```
+
+服务器更新时不要删除或覆盖 `~/.code-switch/`。
+
+### 本地发布 deploy 分支
+
+开发在 `main` 分支完成并提交后，先构建：
 
 ```bash
 npm run build --prefix frontend
 GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build -tags production -trimpath -buildvcs=false -ldflags="-w -s" -o codeswitch-web .
+```
+
+然后更新 `deploy` 分支：
+
+```bash
+git switch deploy
+git merge main
+git add -f codeswitch-web frontend/dist
+git commit -m "deploy: publish linux amd64 build"
+git push origin deploy
+git switch main
+```
+
+如果本次构建产物没有变化，`git commit` 会提示没有可提交内容，可以直接切回 `main`。
+
+### 备选：tar 包部署
+
+也可以本地打包后上传服务器解压：
+
+```bash
 tar -czf codeswitch-deploy-linux-amd64.tar.gz codeswitch-web frontend/dist
 ```
 
-服务器更新时只替换程序目录，不动 `~/.code-switch/`：
+服务器：
 
 ```bash
 sudo systemctl stop codeswitch
@@ -309,8 +380,6 @@ cd /opt/codeswitch/current
 sudo tar -xzf /tmp/codeswitch-deploy-linux-amd64.tar.gz
 sudo systemctl start codeswitch
 ```
-
-更稳的方式是使用版本目录和 `current` 软链，便于回滚。
 
 ## 常见问题
 
