@@ -1887,7 +1887,7 @@ const loadBlacklistStatus = async (tab: ProviderTab) => {
   try {
     const statuses = await getBlacklistStatus(tab)
     const map: Record<string, BlacklistStatus> = {}
-    statuses.forEach(status => {
+    ;(statuses ?? []).forEach(status => {
       map[status.providerName] = status
     })
     blacklistStatusMap[tab] = map

@@ -31,7 +31,8 @@ const SETTINGS_SERVICE = 'codeswitch/services.SettingsService'
  * @param platform 'claude' | 'codex'
  */
 export const getBlacklistStatus = async (platform: string): Promise<BlacklistStatus[]> => {
-  return Call.ByName(`${BLACKLIST_SERVICE}.GetBlacklistStatus`, platform)
+  const result = await Call.ByName(`${BLACKLIST_SERVICE}.GetBlacklistStatus`, platform)
+  return Array.isArray(result) ? result : []
 }
 
 /**
