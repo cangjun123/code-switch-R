@@ -22,6 +22,8 @@ export type AutomationCard = {
   bridgeResponsesInstructions?: boolean
   // Responses store=false 兼容：为要求 store=false 的 Responses 请求显式设置顶层 store=false
   forceResponsesStoreFalse?: boolean
+  // Responses max_output_tokens 兼容：为不支持该字段的 Responses 请求移除顶层 max_output_tokens
+  dropResponsesMaxOutputTokens?: boolean
   // CLI 配置：存储供应商关联的 CLI 可编辑配置
   cliConfig?: Record<string, any>
 

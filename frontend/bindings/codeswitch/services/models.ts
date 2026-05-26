@@ -2063,6 +2063,12 @@ export class Provider {
     "forceResponsesStoreFalse"?: boolean;
 
     /**
+     * Responses max_output_tokens 兼容开关
+     * 仅用于 OpenAI Responses 请求，必要时移除顶层 max_output_tokens。
+     */
+    "dropResponsesMaxOutputTokens"?: boolean;
+
+    /**
      * [已废弃] 连通性检测开关 - 迁移到 AvailabilityMonitorEnabled
      */
     "connectivityCheck"?: boolean;

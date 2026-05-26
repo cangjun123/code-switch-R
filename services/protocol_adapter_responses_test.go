@@ -344,6 +344,45 @@ func TestForceResponsesStoreFalseOverridesTrue(t *testing.T) {
 	}
 }
 
+func TestDropResponsesMaxOutputTokensRemovesWhenPresent(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"max_output_tokens": 128,
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, changed, err := DropResponsesMaxOutputTokens(body)
+	if err != nil {
+		t.Fatalf("DropResponsesMaxOutputTokens returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected payload to change when max_output_tokens exists")
+	}
+
+	result := gjson.ParseBytes(bridged)
+	if result.Get("max_output_tokens").Exists() {
+		t.Fatalf("max_output_tokens should be removed, got %s", result.Get("max_output_tokens").Raw)
+	}
+}
+
+func TestDropResponsesMaxOutputTokensNoopWhenAbsent(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, changed, err := DropResponsesMaxOutputTokens(body)
+	if err != nil {
+		t.Fatalf("DropResponsesMaxOutputTokens returned error: %v", err)
+	}
+	if changed {
+		t.Fatalf("expected payload to remain unchanged when max_output_tokens is absent")
+	}
+	if string(bridged) != string(body) {
+		t.Fatalf("body should remain unchanged when max_output_tokens is absent")
+	}
+}
+
 func TestConvertOpenAIResponsesToAnthropic(t *testing.T) {
 	body := []byte(`{
 		"id": "resp_1",

@@ -966,6 +966,16 @@ func (prs *ProviderRelayService) forwardRequest(
 		}
 	}
 
+	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) && provider.DropResponsesMaxOutputTokens {
+		bridgedBody, bridged, err := DropResponsesMaxOutputTokens(bodyBytes)
+		if err != nil {
+			fmt.Printf("[WARN] Provider %s Responses max_output_tokens 兼容处理失败，继续透传原请求: %v\n", provider.Name, err)
+		} else if bridged {
+			bodyBytes = bridgedBody
+			fmt.Printf("[INFO] Provider %s 已为 Responses 请求移除顶层 max_output_tokens\n", provider.Name)
+		}
+	}
+
 	removeInboundAuthHeaders(headers)
 
 	// 根据认证方式设置请求头（默认 Bearer，与 v2.2.x 保持一致）

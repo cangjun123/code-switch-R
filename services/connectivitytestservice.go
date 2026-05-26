@@ -285,8 +285,7 @@ func (cts *ConnectivityTestService) buildTestRequest(platform string, provider *
 	// Codex 格式: /responses
 	if strings.Contains(endpoint, "/responses") {
 		reqBody := map[string]interface{}{
-			"model":             model,
-			"max_output_tokens": 1,
+			"model": model,
 			"input": []map[string]interface{}{
 				{
 					"role": "user",
@@ -295,6 +294,12 @@ func (cts *ConnectivityTestService) buildTestRequest(platform string, provider *
 					},
 				},
 			},
+		}
+		if !provider.DropResponsesMaxOutputTokens {
+			reqBody["max_output_tokens"] = 1
+		}
+		if provider.ForceResponsesStoreFalse {
+			reqBody["store"] = false
 		}
 		data, _ := json.Marshal(reqBody)
 		return data, "output"

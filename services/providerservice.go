@@ -90,6 +90,12 @@ type Provider struct {
 	// 用于兼容要求 store 必须为 false 的非标准 Responses 上游。
 	ForceResponsesStoreFalse bool `json:"forceResponsesStoreFalse,omitempty"`
 
+	// Responses max_output_tokens 兼容开关
+	// 仅用于 Codex/OpenAI Responses 请求。
+	// 为 true 时，会移除顶层 max_output_tokens，
+	// 用于兼容不支持该字段的非标准 Responses 上游。
+	DropResponsesMaxOutputTokens bool `json:"dropResponsesMaxOutputTokens,omitempty"`
+
 	// Claude WebSearch 兼容开关
 	// 仅用于 Claude -> OpenAI Responses 协议适配。
 	// 为 true 时，允许把 Claude hosted web_search 工具映射为 Responses API 的 web_search_preview。
@@ -431,24 +437,25 @@ func (ps *ProviderService) DuplicateProvider(kind string, sourceID int64) (*Prov
 
 	// 5. 克隆配置（深拷贝）
 	cloned := &Provider{
-		ID:                          newID,
-		Name:                        source.Name + " (副本)",
-		APIURL:                      source.APIURL,
-		APIKey:                      source.APIKey,
-		Site:                        source.Site,
-		Icon:                        source.Icon,
-		Tint:                        source.Tint,
-		Accent:                      source.Accent,
-		Enabled:                     false, // 默认禁用，避免与源供应商冲突
-		Level:                       source.Level,
-		APIEndpoint:                 source.APIEndpoint,                 // 复制端点配置
-		UpstreamProtocol:            source.UpstreamProtocol,            // 复制上游协议配置
-		OpenAIEndpointMode:          source.OpenAIEndpointMode,          // 复制 OpenAI 接口能力配置
-		BridgeResponsesInstructions: source.BridgeResponsesInstructions, // 复制 Responses instructions 兼容开关
-		ForceResponsesStoreFalse:    source.ForceResponsesStoreFalse,    // 复制 Responses store=false 兼容开关
-		SupportsWebSearch:           source.SupportsWebSearch,           // 复制 WebSearch 兼容开关
-		SupportsCountTokens:         source.SupportsCountTokens,         // 复制 count_tokens 支持开关
-		ConnectivityAuthType:        source.ConnectivityAuthType,        // 复制认证方式
+		ID:                           newID,
+		Name:                         source.Name + " (副本)",
+		APIURL:                       source.APIURL,
+		APIKey:                       source.APIKey,
+		Site:                         source.Site,
+		Icon:                         source.Icon,
+		Tint:                         source.Tint,
+		Accent:                       source.Accent,
+		Enabled:                      false, // 默认禁用，避免与源供应商冲突
+		Level:                        source.Level,
+		APIEndpoint:                  source.APIEndpoint,                  // 复制端点配置
+		UpstreamProtocol:             source.UpstreamProtocol,             // 复制上游协议配置
+		OpenAIEndpointMode:           source.OpenAIEndpointMode,           // 复制 OpenAI 接口能力配置
+		BridgeResponsesInstructions:  source.BridgeResponsesInstructions,  // 复制 Responses instructions 兼容开关
+		ForceResponsesStoreFalse:     source.ForceResponsesStoreFalse,     // 复制 Responses store=false 兼容开关
+		DropResponsesMaxOutputTokens: source.DropResponsesMaxOutputTokens, // 复制 Responses max_output_tokens 兼容开关
+		SupportsWebSearch:            source.SupportsWebSearch,            // 复制 WebSearch 兼容开关
+		SupportsCountTokens:          source.SupportsCountTokens,          // 复制 count_tokens 支持开关
+		ConnectivityAuthType:         source.ConnectivityAuthType,         // 复制认证方式
 		// 可用性监控配置
 		AvailabilityMonitorEnabled: source.AvailabilityMonitorEnabled,
 		ConnectivityAutoBlacklist:  false, // 副本默认关闭自动拉黑
