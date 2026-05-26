@@ -46,7 +46,7 @@ func (ls *LogService) CostSince(start string, platform string) (float64, error) 
 			COALESCE(SUM(cache_create_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0)
 		FROM request_log
-		WHERE created_at >= ?
+		WHERE datetime(created_at, 'localtime') >= ?
 	`
 	args := []any{startTime.Format(timeLayout)}
 	if platform != "" {
@@ -108,6 +108,10 @@ func (ls *LogService) ListRequestLogs(platform string, provider string, limit in
 	}
 	logs := make([]ReqeustLog, 0, len(records))
 	for _, record := range records {
+		createdAt := record.GetString("created_at")
+		if parsed, ok := parseCreatedAt(record); ok {
+			createdAt = parsed.Format(timeLayout)
+		}
 		logEntry := ReqeustLog{
 			ID:                record.GetInt64("id"),
 			Platform:          record.GetString("platform"),
@@ -119,7 +123,7 @@ func (ls *LogService) ListRequestLogs(platform string, provider string, limit in
 			CacheCreateTokens: record.GetInt("cache_create_tokens"),
 			CacheReadTokens:   record.GetInt("cache_read_tokens"),
 			ReasoningTokens:   record.GetInt("reasoning_tokens"),
-			CreatedAt:         record.GetString("created_at"),
+			CreatedAt:         createdAt,
 			IsStream:          record.GetBool("is_stream"),
 			DurationSec:       record.GetFloat64("duration_sec"),
 		}
@@ -171,7 +175,10 @@ func (ls *LogService) HeatmapStats(days int) ([]HeatmapStat, error) {
 	}
 	rows, err := db.Query(`
 		SELECT
-			COALESCE(strftime('%Y-%m-%d %H:00:00', created_at), substr(created_at, 1, 13) || ':00:00') AS hour_bucket,
+			COALESCE(
+				strftime('%Y-%m-%d %H:00:00', datetime(created_at, 'localtime')),
+				substr(datetime(created_at, 'localtime'), 1, 13) || ':00:00'
+			) AS hour_bucket,
 			COALESCE(model, ''),
 			COUNT(*),
 			COALESCE(SUM(input_tokens), 0),
@@ -180,7 +187,7 @@ func (ls *LogService) HeatmapStats(days int) ([]HeatmapStat, error) {
 			COALESCE(SUM(cache_create_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0)
 		FROM request_log
-		WHERE created_at >= ?
+		WHERE datetime(created_at, 'localtime') >= ?
 		GROUP BY hour_bucket, COALESCE(model, '')
 		ORDER BY hour_bucket ASC
 	`, rangeStart.Format(timeLayout))
@@ -264,7 +271,10 @@ func (ls *LogService) StatsSince(platform string) (LogStats, error) {
 	}
 	query := `
 		SELECT
-			COALESCE(strftime('%Y-%m-%d %H:00:00', created_at), substr(created_at, 1, 13) || ':00:00') AS hour_bucket,
+			COALESCE(
+				strftime('%Y-%m-%d %H:00:00', datetime(created_at, 'localtime')),
+				substr(datetime(created_at, 'localtime'), 1, 13) || ':00:00'
+			) AS hour_bucket,
 			COALESCE(model, ''),
 			COUNT(*),
 			COALESCE(SUM(input_tokens), 0),
@@ -273,7 +283,7 @@ func (ls *LogService) StatsSince(platform string) (LogStats, error) {
 			COALESCE(SUM(cache_create_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0)
 		FROM request_log
-		WHERE created_at >= ? AND created_at < ?
+		WHERE datetime(created_at, 'localtime') >= ? AND datetime(created_at, 'localtime') < ?
 	`
 	args := []any{seriesStart.Format(timeLayout), seriesEnd.Format(timeLayout)}
 	if platform != "" {
@@ -387,7 +397,7 @@ func (ls *LogService) ProviderDailyStats(platform string) ([]ProviderDailyStat, 
 			COALESCE(SUM(cache_create_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0)
 		FROM request_log
-		WHERE created_at >= ? AND created_at < ?
+		WHERE datetime(created_at, 'localtime') >= ? AND datetime(created_at, 'localtime') < ?
 	`
 	args := []any{start.Format(timeLayout), end.Format(timeLayout)}
 	if platform != "" {
