@@ -509,9 +509,15 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 	start := time.Now()
 	defer prs.writeRelayRequestLog(requestLog, start)
 
+	if isClientAbortError(c.Request.Context(), c.Request.Context().Err()) {
+		requestLog.SkipLog = true
+		return false, errClientAbort
+	}
+
 	resp, err := prs.httpClient.Do(req)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		if isClientAbortError(ctx, err) {
+			requestLog.SkipLog = true
 			return false, fmt.Errorf("%w: %v", errClientAbort, err)
 		}
 		return false, err
@@ -522,6 +528,9 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 		if streamRequested || isOpenAIImageStreamingResponse(resp) {
 			if err := streamOpenAIImageResponse(c.Writer, resp, streamRequested); err != nil {
+				if isClientAbortError(c.Request.Context(), err) {
+					requestLog.SkipLog = true
+				}
 				fmt.Printf("[Images] 流式响应转发中断: %v\n", err)
 			}
 			return true, nil
@@ -626,6 +635,9 @@ func (prs *ProviderRelayService) writeRelayRequestLog(requestLog *ReqeustLog, st
 		return
 	}
 	requestLog.DurationSec = time.Since(start).Seconds()
+	if requestLog.SkipLog {
+		return
+	}
 	if GlobalDBQueueLogs == nil {
 		fmt.Printf("⚠️  写入 request_log 失败: 队列未初始化\n")
 		return
