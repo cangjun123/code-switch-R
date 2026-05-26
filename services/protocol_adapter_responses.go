@@ -243,6 +243,27 @@ func BridgeResponsesInstructionsFromInput(body []byte) ([]byte, bool, error) {
 	return result, true, nil
 }
 
+// ForceResponsesStoreFalse 显式把 Responses 请求顶层 store 设为 false。
+// 如果 store 已经是 false，则保持不变。
+func ForceResponsesStoreFalse(body []byte) ([]byte, bool, error) {
+	req, err := decodeJSONObject(body)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if store, ok := req["store"].(bool); ok && !store {
+		return body, false, nil
+	}
+
+	req["store"] = false
+	result, err := json.Marshal(req)
+	if err != nil {
+		return nil, false, fmt.Errorf("序列化 Responses 请求失败: %w", err)
+	}
+
+	return result, true, nil
+}
+
 func deriveResponsesInstructionsFromInput(inputValue interface{}) string {
 	for _, rawItem := range asSlice(inputValue) {
 		itemMap, ok := rawItem.(map[string]interface{})

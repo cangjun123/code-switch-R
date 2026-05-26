@@ -684,6 +684,20 @@
                   <span class="field-hint">{{ t('components.main.form.hints.bridgeResponsesInstructions') }}</span>
                 </div>
 
+                <div v-if="modalState.tabId === 'codex'" class="form-field switch-field">
+                  <span>{{ t('components.main.form.labels.forceResponsesStoreFalse') }}</span>
+                  <div class="switch-inline">
+                    <label class="mac-switch">
+                      <input type="checkbox" v-model="modalState.form.forceResponsesStoreFalse" />
+                      <span></span>
+                    </label>
+                    <span class="switch-text">
+                      {{ modalState.form.forceResponsesStoreFalse ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
+                    </span>
+                  </div>
+                  <span class="field-hint">{{ t('components.main.form.hints.forceResponsesStoreFalse') }}</span>
+                </div>
+
                 <!-- 认证方式 -->
                 <div class="form-field">
                   <span>{{ t('components.main.form.labels.connectivityAuthType') }}</span>
@@ -2552,6 +2566,7 @@ type VendorForm = {
   apiEndpoint?: string
   openAIEndpointMode?: string
   bridgeResponsesInstructions?: boolean
+  forceResponsesStoreFalse?: boolean
   cliConfig?: Record<string, any>
   // === 可用性监控配置（新） ===
   availabilityMonitorEnabled?: boolean
@@ -2600,6 +2615,7 @@ const defaultFormValues = (platform?: string): VendorForm => ({
   upstreamProtocol: 'auto', // 上游协议类型（anthropic/openai_chat/auto）
   openAIEndpointMode: 'auto', // OpenAI 入口能力（仅 codex 使用）
   bridgeResponsesInstructions: false, // Responses instructions 兼容开关
+  forceResponsesStoreFalse: false, // Responses store=false 兼容开关
   // 可用性监控配置（新）
   availabilityMonitorEnabled: false,
   connectivityAutoBlacklist: false,
@@ -2723,6 +2739,7 @@ const openEditModal = (card: AutomationCard) => {
     upstreamProtocol: card.upstreamProtocol || 'auto',
     openAIEndpointMode: card.openAIEndpointMode || 'auto',
     bridgeResponsesInstructions: !!card.bridgeResponsesInstructions,
+    forceResponsesStoreFalse: !!card.forceResponsesStoreFalse,
     // 可用性监控配置（新）- 兼容从旧字段迁移
     availabilityMonitorEnabled:
       card.availabilityMonitorEnabled ?? card.connectivityCheck ?? false,
@@ -2823,6 +2840,7 @@ const submitModal = async (): Promise<boolean> => {
       upstreamProtocol: modalState.form.upstreamProtocol || 'auto',
       openAIEndpointMode: modalState.form.openAIEndpointMode || 'auto',
       bridgeResponsesInstructions: !!modalState.form.bridgeResponsesInstructions,
+      forceResponsesStoreFalse: !!modalState.form.forceResponsesStoreFalse,
       // 可用性监控配置（新）
       availabilityMonitorEnabled: !!modalState.form.availabilityMonitorEnabled,
       connectivityAutoBlacklist: !!modalState.form.connectivityAutoBlacklist,
@@ -2866,6 +2884,7 @@ const submitModal = async (): Promise<boolean> => {
       upstreamProtocol: modalState.form.upstreamProtocol || 'auto',
       openAIEndpointMode: modalState.form.openAIEndpointMode || 'auto',
       bridgeResponsesInstructions: !!modalState.form.bridgeResponsesInstructions,
+      forceResponsesStoreFalse: !!modalState.form.forceResponsesStoreFalse,
       // 可用性监控配置（新）
       availabilityMonitorEnabled: !!modalState.form.availabilityMonitorEnabled,
       connectivityAutoBlacklist: !!modalState.form.connectivityAutoBlacklist,

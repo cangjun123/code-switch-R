@@ -20,6 +20,8 @@ export type AutomationCard = {
   openAIEndpointMode?: string
   // Responses instructions 兼容：为缺失 instructions 的 Responses 请求补齐顶层 instructions
   bridgeResponsesInstructions?: boolean
+  // Responses store=false 兼容：为要求 store=false 的 Responses 请求显式设置顶层 store=false
+  forceResponsesStoreFalse?: boolean
   // CLI 配置：存储供应商关联的 CLI 可编辑配置
   cliConfig?: Record<string, any>
 

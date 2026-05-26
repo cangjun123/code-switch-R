@@ -303,6 +303,47 @@ func TestBridgeResponsesInstructionsFromInputNoopWhenInstructionsPresent(t *test
 	}
 }
 
+func TestForceResponsesStoreFalseAddsWhenMissing(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, changed, err := ForceResponsesStoreFalse(body)
+	if err != nil {
+		t.Fatalf("ForceResponsesStoreFalse returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected payload to change when store is missing")
+	}
+
+	result := gjson.ParseBytes(bridged)
+	if !result.Get("store").Exists() || result.Get("store").Bool() {
+		t.Fatalf("store = %v, want explicit false", result.Get("store").Value())
+	}
+}
+
+func TestForceResponsesStoreFalseOverridesTrue(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"store": true,
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, changed, err := ForceResponsesStoreFalse(body)
+	if err != nil {
+		t.Fatalf("ForceResponsesStoreFalse returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected payload to change when store=true")
+	}
+
+	result := gjson.ParseBytes(bridged)
+	if result.Get("store").Bool() {
+		t.Fatalf("store should be forced to false, got %v", result.Get("store").Value())
+	}
+}
+
 func TestConvertOpenAIResponsesToAnthropic(t *testing.T) {
 	body := []byte(`{
 		"id": "resp_1",

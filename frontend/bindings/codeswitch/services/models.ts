@@ -2057,6 +2057,12 @@ export class Provider {
     "bridgeResponsesInstructions"?: boolean;
 
     /**
+     * Responses store=false 兼容开关
+     * 仅用于 OpenAI Responses 请求，必要时显式把顶层 store 设为 false。
+     */
+    "forceResponsesStoreFalse"?: boolean;
+
+    /**
      * [已废弃] 连通性检测开关 - 迁移到 AvailabilityMonitorEnabled
      */
     "connectivityCheck"?: boolean;

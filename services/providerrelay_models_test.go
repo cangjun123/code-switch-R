@@ -638,6 +638,78 @@ func TestCodexResponsesBridgeInstructionsWhenProviderEnabled(t *testing.T) {
 	}
 }
 
+func TestCodexResponsesForceStoreFalseWhenProviderEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var upstreamHits int
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		if r.URL.Path != "/responses" {
+			t.Errorf("期望路径 /responses，收到 %s", r.URL.Path)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("读取上游请求体失败: %v", err)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("上游请求体不是 JSON: %v", err)
+		}
+		if store, ok := payload["store"].(bool); !ok || store {
+			t.Fatalf("顶层 store 未被强制设为 false，收到 %v", payload["store"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_ok","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
+	}))
+	defer upstreamServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindCodex, []Provider{
+		{
+			ID:                       1,
+			Name:                     "EtoStoreCompatible",
+			APIURL:                   upstreamServer.URL,
+			APIKey:                   "eto-key",
+			Enabled:                  true,
+			OpenAIEndpointMode:       "responses",
+			ForceResponsesStoreFalse: true,
+			SupportedModels: map[string]bool{
+				"gpt-5.4": true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{
+		"model":"gpt-5.4",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"ping"}]}
+		]
+	}`))
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("期望命中上游 1 次，实际 %d", upstreamHits)
+	}
+}
+
 func TestOpenAIChatRouteSkipsResponsesOnlyProviders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
