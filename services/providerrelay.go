@@ -976,6 +976,16 @@ func (prs *ProviderRelayService) forwardRequest(
 		}
 	}
 
+	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) && provider.DropResponsesTemperature {
+		bridgedBody, bridged, err := DropResponsesTemperature(bodyBytes)
+		if err != nil {
+			fmt.Printf("[WARN] Provider %s Responses temperature 兼容处理失败，继续透传原请求: %v\n", provider.Name, err)
+		} else if bridged {
+			bodyBytes = bridgedBody
+			fmt.Printf("[INFO] Provider %s 已为 Responses 请求移除顶层 temperature\n", provider.Name)
+		}
+	}
+
 	removeInboundAuthHeaders(headers)
 
 	// 根据认证方式设置请求头（默认 Bearer，与 v2.2.x 保持一致）

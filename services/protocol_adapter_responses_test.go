@@ -383,6 +383,45 @@ func TestDropResponsesMaxOutputTokensNoopWhenAbsent(t *testing.T) {
 	}
 }
 
+func TestDropResponsesTemperatureRemovesWhenPresent(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"temperature": 1,
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, changed, err := DropResponsesTemperature(body)
+	if err != nil {
+		t.Fatalf("DropResponsesTemperature returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected payload to change when temperature exists")
+	}
+
+	result := gjson.ParseBytes(bridged)
+	if result.Get("temperature").Exists() {
+		t.Fatalf("temperature should be removed, got %s", result.Get("temperature").Raw)
+	}
+}
+
+func TestDropResponsesTemperatureNoopWhenAbsent(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, changed, err := DropResponsesTemperature(body)
+	if err != nil {
+		t.Fatalf("DropResponsesTemperature returned error: %v", err)
+	}
+	if changed {
+		t.Fatalf("expected payload to remain unchanged when temperature is absent")
+	}
+	if string(bridged) != string(body) {
+		t.Fatalf("body should remain unchanged when temperature is absent")
+	}
+}
+
 func TestConvertOpenAIResponsesToAnthropic(t *testing.T) {
 	body := []byte(`{
 		"id": "resp_1",

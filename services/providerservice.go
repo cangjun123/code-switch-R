@@ -96,6 +96,12 @@ type Provider struct {
 	// 用于兼容不支持该字段的非标准 Responses 上游。
 	DropResponsesMaxOutputTokens bool `json:"dropResponsesMaxOutputTokens,omitempty"`
 
+	// Responses temperature 兼容开关
+	// 仅用于 Codex/OpenAI Responses 请求。
+	// 为 true 时，会移除顶层 temperature，
+	// 用于兼容不支持该字段的非标准 Responses 上游。
+	DropResponsesTemperature bool `json:"dropResponsesTemperature,omitempty"`
+
 	// Claude WebSearch 兼容开关
 	// 仅用于 Claude -> OpenAI Responses 协议适配。
 	// 为 true 时，允许把 Claude hosted web_search 工具映射为 Responses API 的 web_search_preview。
@@ -453,6 +459,7 @@ func (ps *ProviderService) DuplicateProvider(kind string, sourceID int64) (*Prov
 		BridgeResponsesInstructions:  source.BridgeResponsesInstructions,  // 复制 Responses instructions 兼容开关
 		ForceResponsesStoreFalse:     source.ForceResponsesStoreFalse,     // 复制 Responses store=false 兼容开关
 		DropResponsesMaxOutputTokens: source.DropResponsesMaxOutputTokens, // 复制 Responses max_output_tokens 兼容开关
+		DropResponsesTemperature:     source.DropResponsesTemperature,     // 复制 Responses temperature 兼容开关
 		SupportsWebSearch:            source.SupportsWebSearch,            // 复制 WebSearch 兼容开关
 		SupportsCountTokens:          source.SupportsCountTokens,          // 复制 count_tokens 支持开关
 		ConnectivityAuthType:         source.ConnectivityAuthType,         // 复制认证方式

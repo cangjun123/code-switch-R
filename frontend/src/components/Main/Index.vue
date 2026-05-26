@@ -712,6 +712,20 @@
                   <span class="field-hint">{{ t('components.main.form.hints.dropResponsesMaxOutputTokens') }}</span>
                 </div>
 
+                <div v-if="modalState.tabId === 'codex'" class="form-field switch-field">
+                  <span>{{ t('components.main.form.labels.dropResponsesTemperature') }}</span>
+                  <div class="switch-inline">
+                    <label class="mac-switch">
+                      <input type="checkbox" v-model="modalState.form.dropResponsesTemperature" />
+                      <span></span>
+                    </label>
+                    <span class="switch-text">
+                      {{ modalState.form.dropResponsesTemperature ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
+                    </span>
+                  </div>
+                  <span class="field-hint">{{ t('components.main.form.hints.dropResponsesTemperature') }}</span>
+                </div>
+
                 <!-- 认证方式 -->
                 <div class="form-field">
                   <span>{{ t('components.main.form.labels.connectivityAuthType') }}</span>
@@ -2582,6 +2596,7 @@ type VendorForm = {
   bridgeResponsesInstructions?: boolean
   forceResponsesStoreFalse?: boolean
   dropResponsesMaxOutputTokens?: boolean
+  dropResponsesTemperature?: boolean
   cliConfig?: Record<string, any>
   // === 可用性监控配置（新） ===
   availabilityMonitorEnabled?: boolean
@@ -2632,6 +2647,7 @@ const defaultFormValues = (platform?: string): VendorForm => ({
   bridgeResponsesInstructions: false, // Responses instructions 兼容开关
   forceResponsesStoreFalse: false, // Responses store=false 兼容开关
   dropResponsesMaxOutputTokens: false, // Responses max_output_tokens 兼容开关
+  dropResponsesTemperature: false, // Responses temperature 兼容开关
   // 可用性监控配置（新）
   availabilityMonitorEnabled: false,
   connectivityAutoBlacklist: false,
@@ -2757,6 +2773,7 @@ const openEditModal = (card: AutomationCard) => {
     bridgeResponsesInstructions: !!card.bridgeResponsesInstructions,
     forceResponsesStoreFalse: !!card.forceResponsesStoreFalse,
     dropResponsesMaxOutputTokens: !!card.dropResponsesMaxOutputTokens,
+    dropResponsesTemperature: !!card.dropResponsesTemperature,
     // 可用性监控配置（新）- 兼容从旧字段迁移
     availabilityMonitorEnabled:
       card.availabilityMonitorEnabled ?? card.connectivityCheck ?? false,
@@ -2859,6 +2876,7 @@ const submitModal = async (): Promise<boolean> => {
       bridgeResponsesInstructions: !!modalState.form.bridgeResponsesInstructions,
       forceResponsesStoreFalse: !!modalState.form.forceResponsesStoreFalse,
       dropResponsesMaxOutputTokens: !!modalState.form.dropResponsesMaxOutputTokens,
+      dropResponsesTemperature: !!modalState.form.dropResponsesTemperature,
       // 可用性监控配置（新）
       availabilityMonitorEnabled: !!modalState.form.availabilityMonitorEnabled,
       connectivityAutoBlacklist: !!modalState.form.connectivityAutoBlacklist,
@@ -2904,6 +2922,7 @@ const submitModal = async (): Promise<boolean> => {
       bridgeResponsesInstructions: !!modalState.form.bridgeResponsesInstructions,
       forceResponsesStoreFalse: !!modalState.form.forceResponsesStoreFalse,
       dropResponsesMaxOutputTokens: !!modalState.form.dropResponsesMaxOutputTokens,
+      dropResponsesTemperature: !!modalState.form.dropResponsesTemperature,
       // 可用性监控配置（新）
       availabilityMonitorEnabled: !!modalState.form.availabilityMonitorEnabled,
       connectivityAutoBlacklist: !!modalState.form.connectivityAutoBlacklist,

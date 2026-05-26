@@ -24,6 +24,8 @@ export type AutomationCard = {
   forceResponsesStoreFalse?: boolean
   // Responses max_output_tokens 兼容：为不支持该字段的 Responses 请求移除顶层 max_output_tokens
   dropResponsesMaxOutputTokens?: boolean
+  // Responses temperature 兼容：为不支持该字段的 Responses 请求移除顶层 temperature
+  dropResponsesTemperature?: boolean
   // CLI 配置：存储供应商关联的 CLI 可编辑配置
   cliConfig?: Record<string, any>
 

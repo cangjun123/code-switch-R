@@ -285,6 +285,27 @@ func DropResponsesMaxOutputTokens(body []byte) ([]byte, bool, error) {
 	return result, true, nil
 }
 
+// DropResponsesTemperature 移除 Responses 请求顶层 temperature。
+// 如果该字段原本不存在，则保持不变。
+func DropResponsesTemperature(body []byte) ([]byte, bool, error) {
+	req, err := decodeJSONObject(body)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if _, ok := req["temperature"]; !ok {
+		return body, false, nil
+	}
+
+	delete(req, "temperature")
+	result, err := json.Marshal(req)
+	if err != nil {
+		return nil, false, fmt.Errorf("序列化 Responses 请求失败: %w", err)
+	}
+
+	return result, true, nil
+}
+
 func deriveResponsesInstructionsFromInput(inputValue interface{}) string {
 	for _, rawItem := range asSlice(inputValue) {
 		itemMap, ok := rawItem.(map[string]interface{})
