@@ -50,6 +50,33 @@ type ProviderRelayService struct {
 // errClientAbort 表示客户端中断连接，不应计入 provider 失败次数
 var errClientAbort = errors.New("client aborted, skip failure count")
 
+func isClientAbortError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errClientAbort) || errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return true
+	}
+
+	msg := strings.ToLower(err.Error())
+	abortMarkers := []string{
+		"context canceled",
+		"request canceled",
+		"client disconnected",
+		"broken pipe",
+		"connection reset by peer",
+	}
+	for _, marker := range abortMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func NewProviderRelayService(providerService *ProviderService, geminiService *GeminiService, codexRelayKeys *CodexRelayKeyService, blacklistService *BlacklistService, notificationService *NotificationService, appSettings *AppSettingsService, addr string) *ProviderRelayService {
 	if addr == "" {
 		addr = DefaultRelayBindAddr
@@ -762,7 +789,8 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 
 				// 客户端中断不计入失败次数
 				if errors.Is(err, errClientAbort) {
-					fmt.Printf("[INFO] 客户端中断，跳过失败计数: %s\n", provider.Name)
+					fmt.Printf("[INFO] 客户端中断，停止后续降级: %s\n", provider.Name)
+					return
 				} else if err := prs.blacklistService.RecordFailure(kind, provider.Name); err != nil {
 					fmt.Printf("[ERROR] 记录失败到黑名单失败: %v\n", err)
 				}
@@ -956,6 +984,9 @@ func (prs *ProviderRelayService) forwardRequest(
 	start := time.Now()
 	defer func() {
 		requestLog.DurationSec = time.Since(start).Seconds()
+		if requestLog.SkipLog {
+			return
+		}
 
 		// 【修复】判空保护：避免队列未初始化时 panic
 		if GlobalDBQueueLogs == nil {
@@ -1007,6 +1038,11 @@ func (prs *ProviderRelayService) forwardRequest(
 	reqBody := bytes.NewReader(bodyBytes)
 	req = req.SetBody(reqBody)
 
+	if isClientAbortError(c.Request.Context(), c.Request.Context().Err()) {
+		requestLog.SkipLog = true
+		return false, errClientAbort
+	}
+
 	resp, err := req.Post(targetURL)
 
 	// 无论成功失败，先尝试记录 HttpCode
@@ -1020,8 +1056,13 @@ func (prs *ProviderRelayService) forwardRequest(
 	}
 
 	if err != nil {
+		if isClientAbortError(c.Request.Context(), err) {
+			requestLog.SkipLog = true
+			return false, fmt.Errorf("%w: %v", errClientAbort, err)
+		}
 		// resp 存在但 err != nil：可能是客户端中断，不计入失败
 		if resp != nil && requestLog.HttpCode == 0 {
+			requestLog.SkipLog = true
 			fmt.Printf("[INFO] Provider %s 响应存在但状态码为0，判定为客户端中断\n", provider.Name)
 			return false, fmt.Errorf("%w: %v", errClientAbort, err)
 		}
@@ -1041,8 +1082,13 @@ func (prs *ProviderRelayService) forwardRequest(
 	status := requestLog.HttpCode
 
 	if resp.Error() != nil {
+		if isClientAbortError(c.Request.Context(), resp.Error()) {
+			requestLog.SkipLog = true
+			return false, fmt.Errorf("%w: %v", errClientAbort, resp.Error())
+		}
 		// resp 存在、有错误、但状态码为 0：客户端中断，不计入失败
 		if status == 0 {
+			requestLog.SkipLog = true
 			fmt.Printf("[INFO] Provider %s 响应错误但状态码为0，判定为客户端中断\n", provider.Name)
 			return false, fmt.Errorf("%w: %v", errClientAbort, resp.Error())
 		}
@@ -1074,6 +1120,11 @@ func (prs *ProviderRelayService) forwardRequest(
 			_, copyErr = resp.ToHttpResponseWriter(c.Writer, ReqeustLogHook(c, kind, requestLog))
 		}
 		if copyErr != nil {
+			if isClientAbortError(c.Request.Context(), copyErr) {
+				requestLog.SkipLog = true
+				fmt.Printf("[INFO] Provider %s 写回客户端时连接中断，跳过 request_log\n", provider.Name)
+				return true, nil
+			}
 			fmt.Printf("[WARN] 复制响应到客户端失败（不影响provider成功判定）: %v\n", copyErr)
 		}
 		return true, nil
@@ -1381,14 +1432,27 @@ func ensureRequestLogTableWithDB(db *sql.DB) error {
 		return err
 	}
 
-	if err := ensureRequestLogColumn(db, "created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"); err != nil {
-		return err
+	requiredColumns := []struct {
+		name       string
+		definition string
+	}{
+		{name: "platform", definition: "TEXT"},
+		{name: "model", definition: "TEXT"},
+		{name: "provider", definition: "TEXT"},
+		{name: "http_code", definition: "INTEGER"},
+		{name: "input_tokens", definition: "INTEGER DEFAULT 0"},
+		{name: "output_tokens", definition: "INTEGER DEFAULT 0"},
+		{name: "cache_create_tokens", definition: "INTEGER DEFAULT 0"},
+		{name: "cache_read_tokens", definition: "INTEGER DEFAULT 0"},
+		{name: "reasoning_tokens", definition: "INTEGER DEFAULT 0"},
+		{name: "created_at", definition: "DATETIME DEFAULT CURRENT_TIMESTAMP"},
+		{name: "is_stream", definition: "INTEGER DEFAULT 0"},
+		{name: "duration_sec", definition: "REAL DEFAULT 0"},
 	}
-	if err := ensureRequestLogColumn(db, "is_stream", "INTEGER DEFAULT 0"); err != nil {
-		return err
-	}
-	if err := ensureRequestLogColumn(db, "duration_sec", "REAL DEFAULT 0"); err != nil {
-		return err
+	for _, column := range requiredColumns {
+		if err := ensureRequestLogColumn(db, column.name, column.definition); err != nil {
+			return err
+		}
 	}
 
 	if err := ensureRequestLogIndexes(db); err != nil {
@@ -1484,6 +1548,7 @@ type ReqeustLog struct {
 	Ephemeral1hCost   float64 `json:"ephemeral_1h_cost"`
 	TotalCost         float64 `json:"total_cost"`
 	HasPricing        bool    `json:"has_pricing"`
+	SkipLog           bool    `json:"-"`
 }
 
 // claude code usage parser
@@ -2410,7 +2475,8 @@ func (prs *ProviderRelayService) customCliProxyHandler() gin.HandlerFunc {
 					level, provider.Name, errorMsg, duration.Seconds())
 
 				if errors.Is(err, errClientAbort) {
-					fmt.Printf("[CustomCLI][INFO] 客户端中断，跳过失败计数: %s\n", provider.Name)
+					fmt.Printf("[CustomCLI][INFO] 客户端中断，停止后续降级: %s\n", provider.Name)
+					return
 				} else if err := prs.blacklistService.RecordFailure(kind, provider.Name); err != nil {
 					fmt.Printf("[CustomCLI][ERROR] 记录失败到黑名单失败: %v\n", err)
 				}
