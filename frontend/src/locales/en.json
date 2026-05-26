@@ -622,6 +622,29 @@
       },
       "tokenDetail": {
         "title": "Today's Token Breakdown"
+      },
+      "maintenance": {
+        "title": "Log Maintenance",
+        "subtitle": "Inspect request_log size and remove expired rows.",
+        "refresh": "Refresh maintenance",
+        "cleanup": "Clean expired logs",
+        "cleaning": "Cleaning...",
+        "retentionDays": "Retention days",
+        "save": "Save",
+        "saving": "Saving...",
+        "totalRows": "Total rows",
+        "expiredRows": "Expired rows",
+        "databaseSize": "Database size",
+        "walSize": "WAL size",
+        "oldest": "Oldest log",
+        "cutoff": "Cleanup cutoff",
+        "vacuumHint": "SQLite will reuse freed pages. To shrink the file, run VACUUM manually during a quiet period.",
+        "loadFailed": "Failed to load log maintenance info",
+        "saveSuccess": "Log retention days saved",
+        "saveFailed": "Failed to save log retention days",
+        "cleanupConfirm": "Clean request logs older than {days} days? This will not run VACUUM automatically.",
+        "cleanupSuccess": "Cleaned {count} expired log rows",
+        "cleanupFailed": "Failed to clean expired logs"
       }
     },
     "general": {
