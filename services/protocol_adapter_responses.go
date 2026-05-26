@@ -216,6 +216,81 @@ func decodeJSONObject(body []byte) (map[string]interface{}, error) {
 	return result, nil
 }
 
+// BridgeResponsesInstructionsFromInput 为要求顶层 instructions 的 Responses 上游补齐 instructions。
+// 当请求缺少 instructions 时，提取首个 developer/system message 的纯文本内容并提升到顶层。
+// 原 input 保持不变，避免破坏已兼容该模式的上游行为。
+func BridgeResponsesInstructionsFromInput(body []byte) ([]byte, bool, error) {
+	req, err := decodeJSONObject(body)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if strings.TrimSpace(asString(req["instructions"])) != "" {
+		return body, false, nil
+	}
+
+	instructions := deriveResponsesInstructionsFromInput(req["input"])
+	if instructions == "" {
+		return body, false, nil
+	}
+
+	req["instructions"] = instructions
+	result, err := json.Marshal(req)
+	if err != nil {
+		return nil, false, fmt.Errorf("序列化 Responses 请求失败: %w", err)
+	}
+
+	return result, true, nil
+}
+
+func deriveResponsesInstructionsFromInput(inputValue interface{}) string {
+	for _, rawItem := range asSlice(inputValue) {
+		itemMap, ok := rawItem.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if asString(itemMap["type"]) != "message" {
+			continue
+		}
+
+		role := strings.ToLower(strings.TrimSpace(asString(itemMap["role"])))
+		if role != "developer" && role != "system" {
+			continue
+		}
+
+		if text := extractResponsesMessageText(itemMap["content"]); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func extractResponsesMessageText(contentValue interface{}) string {
+	switch value := contentValue.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []interface{}:
+		parts := make([]string, 0, len(value))
+		for _, rawPart := range value {
+			partMap, ok := rawPart.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			text := strings.TrimSpace(asString(partMap["text"]))
+			if text == "" {
+				continue
+			}
+			partType := strings.ToLower(strings.TrimSpace(asString(partMap["type"])))
+			if partType == "" || partType == "input_text" || partType == "text" || partType == "output_text" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
+}
+
 func translateAnthropicSystemToInstructions(system interface{}) string {
 	switch value := system.(type) {
 	case string:

@@ -2051,6 +2051,12 @@ export class Provider {
     "openAIEndpointMode"?: string;
 
     /**
+     * Responses instructions 兼容开关
+     * 仅用于 OpenAI Responses 请求，必要时从 developer/system message 补齐顶层 instructions。
+     */
+    "bridgeResponsesInstructions"?: boolean;
+
+    /**
      * [已废弃] 连通性检测开关 - 迁移到 AvailabilityMonitorEnabled
      */
     "connectivityCheck"?: boolean;

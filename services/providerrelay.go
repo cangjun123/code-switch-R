@@ -946,6 +946,16 @@ func (prs *ProviderRelayService) forwardRequest(
 	}
 	_ = convertInfo // 避免未使用警告
 
+	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) && provider.BridgeResponsesInstructions {
+		bridgedBody, bridged, err := BridgeResponsesInstructionsFromInput(bodyBytes)
+		if err != nil {
+			fmt.Printf("[WARN] Provider %s Responses instructions 兼容处理失败，继续透传原请求: %v\n", provider.Name, err)
+		} else if bridged {
+			bodyBytes = bridgedBody
+			fmt.Printf("[INFO] Provider %s 已为 Responses 请求补齐顶层 instructions\n", provider.Name)
+		}
+	}
+
 	removeInboundAuthHeaders(headers)
 
 	// 根据认证方式设置请求头（默认 Bearer，与 v2.2.x 保持一致）

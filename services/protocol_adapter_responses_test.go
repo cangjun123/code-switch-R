@@ -241,6 +241,68 @@ func TestConvertAnthropicToOpenAIResponsesAllowsWebSearchWhenEnabled(t *testing.
 	}
 }
 
+func TestBridgeResponsesInstructionsFromInput(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"input": [
+			{
+				"type": "message",
+				"role": "developer",
+				"content": [
+					{"type":"input_text","text":"system rule"},
+					{"type":"input_text","text":"extra rule"}
+				]
+			},
+			{
+				"type": "message",
+				"role": "user",
+				"content": [{"type":"input_text","text":"hello"}]
+			}
+		]
+	}`)
+
+	bridged, changed, err := BridgeResponsesInstructionsFromInput(body)
+	if err != nil {
+		t.Fatalf("BridgeResponsesInstructionsFromInput returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected instructions bridge to change payload")
+	}
+
+	result := gjson.ParseBytes(bridged)
+	if got := result.Get("instructions").String(); got != "system rule\nextra rule" {
+		t.Fatalf("instructions = %q, want %q", got, "system rule\nextra rule")
+	}
+	if got := result.Get("input.0.role").String(); got != "developer" {
+		t.Fatalf("input should be preserved, got first role %q", got)
+	}
+}
+
+func TestBridgeResponsesInstructionsFromInputNoopWhenInstructionsPresent(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"instructions": "already set",
+		"input": [
+			{
+				"type": "message",
+				"role": "developer",
+				"content": [{"type":"input_text","text":"system rule"}]
+			}
+		]
+	}`)
+
+	bridged, changed, err := BridgeResponsesInstructionsFromInput(body)
+	if err != nil {
+		t.Fatalf("BridgeResponsesInstructionsFromInput returned error: %v", err)
+	}
+	if changed {
+		t.Fatalf("expected payload to remain unchanged when instructions already present")
+	}
+	if string(bridged) != string(body) {
+		t.Fatalf("body should remain unchanged when instructions already exist")
+	}
+}
+
 func TestConvertOpenAIResponsesToAnthropic(t *testing.T) {
 	body := []byte(`{
 		"id": "resp_1",

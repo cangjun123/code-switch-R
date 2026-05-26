@@ -18,6 +18,8 @@ export type AutomationCard = {
   apiEndpoint?: string
   // OpenAI 入口能力：auto / responses / chat_completions / both
   openAIEndpointMode?: string
+  // Responses instructions 兼容：为缺失 instructions 的 Responses 请求补齐顶层 instructions
+  bridgeResponsesInstructions?: boolean
   // CLI 配置：存储供应商关联的 CLI 可编辑配置
   cliConfig?: Record<string, any>
 
