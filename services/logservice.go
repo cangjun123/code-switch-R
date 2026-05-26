@@ -1,10 +1,14 @@
 package services
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +19,11 @@ import (
 
 const timeLayout = "2006-01-02 15:04:05"
 
+const (
+	defaultRequestLogRetentionDays = 30
+	requestLogRetentionSettingKey  = "request_log_retention_days"
+)
+
 type LogService struct {
 	pricing *modelpricing.Service
 }
@@ -24,41 +33,47 @@ func (ls *LogService) CostSince(start string, platform string) (float64, error) 
 	if err != nil {
 		return 0, err
 	}
-	model := xdb.New("request_log")
-	options := []xdb.Option{
-		xdb.WhereGte("created_at", startTime.Format(timeLayout)),
-		xdb.Field(
-			"model",
-			"input_tokens",
-			"output_tokens",
-			"reasoning_tokens",
-			"cache_create_tokens",
-			"cache_read_tokens",
-		),
+	db, err := xdb.DB("default")
+	if err != nil {
+		return 0, err
 	}
+	query := `
+		SELECT
+			COALESCE(model, ''),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(reasoning_tokens), 0),
+			COALESCE(SUM(cache_create_tokens), 0),
+			COALESCE(SUM(cache_read_tokens), 0)
+		FROM request_log
+		WHERE created_at >= ?
+	`
+	args := []any{startTime.Format(timeLayout)}
 	if platform != "" {
-		options = append(options, xdb.WhereEq("platform", platform))
+		query += " AND platform = ?"
+		args = append(args, platform)
 	}
-	records, err := model.Selects(options...)
+	query += " GROUP BY COALESCE(model, '')"
+
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		if errors.Is(err, xdb.ErrNotFound) || isNoSuchTableErr(err) {
 			return 0, nil
 		}
 		return 0, err
 	}
+	defer rows.Close()
+
 	total := 0.0
-	for _, record := range records {
-		usage := modelpricing.UsageSnapshot{
-			InputTokens:       record.GetInt("input_tokens"),
-			OutputTokens:      record.GetInt("output_tokens"),
-			ReasoningTokens:   record.GetInt("reasoning_tokens"),
-			CacheCreateTokens: record.GetInt("cache_create_tokens"),
-			CacheReadTokens:   record.GetInt("cache_read_tokens"),
+	for rows.Next() {
+		modelName, usage, err := scanUsageAggregate(rows)
+		if err != nil {
+			return 0, err
 		}
-		cost := ls.calculateCost(record.GetString("model"), usage)
+		cost := ls.calculateCost(modelName, usage)
 		total += cost.TotalCost
 	}
-	return total, nil
+	return total, rows.Err()
 }
 
 func NewLogService() *LogService {
@@ -150,30 +165,46 @@ func (ls *LogService) HeatmapStats(days int) ([]HeatmapStat, error) {
 	if totalHours > 1 {
 		rangeStart = rangeStart.Add(-time.Duration(totalHours-1) * time.Hour)
 	}
-	model := xdb.New("request_log")
-	options := []xdb.Option{
-		xdb.WhereGe("created_at", rangeStart.Format(timeLayout)),
-		xdb.Field(
-			"model",
-			"input_tokens",
-			"output_tokens",
-			"reasoning_tokens",
-			"cache_create_tokens",
-			"cache_read_tokens",
-			"created_at",
-		),
-		xdb.OrderByDesc("created_at"),
+	db, err := xdb.DB("default")
+	if err != nil {
+		return nil, err
 	}
-	records, err := model.Selects(options...)
+	rows, err := db.Query(`
+		SELECT
+			COALESCE(strftime('%Y-%m-%d %H:00:00', created_at), substr(created_at, 1, 13) || ':00:00') AS hour_bucket,
+			COALESCE(model, ''),
+			COUNT(*),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(reasoning_tokens), 0),
+			COALESCE(SUM(cache_create_tokens), 0),
+			COALESCE(SUM(cache_read_tokens), 0)
+		FROM request_log
+		WHERE created_at >= ?
+		GROUP BY hour_bucket, COALESCE(model, '')
+		ORDER BY hour_bucket ASC
+	`, rangeStart.Format(timeLayout))
 	if err != nil {
 		if errors.Is(err, xdb.ErrNotFound) || isNoSuchTableErr(err) {
 			return []HeatmapStat{}, nil
 		}
 		return nil, err
 	}
+	defer rows.Close()
+
 	hourBuckets := map[int64]*HeatmapStat{}
-	for _, record := range records {
-		createdAt, _ := parseCreatedAt(record)
+	for rows.Next() {
+		var hourBucket string
+		var modelName string
+		var totalRequests int64
+		var input, output, reasoning, cacheCreate, cacheRead int64
+		if err := rows.Scan(&hourBucket, &modelName, &totalRequests, &input, &output, &reasoning, &cacheCreate, &cacheRead); err != nil {
+			return nil, err
+		}
+		createdAt, err := parseLogTime(hourBucket)
+		if err != nil {
+			continue
+		}
 		if createdAt.IsZero() {
 			continue
 		}
@@ -184,24 +215,22 @@ func (ls *LogService) HeatmapStats(days int) ([]HeatmapStat, error) {
 			bucket = &HeatmapStat{Day: hourStart.Format("01-02 15")}
 			hourBuckets[hourKey] = bucket
 		}
-		bucket.TotalRequests++
-		input := record.GetInt("input_tokens")
-		output := record.GetInt("output_tokens")
-		reasoning := record.GetInt("reasoning_tokens")
-		cacheCreate := record.GetInt("cache_create_tokens")
-		cacheRead := record.GetInt("cache_read_tokens")
-		bucket.InputTokens += int64(input)
-		bucket.OutputTokens += int64(output)
-		bucket.ReasoningTokens += int64(reasoning)
+		bucket.TotalRequests += totalRequests
+		bucket.InputTokens += input
+		bucket.OutputTokens += output
+		bucket.ReasoningTokens += reasoning
 		usage := modelpricing.UsageSnapshot{
-			InputTokens:       input,
-			OutputTokens:      output,
-			ReasoningTokens:   reasoning,
-			CacheCreateTokens: cacheCreate,
-			CacheReadTokens:   cacheRead,
+			InputTokens:       int(input),
+			OutputTokens:      int(output),
+			ReasoningTokens:   int(reasoning),
+			CacheCreateTokens: int(cacheCreate),
+			CacheReadTokens:   int(cacheRead),
 		}
-		cost := ls.calculateCost(record.GetString("model"), usage)
+		cost := ls.calculateCost(modelName, usage)
 		bucket.TotalCost += cost.TotalCost
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	if len(hourBuckets) == 0 {
 		return []HeatmapStat{}, nil
@@ -227,34 +256,40 @@ func (ls *LogService) StatsSince(platform string) (LogStats, error) {
 		Series: make([]LogStatsSeries, 0, seriesHours),
 	}
 	now := time.Now()
-	model := xdb.New("request_log")
 	seriesStart := startOfDay(now)
 	seriesEnd := seriesStart.Add(seriesHours * time.Hour)
-	queryStart := seriesStart.Add(-24 * time.Hour)
-	summaryStart := seriesStart
-	options := []xdb.Option{
-		xdb.WhereGte("created_at", queryStart.Format(timeLayout)),
-		xdb.Field(
-			"model",
-			"input_tokens",
-			"output_tokens",
-			"reasoning_tokens",
-			"cache_create_tokens",
-			"cache_read_tokens",
-			"created_at",
-		),
-		xdb.OrderByAsc("created_at"),
+	db, err := xdb.DB("default")
+	if err != nil {
+		return stats, err
 	}
+	query := `
+		SELECT
+			COALESCE(strftime('%Y-%m-%d %H:00:00', created_at), substr(created_at, 1, 13) || ':00:00') AS hour_bucket,
+			COALESCE(model, ''),
+			COUNT(*),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(reasoning_tokens), 0),
+			COALESCE(SUM(cache_create_tokens), 0),
+			COALESCE(SUM(cache_read_tokens), 0)
+		FROM request_log
+		WHERE created_at >= ? AND created_at < ?
+	`
+	args := []any{seriesStart.Format(timeLayout), seriesEnd.Format(timeLayout)}
 	if platform != "" {
-		options = append(options, xdb.WhereEq("platform", platform))
+		query += " AND platform = ?"
+		args = append(args, platform)
 	}
-	records, err := model.Selects(options...)
+	query += " GROUP BY hour_bucket, COALESCE(model, '') ORDER BY hour_bucket ASC"
+
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		if errors.Is(err, xdb.ErrNotFound) || isNoSuchTableErr(err) {
 			return stats, nil
 		}
 		return stats, err
 	}
+	defer rows.Close()
 
 	seriesBuckets := make([]*LogStatsSeries, seriesHours)
 	for i := 0; i < seriesHours; i++ {
@@ -264,69 +299,58 @@ func (ls *LogService) StatsSince(platform string) (LogStats, error) {
 		}
 	}
 
-	for _, record := range records {
-		createdAt, hasTime := parseCreatedAt(record)
-		dayKey := dayFromTimestamp(record.GetString("created_at"))
-		isToday := dayKey == seriesStart.Format("2006-01-02")
-
-		if hasTime {
-			if createdAt.Before(seriesStart) || !createdAt.Before(seriesEnd) {
-				continue
-			}
-		} else {
-			if !isToday {
-				continue
-			}
-			createdAt = seriesStart
+	for rows.Next() {
+		var hourBucket string
+		var modelName string
+		var totalRequests int64
+		var input, output, reasoning, cacheCreate, cacheRead int64
+		if err := rows.Scan(&hourBucket, &modelName, &totalRequests, &input, &output, &reasoning, &cacheCreate, &cacheRead); err != nil {
+			return stats, err
 		}
-
-		bucketIndex := 0
-		if hasTime {
-			bucketIndex = int(createdAt.Sub(seriesStart) / time.Hour)
-			if bucketIndex < 0 {
-				bucketIndex = 0
-			}
-			if bucketIndex >= seriesHours {
-				bucketIndex = seriesHours - 1
-			}
-		}
-		bucket := seriesBuckets[bucketIndex]
-		input := record.GetInt("input_tokens")
-		output := record.GetInt("output_tokens")
-		reasoning := record.GetInt("reasoning_tokens")
-		cacheCreate := record.GetInt("cache_create_tokens")
-		cacheRead := record.GetInt("cache_read_tokens")
-		usage := modelpricing.UsageSnapshot{
-			InputTokens:       input,
-			OutputTokens:      output,
-			ReasoningTokens:   reasoning,
-			CacheCreateTokens: cacheCreate,
-			CacheReadTokens:   cacheRead,
-		}
-		cost := ls.calculateCost(record.GetString("model"), usage)
-
-		bucket.TotalRequests++
-		bucket.InputTokens += int64(input)
-		bucket.OutputTokens += int64(output)
-		bucket.ReasoningTokens += int64(reasoning)
-		bucket.CacheCreateTokens += int64(cacheCreate)
-		bucket.CacheReadTokens += int64(cacheRead)
-		bucket.TotalCost += cost.TotalCost
-
-		if createdAt.IsZero() || createdAt.Before(summaryStart) {
+		createdAt, err := parseLogTime(hourBucket)
+		if err != nil || createdAt.Before(seriesStart) || !createdAt.Before(seriesEnd) {
 			continue
 		}
-		stats.TotalRequests++
-		stats.InputTokens += int64(input)
-		stats.OutputTokens += int64(output)
-		stats.ReasoningTokens += int64(reasoning)
-		stats.CacheCreateTokens += int64(cacheCreate)
-		stats.CacheReadTokens += int64(cacheRead)
+		bucketIndex := int(createdAt.Sub(seriesStart) / time.Hour)
+		if bucketIndex < 0 {
+			bucketIndex = 0
+		}
+		if bucketIndex >= seriesHours {
+			bucketIndex = seriesHours - 1
+		}
+
+		bucket := seriesBuckets[bucketIndex]
+		usage := modelpricing.UsageSnapshot{
+			InputTokens:       int(input),
+			OutputTokens:      int(output),
+			ReasoningTokens:   int(reasoning),
+			CacheCreateTokens: int(cacheCreate),
+			CacheReadTokens:   int(cacheRead),
+		}
+		cost := ls.calculateCost(modelName, usage)
+
+		bucket.TotalRequests += totalRequests
+		bucket.InputTokens += input
+		bucket.OutputTokens += output
+		bucket.ReasoningTokens += reasoning
+		bucket.CacheCreateTokens += cacheCreate
+		bucket.CacheReadTokens += cacheRead
+		bucket.TotalCost += cost.TotalCost
+
+		stats.TotalRequests += totalRequests
+		stats.InputTokens += input
+		stats.OutputTokens += output
+		stats.ReasoningTokens += reasoning
+		stats.CacheCreateTokens += cacheCreate
+		stats.CacheReadTokens += cacheRead
 		stats.CostInput += cost.InputCost
 		stats.CostOutput += cost.OutputCost
 		stats.CostCacheCreate += cost.CacheCreateCost
 		stats.CostCacheRead += cost.CacheReadCost
 		stats.CostTotal += cost.TotalCost
+	}
+	if err := rows.Err(); err != nil {
+		return stats, err
 	}
 
 	for i := 0; i < seriesHours; i++ {
@@ -346,81 +370,74 @@ func (ls *LogService) StatsSince(platform string) (LogStats, error) {
 func (ls *LogService) ProviderDailyStats(platform string) ([]ProviderDailyStat, error) {
 	start := startOfDay(time.Now())
 	end := start.Add(24 * time.Hour)
-	queryStart := start.Add(-24 * time.Hour)
-	model := xdb.New("request_log")
-	options := []xdb.Option{
-		xdb.WhereGte("created_at", queryStart.Format(timeLayout)),
-		xdb.Field(
-			"provider",
-			"model",
-			"http_code",
-			"input_tokens",
-			"output_tokens",
-			"reasoning_tokens",
-			"cache_create_tokens",
-			"cache_read_tokens",
-			"created_at",
-		),
+	db, err := xdb.DB("default")
+	if err != nil {
+		return nil, err
 	}
+	query := `
+		SELECT
+			COALESCE(NULLIF(TRIM(provider), ''), '(unknown)') AS provider_key,
+			COALESCE(model, ''),
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN http_code >= 200 AND http_code < 300 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN http_code < 200 OR http_code >= 300 OR http_code IS NULL THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(reasoning_tokens), 0),
+			COALESCE(SUM(cache_create_tokens), 0),
+			COALESCE(SUM(cache_read_tokens), 0)
+		FROM request_log
+		WHERE created_at >= ? AND created_at < ?
+	`
+	args := []any{start.Format(timeLayout), end.Format(timeLayout)}
 	if platform != "" {
-		options = append(options, xdb.WhereEq("platform", platform))
+		query += " AND platform = ?"
+		args = append(args, platform)
 	}
-	records, err := model.Selects(options...)
+	query += " GROUP BY provider_key, COALESCE(model, '')"
+
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		if errors.Is(err, xdb.ErrNotFound) || isNoSuchTableErr(err) {
 			return []ProviderDailyStat{}, nil
 		}
 		return nil, err
 	}
+	defer rows.Close()
+
 	statMap := map[string]*ProviderDailyStat{}
-	for _, record := range records {
-		provider := strings.TrimSpace(record.GetString("provider"))
-		if provider == "" {
-			provider = "(unknown)"
-		}
-		createdAt, hasTime := parseCreatedAt(record)
-		if hasTime {
-			if createdAt.Before(start) || !createdAt.Before(end) {
-				continue
-			}
-		} else {
-			dayKey := dayFromTimestamp(record.GetString("created_at"))
-			if dayKey != start.Format("2006-01-02") {
-				continue
-			}
+	for rows.Next() {
+		var provider, modelName string
+		var totalRequests, successfulRequests, failedRequests int64
+		var input, output, reasoning, cacheCreate, cacheRead int64
+		if err := rows.Scan(&provider, &modelName, &totalRequests, &successfulRequests, &failedRequests, &input, &output, &reasoning, &cacheCreate, &cacheRead); err != nil {
+			return nil, err
 		}
 		stat := statMap[provider]
 		if stat == nil {
 			stat = &ProviderDailyStat{Provider: provider}
 			statMap[provider] = stat
 		}
-		httpCode := record.GetInt("http_code")
-		input := record.GetInt("input_tokens")
-		output := record.GetInt("output_tokens")
-		reasoning := record.GetInt("reasoning_tokens")
-		cacheCreate := record.GetInt("cache_create_tokens")
-		cacheRead := record.GetInt("cache_read_tokens")
 		usage := modelpricing.UsageSnapshot{
-			InputTokens:       input,
-			OutputTokens:      output,
-			ReasoningTokens:   reasoning,
-			CacheCreateTokens: cacheCreate,
-			CacheReadTokens:   cacheRead,
+			InputTokens:       int(input),
+			OutputTokens:      int(output),
+			ReasoningTokens:   int(reasoning),
+			CacheCreateTokens: int(cacheCreate),
+			CacheReadTokens:   int(cacheRead),
 		}
-		cost := ls.calculateCost(record.GetString("model"), usage)
-		stat.TotalRequests++
-		// 只有 HTTP 200-299 才算成功，其他（包括 0）都算失败
-		if httpCode >= 200 && httpCode < 300 {
-			stat.SuccessfulRequests++
-		} else {
-			stat.FailedRequests++
-		}
-		stat.InputTokens += int64(input)
-		stat.OutputTokens += int64(output)
-		stat.ReasoningTokens += int64(reasoning)
-		stat.CacheCreateTokens += int64(cacheCreate)
-		stat.CacheReadTokens += int64(cacheRead)
+		cost := ls.calculateCost(modelName, usage)
+		stat.TotalRequests += totalRequests
+		stat.SuccessfulRequests += successfulRequests
+		stat.FailedRequests += failedRequests
+		stat.InputTokens += input
+		stat.OutputTokens += output
+		stat.ReasoningTokens += reasoning
+		stat.CacheCreateTokens += cacheCreate
+		stat.CacheReadTokens += cacheRead
 		stat.CostTotal += cost.TotalCost
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	stats := make([]ProviderDailyStat, 0, len(statMap))
 	for _, stat := range statMap {
@@ -436,6 +453,100 @@ func (ls *LogService) ProviderDailyStats(platform string) ([]ProviderDailyStat, 
 		return stats[i].TotalRequests > stats[j].TotalRequests
 	})
 	return stats, nil
+}
+
+func (ls *LogService) GetRequestLogRetentionDays() (int, error) {
+	return getConfiguredRequestLogRetentionDays()
+}
+
+func (ls *LogService) SetRequestLogRetentionDays(days int) error {
+	if days < 0 || days > 3650 {
+		return fmt.Errorf("日志保留天数必须在 0-3650 之间，0 表示关闭自动清理")
+	}
+	db, err := xdb.DB("default")
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`
+		INSERT INTO app_settings (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`, requestLogRetentionSettingKey, strconv.Itoa(days))
+	if err != nil {
+		return fmt.Errorf("更新日志保留天数失败: %w", err)
+	}
+	return nil
+}
+
+func (ls *LogService) GetRequestLogMaintenanceInfo(retentionDays int) (RequestLogMaintenanceInfo, error) {
+	days, err := resolveRequestLogRetentionDays(retentionDays)
+	if err != nil {
+		return RequestLogMaintenanceInfo{}, err
+	}
+	db, err := xdb.DB("default")
+	if err != nil {
+		return RequestLogMaintenanceInfo{}, err
+	}
+
+	info := RequestLogMaintenanceInfo{
+		RetentionDays: days,
+		DatabasePath:  requestLogDatabasePath(),
+	}
+	info.DatabaseSizeBytes = fileSize(info.DatabasePath)
+	info.WALSizeBytes = fileSize(info.DatabasePath + "-wal")
+	info.SHMSizeBytes = fileSize(info.DatabasePath + "-shm")
+
+	if err := db.QueryRow(`SELECT COUNT(*) FROM request_log`).Scan(&info.TotalRows); err != nil {
+		if isNoSuchTableErr(err) {
+			return info, nil
+		}
+		return info, err
+	}
+	if err := db.QueryRow(`SELECT COALESCE(MIN(created_at), ''), COALESCE(MAX(created_at), '') FROM request_log`).Scan(&info.OldestCreatedAt, &info.NewestCreatedAt); err != nil {
+		return info, err
+	}
+	if days > 0 {
+		info.Cutoff = requestLogRetentionCutoff(days).Format(timeLayout)
+		if err := db.QueryRow(`SELECT COUNT(*) FROM request_log WHERE created_at < ?`, info.Cutoff).Scan(&info.ExpiredRows); err != nil {
+			return info, err
+		}
+	}
+	info.ManualVacuumRecommended = info.ExpiredRows > 0 || info.WALSizeBytes > 128*1024*1024
+	return info, nil
+}
+
+func (ls *LogService) CleanupRequestLogs(retentionDays int) (RequestLogCleanupResult, error) {
+	days, err := resolveRequestLogRetentionDays(retentionDays)
+	if err != nil {
+		return RequestLogCleanupResult{}, err
+	}
+	result := RequestLogCleanupResult{
+		RetentionDays: days,
+		DatabasePath:  requestLogDatabasePath(),
+	}
+	if days <= 0 {
+		return result, nil
+	}
+	cutoff := requestLogRetentionCutoff(days).Format(timeLayout)
+	result.Cutoff = cutoff
+
+	db, err := xdb.DB("default")
+	if err != nil {
+		return result, err
+	}
+	res, err := db.Exec(`DELETE FROM request_log WHERE created_at < ?`, cutoff)
+	if err != nil {
+		if isNoSuchTableErr(err) {
+			return result, nil
+		}
+		return result, fmt.Errorf("清理 request_log 失败: %w", err)
+	}
+	if affected, err := res.RowsAffected(); err == nil {
+		result.DeletedRows = affected
+	}
+	result.DatabaseSizeBytes = fileSize(result.DatabasePath)
+	result.WALSizeBytes = fileSize(result.DatabasePath + "-wal")
+	result.ManualVacuumRecommended = result.DeletedRows > 0
+	return result, nil
 }
 
 func (ls *LogService) decorateCost(logEntry *ReqeustLog) {
@@ -572,6 +683,99 @@ func min(a, b int) int {
 	return b
 }
 
+func scanUsageAggregate(rows *sql.Rows) (string, modelpricing.UsageSnapshot, error) {
+	var modelName string
+	var input, output, reasoning, cacheCreate, cacheRead int64
+	if err := rows.Scan(&modelName, &input, &output, &reasoning, &cacheCreate, &cacheRead); err != nil {
+		return "", modelpricing.UsageSnapshot{}, err
+	}
+	return modelName, modelpricing.UsageSnapshot{
+		InputTokens:       int(input),
+		OutputTokens:      int(output),
+		ReasoningTokens:   int(reasoning),
+		CacheCreateTokens: int(cacheCreate),
+		CacheReadTokens:   int(cacheRead),
+	}, nil
+}
+
+func parseLogTime(value string) (time.Time, error) {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return time.Time{}, fmt.Errorf("empty time")
+	}
+	layouts := []string{
+		timeLayout,
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05 -0700",
+		"2006-01-02 15:04:05 -0700 MST",
+		"2006-01-02 15:04:05 MST",
+		"2006-01-02T15:04:05-0700",
+	}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			return parsed.In(time.Local), nil
+		}
+		if parsed, err := time.ParseInLocation(layout, raw, time.Local); err == nil {
+			return parsed.In(time.Local), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("invalid time format: %s", raw)
+}
+
+func resolveRequestLogRetentionDays(days int) (int, error) {
+	if days > 0 {
+		if days > 3650 {
+			return 0, fmt.Errorf("日志保留天数不能超过 3650")
+		}
+		return days, nil
+	}
+	if days < 0 {
+		return 0, fmt.Errorf("日志保留天数不能为负数")
+	}
+	return getConfiguredRequestLogRetentionDays()
+}
+
+func getConfiguredRequestLogRetentionDays() (int, error) {
+	db, err := xdb.DB("default")
+	if err != nil {
+		return defaultRequestLogRetentionDays, err
+	}
+	var value string
+	err = db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, requestLogRetentionSettingKey).Scan(&value)
+	if err != nil {
+		return defaultRequestLogRetentionDays, nil
+	}
+	days, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || days < 0 || days > 3650 {
+		return defaultRequestLogRetentionDays, nil
+	}
+	return days, nil
+}
+
+func requestLogRetentionCutoff(days int) time.Time {
+	return time.Now().AddDate(0, 0, -days)
+}
+
+func requestLogDatabasePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return filepath.Join(".code-switch", "app.db")
+	}
+	return filepath.Join(home, ".code-switch", "app.db")
+}
+
+func fileSize(path string) int64 {
+	if strings.TrimSpace(path) == "" {
+		return 0
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
+}
+
 func isNoSuchTableErr(err error) bool {
 	if err == nil {
 		return false
@@ -604,17 +808,41 @@ type LogStats struct {
 }
 
 type ProviderDailyStat struct {
-	Provider          string  `json:"provider"`
-	TotalRequests     int64   `json:"total_requests"`
+	Provider           string  `json:"provider"`
+	TotalRequests      int64   `json:"total_requests"`
 	SuccessfulRequests int64   `json:"successful_requests"`
-	FailedRequests    int64   `json:"failed_requests"`
-	SuccessRate       float64 `json:"success_rate"`
-	InputTokens       int64   `json:"input_tokens"`
-	OutputTokens      int64   `json:"output_tokens"`
-	ReasoningTokens   int64   `json:"reasoning_tokens"`
-	CacheCreateTokens int64   `json:"cache_create_tokens"`
-	CacheReadTokens   int64   `json:"cache_read_tokens"`
-	CostTotal         float64 `json:"cost_total"`
+	FailedRequests     int64   `json:"failed_requests"`
+	SuccessRate        float64 `json:"success_rate"`
+	InputTokens        int64   `json:"input_tokens"`
+	OutputTokens       int64   `json:"output_tokens"`
+	ReasoningTokens    int64   `json:"reasoning_tokens"`
+	CacheCreateTokens  int64   `json:"cache_create_tokens"`
+	CacheReadTokens    int64   `json:"cache_read_tokens"`
+	CostTotal          float64 `json:"cost_total"`
+}
+
+type RequestLogMaintenanceInfo struct {
+	RetentionDays           int    `json:"retention_days"`
+	TotalRows               int64  `json:"total_rows"`
+	ExpiredRows             int64  `json:"expired_rows"`
+	OldestCreatedAt         string `json:"oldest_created_at"`
+	NewestCreatedAt         string `json:"newest_created_at"`
+	Cutoff                  string `json:"cutoff"`
+	DatabasePath            string `json:"database_path"`
+	DatabaseSizeBytes       int64  `json:"database_size_bytes"`
+	WALSizeBytes            int64  `json:"wal_size_bytes"`
+	SHMSizeBytes            int64  `json:"shm_size_bytes"`
+	ManualVacuumRecommended bool   `json:"manual_vacuum_recommended"`
+}
+
+type RequestLogCleanupResult struct {
+	RetentionDays           int    `json:"retention_days"`
+	Cutoff                  string `json:"cutoff"`
+	DeletedRows             int64  `json:"deleted_rows"`
+	DatabasePath            string `json:"database_path"`
+	DatabaseSizeBytes       int64  `json:"database_size_bytes"`
+	WALSizeBytes            int64  `json:"wal_size_bytes"`
+	ManualVacuumRecommended bool   `json:"manual_vacuum_recommended"`
 }
 
 type LogStatsSeries struct {

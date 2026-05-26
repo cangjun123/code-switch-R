@@ -1,6 +1,7 @@
 package main
 
 import (
+	"codeswitch/services"
 	"fmt"
 	"math"
 	"math/rand"
@@ -16,15 +17,22 @@ import (
 const timeLayout = "2006-01-02 15:04:05"
 
 func init() {
-	home, _ := os.UserHomeDir()
+	home, err := os.MkdirTemp("", "codeswitch-requestlog-test-*")
+	if err != nil {
+		fmt.Printf("创建 request_log 测试目录失败: %v\n", err)
+		return
+	}
+	if err := os.Setenv("HOME", home); err != nil {
+		fmt.Printf("设置 request_log 测试 HOME 失败: %v\n", err)
+		return
+	}
+	configDir := filepath.Join(home, ".code-switch")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		fmt.Printf("创建 request_log 测试配置目录失败: %v\n", err)
+		return
+	}
 
-	if err := xdb.Inits([]xdb.Config{
-		{
-			Name:   "default",
-			Driver: "sqlite",
-			DSN:    filepath.Join(home, ".code-switch", "app.db?cache=shared&mode=rwc&_busy_timeout=10000&_journal_mode=WAL"),
-		},
-	}); err != nil {
+	if err := services.InitDatabase(); err != nil {
 		fmt.Printf("初始化 request_log 表失败: %v\n", err)
 	}
 }
