@@ -291,6 +291,57 @@ curl http://127.0.0.1:18100/responses \
   -d '{"model":"gpt-5-codex","input":"hello"}'
 ```
 
+## 日志与数据库维护
+
+请求日志写入 SQLite 的 `request_log` 表。服务启动时会自动确保表结构和索引存在：
+
+- `idx_request_log_created_at`
+- `idx_request_log_platform_created_at`
+- `idx_request_log_platform_provider_id`
+- `idx_request_log_provider_id`
+
+这些索引用于日志页、首页 provider 统计、预算统计和热力图，避免日志量变大后 dashboard 周期刷新触发全表扫描。
+
+已有日志很多时，升级后的首次启动会创建索引，SQLite 需要扫描现有 `request_log`，建议在业务低峰重启。
+
+### 日志保留
+
+默认只保留最近 30 天请求日志。服务启动 5 分钟后会执行一次清理，之后每 24 小时执行一次：
+
+```sql
+DELETE FROM request_log
+WHERE created_at < datetime('now', '-30 days');
+```
+
+保留天数保存在 `app_settings.request_log_retention_days`。设置为 `0` 可关闭自动清理：
+
+```bash
+sqlite3 ~/.code-switch/app.db \
+  "INSERT INTO app_settings (key, value) VALUES ('request_log_retention_days', '30') \
+   ON CONFLICT(key) DO UPDATE SET value = excluded.value;"
+```
+
+后台 RPC 已提供维护方法，前端可按需接入按钮：
+
+- `codeswitch/services.LogService.GetRequestLogMaintenanceInfo(retentionDays)`
+- `codeswitch/services.LogService.CleanupRequestLogs(retentionDays)`
+- `codeswitch/services.LogService.GetRequestLogRetentionDays()`
+- `codeswitch/services.LogService.SetRequestLogRetentionDays(days)`
+
+`retentionDays` 传 `0` 时使用当前配置。清理只删除旧记录，不会自动执行 `VACUUM`。
+
+### 手动 VACUUM
+
+SQLite 删除旧日志后会复用空闲页，但数据库文件不一定立刻变小。`VACUUM` 会重写整个数据库，I/O 压力较大，不建议自动运行。需要压缩文件时，低峰期手动执行：
+
+```bash
+sudo systemctl stop codeswitch
+sqlite3 ~/.code-switch/app.db "VACUUM;"
+sudo systemctl start codeswitch
+```
+
+如果数据库很大，先确认磁盘剩余空间足够；`VACUUM` 过程中可能需要接近一个数据库文件大小的临时空间。
+
 ## 更新部署
 
 推荐使用 `deploy` 分支部署。`main` 保留源码，`deploy` 分支额外包含 Linux amd64 构建产物：

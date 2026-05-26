@@ -123,6 +123,7 @@ func ensureBlacklistTables() error {
 		{"enable_blacklist", "false"},
 		{"blacklist_failure_threshold", "3"},
 		{"blacklist_duration_minutes", "30"},
+		{"request_log_retention_days", "30"},
 	}
 
 	for _, s := range defaultSettings {

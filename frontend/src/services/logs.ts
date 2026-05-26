@@ -110,3 +110,47 @@ export const fetchHeatmapStats = async (days: number): Promise<HeatmapStat[]> =>
   const range = Number.isFinite(days) && days > 0 ? Math.floor(days) : 30
   return Call.ByName('codeswitch/services.LogService.HeatmapStats', range)
 }
+
+export type RequestLogMaintenanceInfo = {
+  retention_days: number
+  total_rows: number
+  expired_rows: number
+  oldest_created_at: string
+  newest_created_at: string
+  cutoff: string
+  database_path: string
+  database_size_bytes: number
+  wal_size_bytes: number
+  shm_size_bytes: number
+  manual_vacuum_recommended: boolean
+}
+
+export type RequestLogCleanupResult = {
+  retention_days: number
+  cutoff: string
+  deleted_rows: number
+  database_path: string
+  database_size_bytes: number
+  wal_size_bytes: number
+  manual_vacuum_recommended: boolean
+}
+
+export const fetchRequestLogMaintenanceInfo = async (
+  retentionDays = 0,
+): Promise<RequestLogMaintenanceInfo> => {
+  return Call.ByName('codeswitch/services.LogService.GetRequestLogMaintenanceInfo', retentionDays)
+}
+
+export const cleanupRequestLogs = async (
+  retentionDays = 0,
+): Promise<RequestLogCleanupResult> => {
+  return Call.ByName('codeswitch/services.LogService.CleanupRequestLogs', retentionDays)
+}
+
+export const fetchRequestLogRetentionDays = async (): Promise<number> => {
+  return Call.ByName('codeswitch/services.LogService.GetRequestLogRetentionDays')
+}
+
+export const saveRequestLogRetentionDays = async (days: number): Promise<void> => {
+  return Call.ByName('codeswitch/services.LogService.SetRequestLogRetentionDays', days)
+}

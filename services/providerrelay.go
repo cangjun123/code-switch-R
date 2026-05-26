@@ -1391,6 +1391,25 @@ func ensureRequestLogTableWithDB(db *sql.DB) error {
 		return err
 	}
 
+	if err := ensureRequestLogIndexes(db); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func ensureRequestLogIndexes(db *sql.DB) error {
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_request_log_created_at ON request_log(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_log_platform_created_at ON request_log(platform, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_log_platform_provider_id ON request_log(platform, provider, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_log_provider_id ON request_log(provider, id DESC)`,
+	}
+	for _, query := range indexes {
+		if _, err := db.Exec(query); err != nil {
+			return fmt.Errorf("创建 request_log 索引失败: %w", err)
+		}
+	}
 	return nil
 }
 

@@ -56,7 +56,8 @@ type appRuntime struct {
 	networkService     *services.NetworkService
 	providerRelay      *services.ProviderRelayService
 
-	blacklistStopChan chan struct{}
+	blacklistStopChan           chan struct{}
+	requestLogRetentionStopChan chan struct{}
 }
 
 func newAppRuntime() (*appRuntime, error) {
@@ -147,6 +148,9 @@ func newAppRuntime() (*appRuntime, error) {
 		}
 	}()
 
+	requestLogRetentionStopChan := make(chan struct{})
+	go startRequestLogRetentionWorker(logService, requestLogRetentionStopChan)
+
 	go func() {
 		time.Sleep(3 * time.Second)
 		settings, err := appSettings.GetAppSettings()
@@ -163,38 +167,39 @@ func newAppRuntime() (*appRuntime, error) {
 	}()
 
 	return &appRuntime{
-		adminAddr:          getenvDefault("CODE_SWITCH_WEB_ADDR", defaultAdminAddr),
-		staticDir:          getenvDefault("CODE_SWITCH_STATIC_DIR", defaultStaticDir),
-		eventHub:           eventHub,
-		appService:         &AppService{},
-		providerService:    providerService,
-		settingsService:    settingsService,
-		blacklistService:   blacklistService,
-		claudeSettings:     claudeSettings,
-		codexSettings:      codexSettings,
-		cliConfigService:   cliConfigService,
-		logService:         logService,
-		appSettings:        appSettings,
-		adminAuth:          adminAuth,
-		adminSecurity:      adminSecurity,
-		codexRelayKeys:     codexRelayKeys,
-		mcpService:         mcpService,
-		skillService:       skillService,
-		promptService:      promptService,
-		envCheckService:    envCheckService,
-		importService:      importService,
-		deeplinkService:    deeplinkService,
-		speedTestService:   speedTestService,
-		connectivityTest:   connectivityTestService,
-		healthCheckService: healthCheckService,
-		versionService:     versionService,
-		updateService:      updateService,
-		geminiService:      geminiService,
-		consoleService:     consoleService,
-		customCliService:   customCliService,
-		networkService:     networkService,
-		providerRelay:      providerRelay,
-		blacklistStopChan:  blacklistStopChan,
+		adminAddr:                   getenvDefault("CODE_SWITCH_WEB_ADDR", defaultAdminAddr),
+		staticDir:                   getenvDefault("CODE_SWITCH_STATIC_DIR", defaultStaticDir),
+		eventHub:                    eventHub,
+		appService:                  &AppService{},
+		providerService:             providerService,
+		settingsService:             settingsService,
+		blacklistService:            blacklistService,
+		claudeSettings:              claudeSettings,
+		codexSettings:               codexSettings,
+		cliConfigService:            cliConfigService,
+		logService:                  logService,
+		appSettings:                 appSettings,
+		adminAuth:                   adminAuth,
+		adminSecurity:               adminSecurity,
+		codexRelayKeys:              codexRelayKeys,
+		mcpService:                  mcpService,
+		skillService:                skillService,
+		promptService:               promptService,
+		envCheckService:             envCheckService,
+		importService:               importService,
+		deeplinkService:             deeplinkService,
+		speedTestService:            speedTestService,
+		connectivityTest:            connectivityTestService,
+		healthCheckService:          healthCheckService,
+		versionService:              versionService,
+		updateService:               updateService,
+		geminiService:               geminiService,
+		consoleService:              consoleService,
+		customCliService:            customCliService,
+		networkService:              networkService,
+		providerRelay:               providerRelay,
+		blacklistStopChan:           blacklistStopChan,
+		requestLogRetentionStopChan: requestLogRetentionStopChan,
 	}, nil
 }
 
@@ -202,6 +207,11 @@ func (rt *appRuntime) shutdown() {
 	if rt.blacklistStopChan != nil {
 		close(rt.blacklistStopChan)
 		rt.blacklistStopChan = nil
+	}
+
+	if rt.requestLogRetentionStopChan != nil {
+		close(rt.requestLogRetentionStopChan)
+		rt.requestLogRetentionStopChan = nil
 	}
 
 	if rt.healthCheckService != nil {
@@ -216,6 +226,38 @@ func (rt *appRuntime) shutdown() {
 
 	if err := services.ShutdownGlobalDBQueue(10 * time.Second); err != nil {
 		log.Printf("数据库队列关闭超时: %v", err)
+	}
+}
+
+func startRequestLogRetentionWorker(logService *services.LogService, stop <-chan struct{}) {
+	if logService == nil {
+		return
+	}
+
+	timer := time.NewTimer(5 * time.Minute)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-timer.C:
+			days, err := logService.GetRequestLogRetentionDays()
+			if err != nil {
+				log.Printf("读取 request_log 保留天数失败: %v", err)
+			} else if days <= 0 {
+				log.Println("request_log 自动清理已关闭")
+			} else {
+				result, err := logService.CleanupRequestLogs(days)
+				if err != nil {
+					log.Printf("request_log 自动清理失败: %v", err)
+				} else if result.DeletedRows > 0 {
+					log.Printf("request_log 自动清理完成: cutoff=%s deleted=%d", result.Cutoff, result.DeletedRows)
+				}
+			}
+			timer.Reset(24 * time.Hour)
+		case <-stop:
+			log.Println("request_log 自动清理定时器已停止")
+			return
+		}
 	}
 }
 
