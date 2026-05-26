@@ -57,6 +57,77 @@ func TestSeedMockRequestLogs(t *testing.T) {
 	t.Logf("mock request_log rows=%d (%s -> %s)", count, minCreated, maxCreated)
 }
 
+func TestStatsSinceUsesLocalDayForUTCTimestamps(t *testing.T) {
+	db, err := xdb.DB("default")
+	if err != nil {
+		t.Fatalf("xdb.DB(default): %v", err)
+	}
+	if _, err := db.Exec("DELETE FROM request_log"); err != nil {
+		t.Fatalf("clear request_log: %v", err)
+	}
+
+	localNow := time.Now().In(time.Local)
+	localCreatedAt := startOfDay(localNow).Add(2 * time.Hour)
+	utcStored := localCreatedAt.UTC().Format(timeLayout)
+
+	if _, err := db.Exec(`
+		INSERT INTO request_log (
+			platform, model, provider, http_code,
+			input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
+			reasoning_tokens, is_stream, duration_sec, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		"codex",
+		"gpt-5",
+		"utc-provider",
+		200,
+		123,
+		45,
+		0,
+		0,
+		0,
+		0,
+		1.23,
+		utcStored,
+	); err != nil {
+		t.Fatalf("insert request_log row: %v", err)
+	}
+
+	logService := services.NewLogService()
+	stats, err := logService.StatsSince("codex")
+	if err != nil {
+		t.Fatalf("StatsSince(codex): %v", err)
+	}
+	if stats.TotalRequests != 1 {
+		t.Fatalf("stats.TotalRequests = %d, want 1", stats.TotalRequests)
+	}
+	if stats.InputTokens != 123 || stats.OutputTokens != 45 {
+		t.Fatalf("unexpected token totals: input=%d output=%d", stats.InputTokens, stats.OutputTokens)
+	}
+
+	providerStats, err := logService.ProviderDailyStats("codex")
+	if err != nil {
+		t.Fatalf("ProviderDailyStats(codex): %v", err)
+	}
+	if len(providerStats) != 1 {
+		t.Fatalf("len(providerStats) = %d, want 1", len(providerStats))
+	}
+	if providerStats[0].Provider != "utc-provider" || providerStats[0].TotalRequests != 1 {
+		t.Fatalf("unexpected provider stats: %+v", providerStats[0])
+	}
+
+	logs, err := logService.ListRequestLogs("codex", "utc-provider", 10)
+	if err != nil {
+		t.Fatalf("ListRequestLogs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("len(logs) = %d, want 1", len(logs))
+	}
+	if logs[0].CreatedAt != localCreatedAt.Format(timeLayout) {
+		t.Fatalf("logs[0].CreatedAt = %q, want %q", logs[0].CreatedAt, localCreatedAt.Format(timeLayout))
+	}
+}
+
 // SeedMockRequestLogs 生成模拟 request_log 数据，默认覆盖最近 3 个月。
 func SeedMockRequestLogs(months int) error {
 	model := xdb.New("request_log")
