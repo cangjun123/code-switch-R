@@ -623,6 +623,29 @@
       },
       "tokenDetail": {
         "title": "今日 Token 明细"
+      },
+      "maintenance": {
+        "title": "日志维护",
+        "subtitle": "查看 request_log 规模并清理过期日志。",
+        "refresh": "刷新维护信息",
+        "cleanup": "清理过期日志",
+        "cleaning": "清理中...",
+        "retentionDays": "保留天数",
+        "save": "保存",
+        "saving": "保存中...",
+        "totalRows": "总行数",
+        "expiredRows": "过期行数",
+        "databaseSize": "数据库大小",
+        "walSize": "WAL 大小",
+        "oldest": "最早日志",
+        "cutoff": "清理边界",
+        "vacuumHint": "已释放的空间会由 SQLite 复用；如需缩小文件，请在低峰期手动执行 VACUUM。",
+        "loadFailed": "加载日志维护信息失败",
+        "saveSuccess": "日志保留天数已保存",
+        "saveFailed": "保存日志保留天数失败",
+        "cleanupConfirm": "确认清理 {days} 天前的请求日志？该操作不会自动执行 VACUUM。",
+        "cleanupSuccess": "已清理 {count} 条过期日志",
+        "cleanupFailed": "清理过期日志失败"
       }
     },
     "general": {

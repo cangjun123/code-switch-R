@@ -32,6 +32,56 @@
       <Line :data="chartData" :options="chartOptions" />
     </section>
 
+    <section class="maintenance-panel">
+      <div class="maintenance-header">
+        <div>
+          <h2>{{ t('components.logs.maintenance.title') }}</h2>
+          <p>{{ t('components.logs.maintenance.subtitle') }}</p>
+        </div>
+        <div class="maintenance-actions">
+          <BaseButton variant="outline" size="sm" :disabled="maintenanceLoading" @click="loadMaintenanceInfo">
+            {{ t('components.logs.maintenance.refresh') }}
+          </BaseButton>
+          <BaseButton
+            variant="danger"
+            size="sm"
+            :disabled="maintenanceLoading || cleanupBusy || !maintenanceInfo || maintenanceInfo.expired_rows <= 0"
+            @click="cleanupExpiredLogs"
+          >
+            {{ cleanupBusy ? t('components.logs.maintenance.cleaning') : t('components.logs.maintenance.cleanup') }}
+          </BaseButton>
+        </div>
+      </div>
+
+      <div class="maintenance-body">
+        <label class="retention-control">
+          <span>{{ t('components.logs.maintenance.retentionDays') }}</span>
+          <input
+            v-model.number="retentionDaysInput"
+            class="mac-input retention-input"
+            min="0"
+            max="3650"
+            type="number"
+          />
+          <BaseButton size="sm" :disabled="maintenanceLoading || saveRetentionBusy" @click="saveRetentionDays">
+            {{ saveRetentionBusy ? t('components.logs.maintenance.saving') : t('components.logs.maintenance.save') }}
+          </BaseButton>
+        </label>
+
+        <div class="maintenance-grid">
+          <div v-for="item in maintenanceStats" :key="item.label" class="maintenance-stat">
+            <span>{{ item.label }}</span>
+            <strong>{{ item.value }}</strong>
+          </div>
+        </div>
+
+        <p v-if="maintenanceInfo?.manual_vacuum_recommended" class="maintenance-warning">
+          {{ t('components.logs.maintenance.vacuumHint') }}
+        </p>
+        <p v-if="maintenanceMessage" class="maintenance-message">{{ maintenanceMessage }}</p>
+      </div>
+    </section>
+
     <form class="logs-filter-row" @submit.prevent="applyFilters">
       <div class="filter-fields">
         <label class="filter-field">
@@ -184,11 +234,15 @@ import {
   fetchLogProviders,
   fetchLogStats,
   fetchProviderDailyStats,
+  fetchRequestLogMaintenanceInfo,
+  cleanupRequestLogs,
+  saveRequestLogRetentionDays,
   type RequestLog,
   type LogStats,
   type LogStatsSeries,
   type LogPlatform,
   type ProviderDailyStat,
+  type RequestLogMaintenanceInfo,
 } from '../../services/logs'
 import {
   Chart,
@@ -215,6 +269,12 @@ const page = ref(1)
 const PAGE_SIZE = 15
 const providerOptions = ref<string[]>([])
 const statsSeries = computed<LogStatsSeries[]>(() => stats.value?.series ?? [])
+const maintenanceInfo = ref<RequestLogMaintenanceInfo | null>(null)
+const maintenanceLoading = ref(false)
+const cleanupBusy = ref(false)
+const saveRetentionBusy = ref(false)
+const retentionDaysInput = ref(30)
+const maintenanceMessage = ref('')
 
 // 金额明细弹窗状态
 const costDetailModal = reactive<{
@@ -275,6 +335,95 @@ const openTokenDetailModal = () => {
 // 关闭 Token 明细弹窗
 const closeTokenDetailModal = () => {
   tokenDetailModal.open = false
+}
+
+const maintenanceStats = computed(() => {
+  const info = maintenanceInfo.value
+  return [
+    {
+      label: t('components.logs.maintenance.totalRows'),
+      value: info ? formatNumber(info.total_rows) : '—',
+    },
+    {
+      label: t('components.logs.maintenance.expiredRows'),
+      value: info ? formatNumber(info.expired_rows) : '—',
+    },
+    {
+      label: t('components.logs.maintenance.databaseSize'),
+      value: info ? formatBytes(info.database_size_bytes) : '—',
+    },
+    {
+      label: t('components.logs.maintenance.walSize'),
+      value: info ? formatBytes(info.wal_size_bytes) : '—',
+    },
+    {
+      label: t('components.logs.maintenance.oldest'),
+      value: info?.oldest_created_at || '—',
+    },
+    {
+      label: t('components.logs.maintenance.cutoff'),
+      value: info?.cutoff || '—',
+    },
+  ]
+})
+
+const normalizeRetentionDays = (value: number) => {
+  if (!Number.isFinite(value)) return 30
+  return Math.min(Math.max(Math.floor(value), 0), 3650)
+}
+
+const loadMaintenanceInfo = async () => {
+  maintenanceLoading.value = true
+  maintenanceMessage.value = ''
+  try {
+    const info = await fetchRequestLogMaintenanceInfo(0)
+    maintenanceInfo.value = info
+    retentionDaysInput.value = info?.retention_days ?? retentionDaysInput.value
+  } catch (error) {
+    console.error('failed to load request log maintenance info', error)
+    maintenanceMessage.value = t('components.logs.maintenance.loadFailed')
+  } finally {
+    maintenanceLoading.value = false
+  }
+}
+
+const saveRetentionDays = async () => {
+  saveRetentionBusy.value = true
+  maintenanceMessage.value = ''
+  try {
+    const nextDays = normalizeRetentionDays(retentionDaysInput.value)
+    retentionDaysInput.value = nextDays
+    await saveRequestLogRetentionDays(nextDays)
+    await loadMaintenanceInfo()
+    maintenanceMessage.value = t('components.logs.maintenance.saveSuccess')
+  } catch (error) {
+    console.error('failed to save request log retention days', error)
+    maintenanceMessage.value = t('components.logs.maintenance.saveFailed')
+  } finally {
+    saveRetentionBusy.value = false
+  }
+}
+
+const cleanupExpiredLogs = async () => {
+  const days = normalizeRetentionDays(retentionDaysInput.value)
+  if (days <= 0) return
+  if (!window.confirm(t('components.logs.maintenance.cleanupConfirm', { days }))) {
+    return
+  }
+  cleanupBusy.value = true
+  maintenanceMessage.value = ''
+  try {
+    const result = await cleanupRequestLogs(days)
+    await Promise.all([loadMaintenanceInfo(), loadDashboard()])
+    maintenanceMessage.value = t('components.logs.maintenance.cleanupSuccess', {
+      count: formatNumber(result.deleted_rows),
+    })
+  } catch (error) {
+    console.error('failed to cleanup request logs', error)
+    maintenanceMessage.value = t('components.logs.maintenance.cleanupFailed')
+  } finally {
+    cleanupBusy.value = false
+  }
 }
 
 const parseLogDate = (value?: string) => {
@@ -564,6 +713,19 @@ const formatNumber = (value?: number) => {
   return value.toLocaleString()
 }
 
+const formatBytes = (value?: number) => {
+  if (!value || value <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let size = value
+  let unitIndex = 0
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex++
+  }
+  const decimals = unitIndex === 0 || size >= 100 ? 0 : 1
+  return `${size.toFixed(decimals)} ${units[unitIndex]}`
+}
+
 /**
  * 格式化 token 数值，支持 k/M/B 单位换算
  * @author sm
@@ -683,7 +845,7 @@ watch(
 )
 
 onMounted(async () => {
-  await loadDashboard()
+  await Promise.all([loadDashboard(), loadMaintenanceInfo()])
   startCountdown()
 })
 
@@ -693,6 +855,136 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.maintenance-panel {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 12px;
+  padding: 1rem;
+  margin-bottom: 0.75rem;
+  background: rgba(248, 250, 252, 0.78);
+}
+
+.maintenance-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  margin-bottom: 0.85rem;
+}
+
+.maintenance-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  color: #0f172a;
+}
+
+.maintenance-header p {
+  margin: 0.25rem 0 0;
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+.maintenance-actions,
+.retention-control {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.maintenance-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.retention-control span {
+  color: #475569;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.retention-input {
+  width: 96px;
+}
+
+.maintenance-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 0.5rem;
+}
+
+.maintenance-stat {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  background: rgba(255, 255, 255, 0.7);
+  min-width: 0;
+}
+
+.maintenance-stat span {
+  display: block;
+  color: #64748b;
+  font-size: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+.maintenance-stat strong {
+  display: block;
+  color: #0f172a;
+  font-size: 0.92rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.maintenance-warning,
+.maintenance-message {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.maintenance-warning {
+  color: #b45309;
+}
+
+.maintenance-message {
+  color: #2563eb;
+}
+
+html.dark .maintenance-panel {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(15, 23, 42, 0.55);
+}
+
+html.dark .maintenance-header h2,
+html.dark .maintenance-stat strong {
+  color: rgba(248, 250, 252, 0.95);
+}
+
+html.dark .maintenance-header p,
+html.dark .retention-control span,
+html.dark .maintenance-stat span {
+  color: rgba(203, 213, 225, 0.78);
+}
+
+html.dark .maintenance-stat {
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(30, 41, 59, 0.65);
+}
+
+html.dark .maintenance-warning {
+  color: #fbbf24;
+}
+
+html.dark .maintenance-message {
+  color: #93c5fd;
+}
+
+@media (max-width: 768px) {
+  .maintenance-header {
+    flex-direction: column;
+  }
+}
+
 .logs-summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
