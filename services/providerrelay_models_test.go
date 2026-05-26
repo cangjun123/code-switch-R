@@ -479,6 +479,168 @@ func TestOpenAIChatCompletionsProxyUsesCodexProviders(t *testing.T) {
 	}
 }
 
+func TestCodexResponsesRouteSkipsChatOnlyProviders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var responsesHits int
+	responsesServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		responsesHits++
+		if r.URL.Path != "/responses" {
+			t.Errorf("期望路径 /responses，收到 %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_ok","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
+	}))
+	defer responsesServer.Close()
+
+	var chatHits int
+	chatServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chatHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-should-not-hit","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"wrong"},"finish_reason":"stop"}]}`))
+	}))
+	defer chatServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindCodex, []Provider{
+		{
+			ID:                 1,
+			Name:               "ChatOnly",
+			APIURL:             chatServer.URL,
+			APIKey:             "chat-only-key",
+			Enabled:            true,
+			OpenAIEndpointMode: "chat_completions",
+			SupportedModels: map[string]bool{
+				"mimo-upstream": true,
+			},
+			ModelMapping: map[string]string{
+				"mimo-v2.5-pro": "mimo-upstream",
+			},
+		},
+		{
+			ID:                 2,
+			Name:               "ResponsesOnly",
+			APIURL:             responsesServer.URL,
+			APIKey:             "responses-only-key",
+			Enabled:            true,
+			OpenAIEndpointMode: "responses",
+			SupportedModels: map[string]bool{
+				"mimo-upstream": true,
+			},
+			ModelMapping: map[string]string{
+				"mimo-v2.5-pro": "mimo-upstream",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{"model":"mimo-v2.5-pro","input":"ping"}`))
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if responsesHits != 1 {
+		t.Fatalf("responses provider 应命中 1 次，实际 %d", responsesHits)
+	}
+	if chatHits != 0 {
+		t.Fatalf("chat-only provider 不应参与 /responses，实际命中 %d 次", chatHits)
+	}
+}
+
+func TestOpenAIChatRouteSkipsResponsesOnlyProviders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var responsesHits int
+	responsesServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		responsesHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-should-not-hit","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"wrong"}]}]}`))
+	}))
+	defer responsesServer.Close()
+
+	var chatHits int
+	chatServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chatHits++
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("期望路径 /v1/chat/completions，收到 %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}]}`))
+	}))
+	defer chatServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindCodex, []Provider{
+		{
+			ID:                 1,
+			Name:               "ResponsesOnly",
+			APIURL:             responsesServer.URL,
+			APIKey:             "responses-only-key",
+			Enabled:            true,
+			OpenAIEndpointMode: "responses",
+			SupportedModels: map[string]bool{
+				"mimo-upstream": true,
+			},
+			ModelMapping: map[string]string{
+				"mimo-v2.5-pro": "mimo-upstream",
+			},
+		},
+		{
+			ID:                 2,
+			Name:               "ChatOnly",
+			APIURL:             chatServer.URL,
+			APIKey:             "chat-only-key",
+			Enabled:            true,
+			OpenAIEndpointMode: "chat_completions",
+			SupportedModels: map[string]bool{
+				"mimo-upstream": true,
+			},
+			ModelMapping: map[string]string{
+				"mimo-v2.5-pro": "mimo-upstream",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"mimo-v2.5-pro","messages":[{"role":"user","content":"ping"}]}`))
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if chatHits != 1 {
+		t.Fatalf("chat provider 应命中 1 次，实际 %d", chatHits)
+	}
+	if responsesHits != 0 {
+		t.Fatalf("responses-only provider 不应参与 /v1/chat/completions，实际命中 %d 次", responsesHits)
+	}
+}
+
 func TestOpenAIChatCompletionsCORSPreflight(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	_, relayService := newTestRelayService(t)

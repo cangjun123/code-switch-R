@@ -70,6 +70,14 @@ type Provider struct {
 	// auto: 根据 APIEndpoint 自动检测（包含 /responses 或 /chat/completions 则为 openai_chat）
 	UpstreamProtocol string `json:"upstreamProtocol,omitempty"`
 
+	// OpenAI 接口能力 - auto / responses / chat_completions / both
+	// 仅用于 Codex/OpenAI 兼容入口的 provider 选择，不影响 Claude 协议转换。
+	// auto: 根据 APIEndpoint 推断；如果未配置 APIEndpoint，则默认视为 both 以保持向后兼容
+	// responses: 仅参与 /responses 请求
+	// chat_completions: 仅参与 /v1/chat/completions 请求
+	// both: 同时参与两种 OpenAI 入口，请保持 APIEndpoint 为空，让 relay 按客户端请求路径透传
+	OpenAIEndpointMode string `json:"openAIEndpointMode,omitempty"`
+
 	// Claude WebSearch 兼容开关
 	// 仅用于 Claude -> OpenAI Responses 协议适配。
 	// 为 true 时，允许把 Claude hosted web_search 工具映射为 Responses API 的 web_search_preview。
@@ -423,6 +431,7 @@ func (ps *ProviderService) DuplicateProvider(kind string, sourceID int64) (*Prov
 		Level:                source.Level,
 		APIEndpoint:          source.APIEndpoint,          // 复制端点配置
 		UpstreamProtocol:     source.UpstreamProtocol,     // 复制上游协议配置
+		OpenAIEndpointMode:   source.OpenAIEndpointMode,   // 复制 OpenAI 接口能力配置
 		SupportsWebSearch:    source.SupportsWebSearch,    // 复制 WebSearch 兼容开关
 		SupportsCountTokens:  source.SupportsCountTokens,  // 复制 count_tokens 支持开关
 		ConnectivityAuthType: source.ConnectivityAuthType, // 复制认证方式
@@ -563,6 +572,15 @@ const (
 	UpstreamProtocolAuto UpstreamProtocolType = "auto"
 )
 
+type OpenAIEndpointModeType string
+
+const (
+	OpenAIEndpointModeAuto            OpenAIEndpointModeType = "auto"
+	OpenAIEndpointModeResponses       OpenAIEndpointModeType = "responses"
+	OpenAIEndpointModeChatCompletions OpenAIEndpointModeType = "chat_completions"
+	OpenAIEndpointModeBoth            OpenAIEndpointModeType = "both"
+)
+
 // GetUpstreamProtocol 获取上游协议类型
 // 空值或无效值默认返回 anthropic
 func (p *Provider) GetUpstreamProtocol() UpstreamProtocolType {
@@ -587,6 +605,92 @@ func DetectUpstreamProtocol(endpoint string) UpstreamProtocolType {
 	}
 	// 默认 Anthropic
 	return UpstreamProtocolAnthropic
+}
+
+func normalizeOpenAIEndpointMode(mode string) OpenAIEndpointModeType {
+	switch strings.TrimSpace(strings.ToLower(mode)) {
+	case "", "auto":
+		return OpenAIEndpointModeAuto
+	case "responses", "response":
+		return OpenAIEndpointModeResponses
+	case "chat_completions", "chat-completions", "chatcompletions":
+		return OpenAIEndpointModeChatCompletions
+	case "both", "all":
+		return OpenAIEndpointModeBoth
+	default:
+		return OpenAIEndpointModeAuto
+	}
+}
+
+func classifyOpenAIEndpoint(endpoint string) OpenAIEndpointModeType {
+	ep := strings.ToLower(strings.TrimSpace(endpoint))
+	switch {
+	case strings.Contains(ep, "/responses"):
+		return OpenAIEndpointModeResponses
+	case strings.Contains(ep, "/chat/completions"):
+		return OpenAIEndpointModeChatCompletions
+	default:
+		return ""
+	}
+}
+
+// GetOpenAIEndpointMode 获取 provider 声明的 OpenAI 入口能力。
+// 未显式配置时会根据 APIEndpoint 推断；若仍无法推断，则默认 both 以保持旧配置可用。
+func (p *Provider) GetOpenAIEndpointMode() OpenAIEndpointModeType {
+	mode := normalizeOpenAIEndpointMode(p.OpenAIEndpointMode)
+	if mode != OpenAIEndpointModeAuto {
+		return mode
+	}
+
+	if inferred := classifyOpenAIEndpoint(p.APIEndpoint); inferred != "" {
+		return inferred
+	}
+
+	return OpenAIEndpointModeBoth
+}
+
+// SupportsOpenAIEndpoint 判断 provider 是否应该参与指定 OpenAI 入口。
+func (p *Provider) SupportsOpenAIEndpoint(endpoint string) bool {
+	requested := classifyOpenAIEndpoint(endpoint)
+	if requested == "" {
+		return true
+	}
+
+	mode := p.GetOpenAIEndpointMode()
+	switch requested {
+	case OpenAIEndpointModeResponses:
+		return mode == OpenAIEndpointModeResponses || mode == OpenAIEndpointModeBoth
+	case OpenAIEndpointModeChatCompletions:
+		return mode == OpenAIEndpointModeChatCompletions || mode == OpenAIEndpointModeBoth
+	default:
+		return true
+	}
+}
+
+// ResolveOpenAIUpstreamEndpoint 解析 OpenAI 兼容请求应命中的上游端点。
+func (p *Provider) ResolveOpenAIUpstreamEndpoint(routeEndpoint string) string {
+	requested := classifyOpenAIEndpoint(routeEndpoint)
+	if requested == "" {
+		return p.GetEffectiveEndpoint(routeEndpoint)
+	}
+
+	mode := p.GetOpenAIEndpointMode()
+	if strings.TrimSpace(p.APIEndpoint) != "" {
+		effective := p.GetEffectiveEndpoint(routeEndpoint)
+		if mode == OpenAIEndpointModeBoth && classifyOpenAIEndpoint(effective) != "" {
+			return routeEndpoint
+		}
+		return effective
+	}
+
+	switch mode {
+	case OpenAIEndpointModeResponses:
+		return "/responses"
+	case OpenAIEndpointModeChatCompletions:
+		return "/v1/chat/completions"
+	default:
+		return routeEndpoint
+	}
 }
 
 // ResolveUpstreamProtocol 解析最终的上游协议
@@ -641,6 +745,22 @@ func (p *Provider) ValidateConfiguration() []string {
 	// 用户可能只想映射模型名，不需要白名单过滤
 
 	// 规则 3 移除：自映射不会破坏功能，最多是无效配置，不阻塞保存
+
+	// 规则 4：OpenAI 接口能力与固定 APIEndpoint 不应相互矛盾
+	configuredMode := normalizeOpenAIEndpointMode(p.OpenAIEndpointMode)
+	endpointMode := classifyOpenAIEndpoint(p.APIEndpoint)
+	if endpointMode != "" {
+		switch configuredMode {
+		case OpenAIEndpointModeResponses:
+			if endpointMode != OpenAIEndpointModeResponses {
+				errors = append(errors, "OpenAI 接口能力配置为 responses，但 API Endpoint 指向了 /v1/chat/completions")
+			}
+		case OpenAIEndpointModeChatCompletions:
+			if endpointMode != OpenAIEndpointModeChatCompletions {
+				errors = append(errors, "OpenAI 接口能力配置为 chat_completions，但 API Endpoint 指向了 /responses")
+			}
+		}
+	}
 
 	p.configErrors = errors
 	return errors

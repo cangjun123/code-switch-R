@@ -426,6 +426,7 @@
           "apiKey": "API 密钥",
           "apiEndpoint": "API 端点（可选）",
           "upstreamProtocol": "上游协议",
+          "openAIEndpointMode": "OpenAI 入口能力",
           "officialSite": "官网地址",
           "icon": "图标",
           "enabled": "启用状态",
@@ -460,6 +461,7 @@
           "level": "数字越小优先级越高，Level 1 会被优先尝试，失败后依次尝试 Level 2、Level 3 等",
           "apiEndpoint": "覆盖平台默认端点。留空使用默认（Claude: Anthropic 为 /v1/messages，OpenAI Compatible 为 /v1/responses；Codex: /responses）。GLM 模型请使用 /v1/chat/completions",
           "upstreamProtocol": "指定上游 API 的协议类型。选择 auto 时根据端点自动检测；选择 OpenAI Compatible 时会把 Claude Messages 请求转换到 OpenAI Responses 或 Chat Completions",
+          "openAIEndpointMode": "仅用于 Codex/OpenAI 兼容请求的 provider 选择。auto 会根据 API Endpoint 推断；留空且未固定端点时默认同时支持 /responses 和 /v1/chat/completions。",
           "availabilityMonitor": "启用后会定期进行健康检查，监控此供应商的可用性状态",
           "connectivityAutoBlacklist": "健康检查失败时自动拉黑该供应商",
           "availabilityAdvancedConfig": "高级配置（测试模型、端点、超时）可在可用性页面中编辑",
@@ -495,6 +497,16 @@
           "anthropicDesc": "使用 Anthropic Messages API（默认）",
           "openaiChat": "OpenAI Compatible",
           "openaiChatDesc": "使用 OpenAI Responses / Chat Completions，自动转换 Claude Messages 格式"
+        },
+        "openAIEndpointMode": {
+          "auto": "自动推断",
+          "autoDesc": "根据 API Endpoint 推断；未配置固定端点时默认同时支持两种入口",
+          "responses": "仅 /responses",
+          "responsesDesc": "只参与 OpenAI Responses 请求",
+          "chatCompletions": "仅 /v1/chat/completions",
+          "chatCompletionsDesc": "只参与 OpenAI Chat Completions 请求",
+          "both": "同时支持两者",
+          "bothDesc": "同时参与两种入口，建议 API Endpoint 留空，让 relay 按客户端请求路径透传"
         },
         "confirmDeleteTitle": "删除供应商",
         "confirmDeleteMessage": "确认删除 {name} 吗？操作不可撤销",

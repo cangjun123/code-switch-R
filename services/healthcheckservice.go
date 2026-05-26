@@ -713,6 +713,9 @@ func (hcs *HealthCheckService) getEffectiveEndpoint(provider *Provider, platform
 
 	// 优先级 2：用户配置的生产端点（如果配置了 apiEndpoint）
 	if provider.APIEndpoint != "" {
+		if strings.ToLower(platform) == ProviderKindCodex {
+			return provider.ResolveOpenAIUpstreamEndpoint("/responses")
+		}
 		return provider.GetEffectiveEndpoint("")
 	}
 
@@ -724,7 +727,7 @@ func (hcs *HealthCheckService) getEffectiveEndpoint(provider *Provider, platform
 		}
 		return "/v1/messages"
 	case "codex":
-		return "/responses"
+		return provider.ResolveOpenAIUpstreamEndpoint("/responses")
 	case "gpt-image":
 		return "/v1/images/generations"
 	default:

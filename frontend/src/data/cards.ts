@@ -16,6 +16,8 @@ export type AutomationCard = {
   level?: number
   // API 端点路径（可选）：覆盖平台默认端点
   apiEndpoint?: string
+  // OpenAI 入口能力：auto / responses / chat_completions / both
+  openAIEndpointMode?: string
   // CLI 配置：存储供应商关联的 CLI 可编辑配置
   cliConfig?: Record<string, any>
 

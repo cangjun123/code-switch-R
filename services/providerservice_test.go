@@ -219,6 +219,157 @@ func TestDetectUpstreamProtocol(t *testing.T) {
 	}
 }
 
+func TestProvider_GetOpenAIEndpointMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider Provider
+		want     OpenAIEndpointModeType
+	}{
+		{
+			name:     "默认兼容旧配置-空配置视为 both",
+			provider: Provider{},
+			want:     OpenAIEndpointModeBoth,
+		},
+		{
+			name: "根据 APIEndpoint 推断 responses",
+			provider: Provider{
+				APIEndpoint: "/responses",
+			},
+			want: OpenAIEndpointModeResponses,
+		},
+		{
+			name: "根据 APIEndpoint 推断 chat completions",
+			provider: Provider{
+				APIEndpoint: "/v1/chat/completions",
+			},
+			want: OpenAIEndpointModeChatCompletions,
+		},
+		{
+			name: "显式 both 覆盖推断",
+			provider: Provider{
+				APIEndpoint:        "/responses",
+				OpenAIEndpointMode: "both",
+			},
+			want: OpenAIEndpointModeBoth,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.provider.GetOpenAIEndpointMode(); got != tt.want {
+				t.Fatalf("GetOpenAIEndpointMode() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProvider_SupportsOpenAIEndpoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider Provider
+		endpoint string
+		expected bool
+	}{
+		{
+			name: "responses-only 支持 responses",
+			provider: Provider{
+				OpenAIEndpointMode: "responses",
+			},
+			endpoint: "/responses",
+			expected: true,
+		},
+		{
+			name: "responses-only 不支持 chat completions",
+			provider: Provider{
+				OpenAIEndpointMode: "responses",
+			},
+			endpoint: "/v1/chat/completions",
+			expected: false,
+		},
+		{
+			name: "chat-only 支持 chat completions",
+			provider: Provider{
+				OpenAIEndpointMode: "chat_completions",
+			},
+			endpoint: "/v1/chat/completions",
+			expected: true,
+		},
+		{
+			name: "both 支持两种入口",
+			provider: Provider{
+				OpenAIEndpointMode: "both",
+			},
+			endpoint: "/responses",
+			expected: true,
+		},
+		{
+			name:     "旧配置空值默认支持 chat completions",
+			provider: Provider{},
+			endpoint: "/v1/chat/completions",
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.provider.SupportsOpenAIEndpoint(tt.endpoint); got != tt.expected {
+				t.Fatalf("SupportsOpenAIEndpoint(%q) = %v, want %v", tt.endpoint, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestProvider_ResolveOpenAIUpstreamEndpoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider Provider
+		route    string
+		expected string
+	}{
+		{
+			name: "chat-only 默认走 chat completions",
+			provider: Provider{
+				OpenAIEndpointMode: "chat_completions",
+			},
+			route:    "/responses",
+			expected: "/v1/chat/completions",
+		},
+		{
+			name: "responses-only 默认走 responses",
+			provider: Provider{
+				OpenAIEndpointMode: "responses",
+			},
+			route:    "/v1/chat/completions",
+			expected: "/responses",
+		},
+		{
+			name: "both 保持客户端入口路径",
+			provider: Provider{
+				OpenAIEndpointMode: "both",
+			},
+			route:    "/v1/chat/completions",
+			expected: "/v1/chat/completions",
+		},
+		{
+			name: "both + 旧固定 APIEndpoint 时优先使用客户端入口路径",
+			provider: Provider{
+				OpenAIEndpointMode: "both",
+				APIEndpoint:        "/responses",
+			},
+			route:    "/v1/chat/completions",
+			expected: "/v1/chat/completions",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.provider.ResolveOpenAIUpstreamEndpoint(tt.route); got != tt.expected {
+				t.Fatalf("ResolveOpenAIUpstreamEndpoint(%q) = %q, want %q", tt.route, got, tt.expected)
+			}
+		})
+	}
+}
+
 // ==================== IsModelSupported 测试 ====================
 
 func TestProvider_IsModelSupported(t *testing.T) {

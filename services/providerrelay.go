@@ -435,6 +435,10 @@ func applyOpenAIChatCompletionsCORS(c *gin.Context) {
 }
 
 func (prs *ProviderRelayService) resolveRelayEndpoint(kind string, provider Provider, routeEndpoint string) string {
+	if strings.EqualFold(kind, ProviderKindCodex) {
+		return provider.ResolveOpenAIUpstreamEndpoint(routeEndpoint)
+	}
+
 	if strings.TrimSpace(provider.APIEndpoint) != "" {
 		return provider.GetEffectiveEndpoint(routeEndpoint)
 	}
@@ -493,6 +497,12 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 			// 核心过滤：只保留支持请求模型的 provider
 			if requestedModel != "" && !provider.IsModelSupported(requestedModel) {
 				fmt.Printf("[INFO] Provider %s 不支持模型 %s，已跳过\n", provider.Name, requestedModel)
+				skippedCount++
+				continue
+			}
+
+			if kind == ProviderKindCodex && !provider.SupportsOpenAIEndpoint(endpoint) {
+				fmt.Printf("[INFO] Provider %s 不支持入口 %s，已跳过\n", provider.Name, endpoint)
 				skippedCount++
 				continue
 			}

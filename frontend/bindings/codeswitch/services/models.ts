@@ -2045,6 +2045,12 @@ export class Provider {
     "upstreamProtocol"?: string;
 
     /**
+     * OpenAI 接口能力 - auto / responses / chat_completions / both
+     * 仅用于 Codex/OpenAI 兼容入口的 provider 选择。
+     */
+    "openAIEndpointMode"?: string;
+
+    /**
      * [已废弃] 连通性检测开关 - 迁移到 AvailabilityMonitorEnabled
      */
     "connectivityCheck"?: boolean;
