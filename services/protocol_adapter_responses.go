@@ -15,6 +15,8 @@ type SSEProtocolConverter interface {
 	ProcessLine(line string) string
 }
 
+const defaultResponsesInstructions = "You are a helpful assistant."
+
 // ResponsesConvertOptions Responses API 转换选项
 type ResponsesConvertOptions struct {
 	AllowWebSearch bool
@@ -217,7 +219,8 @@ func decodeJSONObject(body []byte) (map[string]interface{}, error) {
 }
 
 // BridgeResponsesInstructionsFromInput 为要求顶层 instructions 的 Responses 上游补齐 instructions。
-// 当请求缺少 instructions 时，提取首个 developer/system message 的纯文本内容并提升到顶层。
+// 当请求缺少 instructions 时，优先提取首个 developer/system message 的纯文本内容；
+// 如果无法提取，则回退到一个稳定默认值。
 // 原 input 保持不变，避免破坏已兼容该模式的上游行为。
 func BridgeResponsesInstructionsFromInput(body []byte) ([]byte, bool, error) {
 	req, err := decodeJSONObject(body)
@@ -231,7 +234,7 @@ func BridgeResponsesInstructionsFromInput(body []byte) ([]byte, bool, error) {
 
 	instructions := deriveResponsesInstructionsFromInput(req["input"])
 	if instructions == "" {
-		return body, false, nil
+		instructions = defaultResponsesInstructions
 	}
 
 	req["instructions"] = instructions

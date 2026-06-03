@@ -303,6 +303,32 @@ func TestBridgeResponsesInstructionsFromInputNoopWhenInstructionsPresent(t *test
 	}
 }
 
+func TestBridgeResponsesInstructionsFromInputFallsBackToDefault(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"input": [
+			{
+				"type": "message",
+				"role": "user",
+				"content": [{"type":"input_text","text":"hello"}]
+			}
+		]
+	}`)
+
+	bridged, changed, err := BridgeResponsesInstructionsFromInput(body)
+	if err != nil {
+		t.Fatalf("BridgeResponsesInstructionsFromInput returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected instructions bridge to add default instructions")
+	}
+
+	result := gjson.ParseBytes(bridged)
+	if got := result.Get("instructions").String(); got != defaultResponsesInstructions {
+		t.Fatalf("instructions = %q, want %q", got, defaultResponsesInstructions)
+	}
+}
+
 func TestForceResponsesStoreFalseAddsWhenMissing(t *testing.T) {
 	body := []byte(`{
 		"model": "gpt-5.4",

@@ -784,6 +784,9 @@ func (hcs *HealthCheckService) buildTestRequest(provider *Provider, platform, en
 				},
 			},
 		}
+		if provider.BridgeResponsesInstructions {
+			reqBody["instructions"] = defaultResponsesInstructions
+		}
 		if !provider.DropResponsesMaxOutputTokens {
 			reqBody["max_output_tokens"] = 1
 		}

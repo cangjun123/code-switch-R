@@ -466,7 +466,7 @@
           "apiEndpoint": "覆盖平台默认端点。留空使用默认（Claude: Anthropic 为 /v1/messages，OpenAI Compatible 为 /v1/responses；Codex: /responses）。GLM 模型请使用 /v1/chat/completions",
           "upstreamProtocol": "指定上游 API 的协议类型。选择 auto 时根据端点自动检测；选择 OpenAI Compatible 时会把 Claude Messages 请求转换到 OpenAI Responses 或 Chat Completions",
           "openAIEndpointMode": "仅用于 Codex/OpenAI 兼容请求的 provider 选择。auto 会根据 API Endpoint 推断；留空且未固定端点时默认同时支持 /responses 和 /v1/chat/completions。",
-          "bridgeResponsesInstructions": "仅用于 /responses。启用后，当客户端请求缺少顶层 instructions 时，会从首个 developer/system message 自动补齐，用于兼容要求顶层 instructions 的上游。",
+          "bridgeResponsesInstructions": "仅用于 /responses。启用后，当客户端请求缺少顶层 instructions 时，会优先从首个 developer/system message 自动补齐；如果没有可提取内容，则回退为默认值 \"You are a helpful assistant.\"，用于兼容要求顶层 instructions 的上游。",
           "forceResponsesStoreFalse": "仅用于 /responses。启用后，会显式把顶层 store 设为 false，用于兼容要求 store=false 的上游；如果客户端原本传了 true，也会被覆盖。",
           "dropResponsesMaxOutputTokens": "仅用于 /responses。启用后，会移除顶层 max_output_tokens，用于兼容不支持该字段的上游。",
           "dropResponsesTemperature": "仅用于 /responses。启用后，会移除顶层 temperature，用于兼容不支持该字段的上游。",
