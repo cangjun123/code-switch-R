@@ -2069,6 +2069,12 @@ export class Provider {
     "dropResponsesFields"?: string[];
 
     /**
+     * Images 丢弃字段列表
+     * 仅用于 GPT 图片请求，必要时在转发前移除这些顶层 JSON 字段或 multipart field。
+     */
+    "dropImageFields"?: string[];
+
+    /**
      * [已废弃] Responses max_output_tokens 兼容开关
      * 已迁移到 dropResponsesFields。
      */

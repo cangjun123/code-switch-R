@@ -1130,6 +1130,75 @@ func TestOpenAIImagesGenerationsProxy(t *testing.T) {
 	}
 }
 
+func TestOpenAIImagesGenerationsDropConfiguredFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var upstreamHits int
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("读取上游请求体失败: %v", err)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("上游请求体不是 JSON: %v", err)
+		}
+		if _, ok := payload["response_format"]; ok {
+			t.Fatalf("顶层 response_format 应被移除，实际: %s", string(body))
+		}
+		if payload["model"] != "gpt-image-2" {
+			t.Fatalf("模型字段不正确，收到 %v", payload["model"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"ZHJvcHBlZA=="}]}`))
+	}))
+	defer upstreamServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindGPTImage, []Provider{
+		{
+			ID:              1,
+			Name:            "ImageProvider",
+			APIURL:          upstreamServer.URL,
+			APIKey:          "provider-api-key",
+			Enabled:         true,
+			DropImageFields: []string{"response_format"},
+			SupportedModels: map[string]bool{
+				"gpt-image-2": true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"gpt-image-2","prompt":"a red apple","response_format":"b64_json"}`))
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"b64_json":"ZHJvcHBlZA=="`) {
+		t.Fatalf("响应体不包含上游图片数据: %s", w.Body.String())
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("期望命中上游 1 次，实际 %d", upstreamHits)
+	}
+}
+
 func TestOpenAIImagesGenerationsProxyWithoutConfiguredEndpoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1418,6 +1487,82 @@ func TestOpenAIImagesEditsProxyMultipart(t *testing.T) {
 		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), `"b64_json":"ZWRpdA=="`) {
+		t.Fatalf("响应体不包含上游图片数据: %s", w.Body.String())
+	}
+}
+
+func TestOpenAIImagesEditsDropConfiguredMultipartFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			t.Fatalf("解析 multipart 失败: %v", err)
+		}
+		if got := r.FormValue("response_format"); got != "" {
+			t.Fatalf("response_format 应被移除，收到 %q", got)
+		}
+		if got := r.FormValue("model"); got != "gpt-image-2" {
+			t.Fatalf("上游 model 字段错误，收到 %q", got)
+		}
+		if got := r.FormValue("prompt"); got != "edit this" {
+			t.Fatalf("上游 prompt 字段错误，收到 %q", got)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"ZHJvcC1tdWx0aXBhcnQ="}]}`))
+	}))
+	defer upstreamServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindGPTImage, []Provider{
+		{
+			ID:              1,
+			Name:            "ImageProvider",
+			APIURL:          upstreamServer.URL,
+			APIKey:          "provider-api-key",
+			Enabled:         true,
+			DropImageFields: []string{"response_format"},
+			SupportedModels: map[string]bool{
+				"gpt-image-2": true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("model", "gpt-image-2")
+	_ = writer.WriteField("prompt", "edit this")
+	_ = writer.WriteField("response_format", "b64_json")
+	part, err := writer.CreateFormFile("image[]", "one.png")
+	if err != nil {
+		t.Fatalf("创建 image[] 字段失败: %v", err)
+	}
+	_, _ = part.Write([]byte("image"))
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭 multipart writer 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", &body)
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"b64_json":"ZHJvcC1tdWx0aXBhcnQ="`) {
 		t.Fatalf("响应体不包含上游图片数据: %s", w.Body.String())
 	}
 }

@@ -28,6 +28,8 @@ export type AutomationCard = {
   dropResponsesMaxOutputTokens?: boolean
   // [已废弃] Responses temperature 兼容：迁移到 dropResponsesFields
   dropResponsesTemperature?: boolean
+  // Images 丢弃字段列表：为不支持指定 JSON key 或 multipart field 的生图请求在转发前移除对应字段
+  dropImageFields?: string[]
   // CLI 配置：存储供应商关联的 CLI 可编辑配置
   cliConfig?: Record<string, any>
 
@@ -142,6 +144,11 @@ export function createAutomationCards(data: AutomationCard[] = []): AutomationCa
     officialSite: item.officialSite ?? '',
     dropResponsesFields: Array.isArray(item.dropResponsesFields)
       ? item.dropResponsesFields
+        .map((field) => field.trim())
+        .filter(Boolean)
+      : [],
+    dropImageFields: Array.isArray(item.dropImageFields)
+      ? item.dropImageFields
         .map((field) => field.trim())
         .filter(Boolean)
       : [],

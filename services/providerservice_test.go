@@ -390,6 +390,24 @@ func TestProvider_GetResponsesDropFields(t *testing.T) {
 	}
 }
 
+func TestProvider_GetImageDropFields(t *testing.T) {
+	provider := Provider{
+		DropImageFields: []string{" response_format ", "RESPONSE_FORMAT", "partial_images"},
+	}
+
+	got := provider.GetImageDropFields()
+	want := []string{"response_format", "partial_images"}
+
+	if len(got) != len(want) {
+		t.Fatalf("GetImageDropFields() len = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("GetImageDropFields()[%d] = %q, want %q (all=%v)", i, got[i], want[i], got)
+		}
+	}
+}
+
 func TestProvider_MigrateFromLegacyResponsesDropFields(t *testing.T) {
 	provider := Provider{
 		DropResponsesMaxOutputTokens: true,

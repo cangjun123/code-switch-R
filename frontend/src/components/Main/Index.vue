@@ -708,6 +708,16 @@
                   <span class="field-hint">{{ t('components.main.form.hints.dropResponsesFields') }}</span>
                 </label>
 
+                <label v-if="modalState.tabId === 'gpt-image'" class="form-field">
+                  <span>{{ t('components.main.form.labels.dropImageFields') }}</span>
+                  <BaseInput
+                    v-model="modalState.form.dropImageFieldsText"
+                    type="text"
+                    :placeholder="t('components.main.form.placeholders.dropImageFields')"
+                  />
+                  <span class="field-hint">{{ t('components.main.form.hints.dropImageFields') }}</span>
+                </label>
+
                 <!-- 认证方式 -->
                 <div class="form-field">
                   <span>{{ t('components.main.form.labels.connectivityAuthType') }}</span>
@@ -1636,6 +1646,7 @@ const serializeProviders = (providers: AutomationCard[]) =>
   providers.map((provider) => ({
     ...provider,
     dropResponsesFields: getResponsesDropFields(provider),
+    dropImageFields: getImageDropFields(provider),
     dropResponsesMaxOutputTokens: false,
     dropResponsesTemperature: false,
     // 确保可用性配置正确序列化
@@ -2581,6 +2592,7 @@ type VendorForm = {
   bridgeResponsesInstructions?: boolean
   forceResponsesStoreFalse?: boolean
   dropResponsesFieldsText?: string
+  dropImageFieldsText?: string
   cliConfig?: Record<string, any>
   // === 可用性监控配置（新） ===
   availabilityMonitorEnabled?: boolean
@@ -2639,6 +2651,26 @@ const formatResponsesDropFields = (fields: string[]): string => fields.join(', '
 const parseResponsesDropFields = (text?: string): string[] =>
   normalizeResponsesDropFields((text || '').split(/[,\n]/))
 
+const normalizeImageDropFields = (fields: string[] = []): string[] => {
+  const normalized: string[] = []
+  const seen = new Set<string>()
+  for (const rawField of fields) {
+    const field = rawField.trim().toLowerCase()
+    if (!field || seen.has(field)) continue
+    seen.add(field)
+    normalized.push(field)
+  }
+  return normalized
+}
+
+const getImageDropFields = (source?: {
+  dropImageFields?: string[]
+} | null): string[] => normalizeImageDropFields(Array.isArray(source?.dropImageFields) ? source.dropImageFields : [])
+
+const formatImageDropFields = (fields: string[]): string => fields.join(', ')
+const parseImageDropFields = (text?: string): string[] =>
+  normalizeImageDropFields((text || '').split(/[,\n]/))
+
 // 图标搜索筛选
 const iconSearchQuery = ref('')
 const filteredIconOptions = computed(() => {
@@ -2664,6 +2696,7 @@ const defaultFormValues = (platform?: string): VendorForm => ({
   bridgeResponsesInstructions: false, // Responses instructions 兼容开关
   forceResponsesStoreFalse: false, // Responses store=false 兼容开关
   dropResponsesFieldsText: '', // Responses 丢弃字段列表
+  dropImageFieldsText: '', // Images 丢弃字段列表
   // 可用性监控配置（新）
   availabilityMonitorEnabled: false,
   connectivityAutoBlacklist: false,
@@ -2789,6 +2822,7 @@ const openEditModal = (card: AutomationCard) => {
     bridgeResponsesInstructions: !!card.bridgeResponsesInstructions,
     forceResponsesStoreFalse: !!card.forceResponsesStoreFalse,
     dropResponsesFieldsText: formatResponsesDropFields(getResponsesDropFields(card)),
+    dropImageFieldsText: formatImageDropFields(getImageDropFields(card)),
     // 可用性监控配置（新）- 兼容从旧字段迁移
     availabilityMonitorEnabled:
       card.availabilityMonitorEnabled ?? card.connectivityCheck ?? false,
@@ -2863,6 +2897,7 @@ const submitModal = async (): Promise<boolean> => {
   const officialSite = modalState.form.officialSite.trim()
   const icon = (modalState.form.icon || defaultIconKey).toString().trim().toLowerCase() || defaultIconKey
   const dropResponsesFields = parseResponsesDropFields(modalState.form.dropResponsesFieldsText)
+  const dropImageFields = parseImageDropFields(modalState.form.dropImageFieldsText)
   modalState.errors.apiUrl = ''
   try {
     const parsed = new URL(apiUrl)
@@ -2892,6 +2927,7 @@ const submitModal = async (): Promise<boolean> => {
       bridgeResponsesInstructions: !!modalState.form.bridgeResponsesInstructions,
       forceResponsesStoreFalse: !!modalState.form.forceResponsesStoreFalse,
       dropResponsesFields,
+      dropImageFields,
       dropResponsesMaxOutputTokens: false,
       dropResponsesTemperature: false,
       // 可用性监控配置（新）
@@ -2939,6 +2975,7 @@ const submitModal = async (): Promise<boolean> => {
       bridgeResponsesInstructions: !!modalState.form.bridgeResponsesInstructions,
       forceResponsesStoreFalse: !!modalState.form.forceResponsesStoreFalse,
       dropResponsesFields,
+      dropImageFields,
       dropResponsesMaxOutputTokens: false,
       dropResponsesTemperature: false,
       // 可用性监控配置（新）

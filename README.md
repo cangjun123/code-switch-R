@@ -243,6 +243,7 @@ curl http://127.0.0.1:18100/v1/chat/completions \
 - `API Key`: 上游 key
 - `API Endpoint`: 通常留空即可；只有上游使用特殊路径时才需要覆盖
 - 认证方式：`Bearer`
+- 如果某个图片上游会因为不支持某些字段而返回 400，可以在 `Images 丢弃字段` 中填写字段名。`eto` 常见值是 `response_format`
 - 模型白名单/映射可按需填写
 
 relay 会按客户端请求路径转发到上游：`/v1/images/generations` 走文生图，`/v1/images/edits` 走图片编辑。即使 provider 里填了 `/v1/images/generations`，也不会把 edits 请求错转到 generations。

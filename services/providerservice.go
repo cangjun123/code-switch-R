@@ -95,6 +95,11 @@ type Provider struct {
 	// 会在转发前移除这些顶层字段，用于兼容不支持对应参数的非标准 Responses 上游。
 	DropResponsesFields []string `json:"dropResponsesFields,omitempty"`
 
+	// Images 丢弃字段列表
+	// 仅用于 GPT 生图请求。
+	// 会在转发前移除这些顶层 JSON 字段或 multipart field，用于兼容不支持对应参数的非标准 Images 上游。
+	DropImageFields []string `json:"dropImageFields,omitempty"`
+
 	// Claude WebSearch 兼容开关
 	// 仅用于 Claude -> OpenAI Responses 协议适配。
 	// 为 true 时，允许把 Claude hosted web_search 工具映射为 Responses API 的 web_search_preview。
@@ -412,6 +417,7 @@ func (p *Provider) migrateFromLegacy() bool {
 // clearLegacyFields 清除旧字段值，使其在序列化时被 omitempty 跳过
 func (p *Provider) clearLegacyFields() {
 	p.DropResponsesFields = p.GetResponsesDropFields()
+	p.DropImageFields = p.GetImageDropFields()
 	p.ConnectivityCheck = false
 	p.ConnectivityTestModel = ""
 	p.ConnectivityTestEndpoint = ""
@@ -429,6 +435,10 @@ func (p *Provider) GetResponsesDropFields() []string {
 		fields = append(fields, responsesDropFieldTemperature)
 	}
 	return NormalizeResponsesDropFields(fields)
+}
+
+func (p *Provider) GetImageDropFields() []string {
+	return NormalizeImageDropFields(p.DropImageFields)
 }
 
 func (p *Provider) ShouldDropResponsesField(field string) bool {
@@ -498,6 +508,7 @@ func (ps *ProviderService) DuplicateProvider(kind string, sourceID int64) (*Prov
 		BridgeResponsesInstructions: source.BridgeResponsesInstructions, // 复制 Responses instructions 兼容开关
 		ForceResponsesStoreFalse:    source.ForceResponsesStoreFalse,    // 复制 Responses store=false 兼容开关
 		DropResponsesFields:         append([]string{}, source.GetResponsesDropFields()...),
+		DropImageFields:             append([]string{}, source.GetImageDropFields()...),
 		SupportsWebSearch:           source.SupportsWebSearch,    // 复制 WebSearch 兼容开关
 		SupportsCountTokens:         source.SupportsCountTokens,  // 复制 count_tokens 支持开关
 		ConnectivityAuthType:        source.ConnectivityAuthType, // 复制认证方式
