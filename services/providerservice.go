@@ -90,17 +90,10 @@ type Provider struct {
 	// 用于兼容要求 store 必须为 false 的非标准 Responses 上游。
 	ForceResponsesStoreFalse bool `json:"forceResponsesStoreFalse,omitempty"`
 
-	// Responses max_output_tokens 兼容开关
+	// Responses 丢弃字段列表
 	// 仅用于 Codex/OpenAI Responses 请求。
-	// 为 true 时，会移除顶层 max_output_tokens，
-	// 用于兼容不支持该字段的非标准 Responses 上游。
-	DropResponsesMaxOutputTokens bool `json:"dropResponsesMaxOutputTokens,omitempty"`
-
-	// Responses temperature 兼容开关
-	// 仅用于 Codex/OpenAI Responses 请求。
-	// 为 true 时，会移除顶层 temperature，
-	// 用于兼容不支持该字段的非标准 Responses 上游。
-	DropResponsesTemperature bool `json:"dropResponsesTemperature,omitempty"`
+	// 会在转发前移除这些顶层字段，用于兼容不支持对应参数的非标准 Responses 上游。
+	DropResponsesFields []string `json:"dropResponsesFields,omitempty"`
 
 	// Claude WebSearch 兼容开关
 	// 仅用于 Claude -> OpenAI Responses 协议适配。
@@ -126,6 +119,12 @@ type Provider struct {
 
 	// [已废弃] 连通性检测端点 - 迁移到 AvailabilityConfig.TestEndpoint
 	ConnectivityTestEndpoint string `json:"connectivityTestEndpoint,omitempty"`
+
+	// [已废弃] Responses max_output_tokens 兼容开关 - 迁移到 DropResponsesFields
+	DropResponsesMaxOutputTokens bool `json:"dropResponsesMaxOutputTokens,omitempty"`
+
+	// [已废弃] Responses temperature 兼容开关 - 迁移到 DropResponsesFields
+	DropResponsesTemperature bool `json:"dropResponsesTemperature,omitempty"`
 
 	// 内部字段：配置验证错误（不持久化）
 	configErrors []string `json:"-"`
@@ -305,7 +304,7 @@ func (ps *ProviderService) LoadProviders(kind string) ([]Provider, error) {
 
 	// 如果有迁移，记录日志并持久化到磁盘
 	if migrated {
-		fmt.Printf("[ProviderService] 已从旧配置迁移可用性字段 (kind=%s)\n", kind)
+		fmt.Printf("[ProviderService] 已从旧配置迁移兼容字段 (kind=%s)\n", kind)
 		// 自动保存迁移后的配置（使用带锁的保存方法避免死锁）
 		ps.mu.Lock()
 		err := ps.saveProvidersLocked(kind, envelope.Providers)
@@ -356,7 +355,7 @@ func (ps *ProviderService) loadProvidersNoLock(kind string) ([]Provider, error) 
 	}
 
 	if migrated {
-		fmt.Printf("[ProviderService] 已从旧配置迁移可用性字段 (kind=%s, 锁内模式)\n", kind)
+		fmt.Printf("[ProviderService] 已从旧配置迁移兼容字段 (kind=%s, 锁内模式)\n", kind)
 		// 在锁内模式下，直接保存而不再加锁
 		if err := ps.saveProvidersLocked(kind, envelope.Providers); err != nil {
 			log.Printf("[ProviderService] 锁内迁移保存失败: %v\n", err)
@@ -394,15 +393,55 @@ func (p *Provider) migrateFromLegacy() bool {
 		}
 	}
 
+	normalizedFields := NormalizeResponsesDropFields(p.DropResponsesFields)
+	effectiveFields := NormalizeResponsesDropFields(append([]string{}, p.DropResponsesFields...))
+	if p.DropResponsesMaxOutputTokens {
+		effectiveFields = NormalizeResponsesDropFields(append(effectiveFields, responsesDropFieldMaxOutputTokens))
+	}
+	if p.DropResponsesTemperature {
+		effectiveFields = NormalizeResponsesDropFields(append(effectiveFields, responsesDropFieldTemperature))
+	}
+	if len(normalizedFields) != len(effectiveFields) || strings.Join(normalizedFields, "\n") != strings.Join(effectiveFields, "\n") {
+		p.DropResponsesFields = effectiveFields
+		migrated = true
+	}
+
 	return migrated
 }
 
 // clearLegacyFields 清除旧字段值，使其在序列化时被 omitempty 跳过
 func (p *Provider) clearLegacyFields() {
+	p.DropResponsesFields = p.GetResponsesDropFields()
 	p.ConnectivityCheck = false
 	p.ConnectivityTestModel = ""
 	p.ConnectivityTestEndpoint = ""
+	p.DropResponsesMaxOutputTokens = false
+	p.DropResponsesTemperature = false
 	// 注意：ConnectivityAuthType 现在是活跃字段，不再清除
+}
+
+func (p *Provider) GetResponsesDropFields() []string {
+	fields := append([]string{}, p.DropResponsesFields...)
+	if p.DropResponsesMaxOutputTokens {
+		fields = append(fields, responsesDropFieldMaxOutputTokens)
+	}
+	if p.DropResponsesTemperature {
+		fields = append(fields, responsesDropFieldTemperature)
+	}
+	return NormalizeResponsesDropFields(fields)
+}
+
+func (p *Provider) ShouldDropResponsesField(field string) bool {
+	normalizedField := normalizeResponsesDropFieldName(field)
+	if normalizedField == "" {
+		return false
+	}
+	for _, candidate := range p.GetResponsesDropFields() {
+		if candidate == normalizedField {
+			return true
+		}
+	}
+	return false
 }
 
 // DuplicateProvider 复制供应商配置，生成新的副本
@@ -443,26 +482,25 @@ func (ps *ProviderService) DuplicateProvider(kind string, sourceID int64) (*Prov
 
 	// 5. 克隆配置（深拷贝）
 	cloned := &Provider{
-		ID:                           newID,
-		Name:                         source.Name + " (副本)",
-		APIURL:                       source.APIURL,
-		APIKey:                       source.APIKey,
-		Site:                         source.Site,
-		Icon:                         source.Icon,
-		Tint:                         source.Tint,
-		Accent:                       source.Accent,
-		Enabled:                      false, // 默认禁用，避免与源供应商冲突
-		Level:                        source.Level,
-		APIEndpoint:                  source.APIEndpoint,                  // 复制端点配置
-		UpstreamProtocol:             source.UpstreamProtocol,             // 复制上游协议配置
-		OpenAIEndpointMode:           source.OpenAIEndpointMode,           // 复制 OpenAI 接口能力配置
-		BridgeResponsesInstructions:  source.BridgeResponsesInstructions,  // 复制 Responses instructions 兼容开关
-		ForceResponsesStoreFalse:     source.ForceResponsesStoreFalse,     // 复制 Responses store=false 兼容开关
-		DropResponsesMaxOutputTokens: source.DropResponsesMaxOutputTokens, // 复制 Responses max_output_tokens 兼容开关
-		DropResponsesTemperature:     source.DropResponsesTemperature,     // 复制 Responses temperature 兼容开关
-		SupportsWebSearch:            source.SupportsWebSearch,            // 复制 WebSearch 兼容开关
-		SupportsCountTokens:          source.SupportsCountTokens,          // 复制 count_tokens 支持开关
-		ConnectivityAuthType:         source.ConnectivityAuthType,         // 复制认证方式
+		ID:                          newID,
+		Name:                        source.Name + " (副本)",
+		APIURL:                      source.APIURL,
+		APIKey:                      source.APIKey,
+		Site:                        source.Site,
+		Icon:                        source.Icon,
+		Tint:                        source.Tint,
+		Accent:                      source.Accent,
+		Enabled:                     false, // 默认禁用，避免与源供应商冲突
+		Level:                       source.Level,
+		APIEndpoint:                 source.APIEndpoint,                 // 复制端点配置
+		UpstreamProtocol:            source.UpstreamProtocol,            // 复制上游协议配置
+		OpenAIEndpointMode:          source.OpenAIEndpointMode,          // 复制 OpenAI 接口能力配置
+		BridgeResponsesInstructions: source.BridgeResponsesInstructions, // 复制 Responses instructions 兼容开关
+		ForceResponsesStoreFalse:    source.ForceResponsesStoreFalse,    // 复制 Responses store=false 兼容开关
+		DropResponsesFields:         append([]string{}, source.GetResponsesDropFields()...),
+		SupportsWebSearch:           source.SupportsWebSearch,    // 复制 WebSearch 兼容开关
+		SupportsCountTokens:         source.SupportsCountTokens,  // 复制 count_tokens 支持开关
+		ConnectivityAuthType:        source.ConnectivityAuthType, // 复制认证方式
 		// 可用性监控配置
 		AvailabilityMonitorEnabled: source.AvailabilityMonitorEnabled,
 		ConnectivityAutoBlacklist:  false, // 副本默认关闭自动拉黑

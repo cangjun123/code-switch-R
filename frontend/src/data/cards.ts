@@ -22,9 +22,11 @@ export type AutomationCard = {
   bridgeResponsesInstructions?: boolean
   // Responses store=false 兼容：为要求 store=false 的 Responses 请求显式设置顶层 store=false
   forceResponsesStoreFalse?: boolean
-  // Responses max_output_tokens 兼容：为不支持该字段的 Responses 请求移除顶层 max_output_tokens
+  // Responses 丢弃字段列表：为不支持指定顶层字段的 Responses 请求在转发前移除对应字段
+  dropResponsesFields?: string[]
+  // [已废弃] Responses max_output_tokens 兼容：迁移到 dropResponsesFields
   dropResponsesMaxOutputTokens?: boolean
-  // Responses temperature 兼容：为不支持该字段的 Responses 请求移除顶层 temperature
+  // [已废弃] Responses temperature 兼容：迁移到 dropResponsesFields
   dropResponsesTemperature?: boolean
   // CLI 配置：存储供应商关联的 CLI 可编辑配置
   cliConfig?: Record<string, any>
@@ -138,5 +140,10 @@ export function createAutomationCards(data: AutomationCard[] = []): AutomationCa
   return data.map((item) => ({
     ...item,
     officialSite: item.officialSite ?? '',
+    dropResponsesFields: Array.isArray(item.dropResponsesFields)
+      ? item.dropResponsesFields
+        .map((field) => field.trim())
+        .filter(Boolean)
+      : [],
   }))
 }

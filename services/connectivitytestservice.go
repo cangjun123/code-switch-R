@@ -298,7 +298,7 @@ func (cts *ConnectivityTestService) buildTestRequest(platform string, provider *
 		if provider.BridgeResponsesInstructions {
 			reqBody["instructions"] = defaultResponsesInstructions
 		}
-		if !provider.DropResponsesMaxOutputTokens {
+		if !provider.ShouldDropResponsesField(responsesDropFieldMaxOutputTokens) {
 			reqBody["max_output_tokens"] = 1
 		}
 		if provider.ForceResponsesStoreFalse {

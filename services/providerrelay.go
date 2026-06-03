@@ -966,23 +966,16 @@ func (prs *ProviderRelayService) forwardRequest(
 		}
 	}
 
-	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) && provider.DropResponsesMaxOutputTokens {
-		bridgedBody, bridged, err := DropResponsesMaxOutputTokens(bodyBytes)
-		if err != nil {
-			fmt.Printf("[WARN] Provider %s Responses max_output_tokens 兼容处理失败，继续透传原请求: %v\n", provider.Name, err)
-		} else if bridged {
-			bodyBytes = bridgedBody
-			fmt.Printf("[INFO] Provider %s 已为 Responses 请求移除顶层 max_output_tokens\n", provider.Name)
-		}
-	}
-
-	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) && provider.DropResponsesTemperature {
-		bridgedBody, bridged, err := DropResponsesTemperature(bodyBytes)
-		if err != nil {
-			fmt.Printf("[WARN] Provider %s Responses temperature 兼容处理失败，继续透传原请求: %v\n", provider.Name, err)
-		} else if bridged {
-			bodyBytes = bridgedBody
-			fmt.Printf("[INFO] Provider %s 已为 Responses 请求移除顶层 temperature\n", provider.Name)
+	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) {
+		dropFields := provider.GetResponsesDropFields()
+		if len(dropFields) > 0 {
+			bridgedBody, removedFields, err := DropResponsesFields(bodyBytes, dropFields)
+			if err != nil {
+				fmt.Printf("[WARN] Provider %s Responses 字段移除兼容处理失败，继续透传原请求: %v\n", provider.Name, err)
+			} else if len(removedFields) > 0 {
+				bodyBytes = bridgedBody
+				fmt.Printf("[INFO] Provider %s 已为 Responses 请求移除顶层字段: %v\n", provider.Name, removedFields)
+			}
 		}
 	}
 

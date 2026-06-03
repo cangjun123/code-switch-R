@@ -17,6 +17,11 @@ type SSEProtocolConverter interface {
 
 const defaultResponsesInstructions = "You are a helpful assistant."
 
+const (
+	responsesDropFieldMaxOutputTokens = "max_output_tokens"
+	responsesDropFieldTemperature     = "temperature"
+)
+
 // ResponsesConvertOptions Responses API 转换选项
 type ResponsesConvertOptions struct {
 	AllowWebSearch bool
@@ -267,45 +272,90 @@ func ForceResponsesStoreFalse(body []byte) ([]byte, bool, error) {
 	return result, true, nil
 }
 
+func normalizeResponsesDropFieldName(field string) string {
+	return strings.ToLower(strings.TrimSpace(field))
+}
+
+func NormalizeResponsesDropFields(fields []string) []string {
+	if len(fields) == 0 {
+		return nil
+	}
+
+	normalized := make([]string, 0, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		name := normalizeResponsesDropFieldName(field)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		normalized = append(normalized, name)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+// DropResponsesFields 移除 Responses 请求顶层指定字段。
+// 返回值 removedFields 仅包含本次实际移除的字段，顺序与入参归一化后保持一致。
+func DropResponsesFields(body []byte, fields []string) ([]byte, []string, error) {
+	normalizedFields := NormalizeResponsesDropFields(fields)
+	if len(normalizedFields) == 0 {
+		return body, nil, nil
+	}
+
+	req, err := decodeJSONObject(body)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	removedFields := make([]string, 0, len(normalizedFields))
+	for _, field := range normalizedFields {
+		if _, ok := req[field]; !ok {
+			continue
+		}
+		delete(req, field)
+		removedFields = append(removedFields, field)
+	}
+	if len(removedFields) == 0 {
+		return body, nil, nil
+	}
+
+	result, err := json.Marshal(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("序列化 Responses 请求失败: %w", err)
+	}
+
+	return result, removedFields, nil
+}
+
 // DropResponsesMaxOutputTokens 移除 Responses 请求顶层 max_output_tokens。
 // 如果该字段原本不存在，则保持不变。
 func DropResponsesMaxOutputTokens(body []byte) ([]byte, bool, error) {
-	req, err := decodeJSONObject(body)
+	result, removedFields, err := DropResponsesFields(body, []string{responsesDropFieldMaxOutputTokens})
 	if err != nil {
 		return nil, false, err
 	}
-
-	if _, ok := req["max_output_tokens"]; !ok {
+	if len(removedFields) == 0 {
 		return body, false, nil
 	}
-
-	delete(req, "max_output_tokens")
-	result, err := json.Marshal(req)
-	if err != nil {
-		return nil, false, fmt.Errorf("序列化 Responses 请求失败: %w", err)
-	}
-
 	return result, true, nil
 }
 
 // DropResponsesTemperature 移除 Responses 请求顶层 temperature。
 // 如果该字段原本不存在，则保持不变。
 func DropResponsesTemperature(body []byte) ([]byte, bool, error) {
-	req, err := decodeJSONObject(body)
+	result, removedFields, err := DropResponsesFields(body, []string{responsesDropFieldTemperature})
 	if err != nil {
 		return nil, false, err
 	}
-
-	if _, ok := req["temperature"]; !ok {
+	if len(removedFields) == 0 {
 		return body, false, nil
 	}
-
-	delete(req, "temperature")
-	result, err := json.Marshal(req)
-	if err != nil {
-		return nil, false, fmt.Errorf("序列化 Responses 请求失败: %w", err)
-	}
-
 	return result, true, nil
 }
 

@@ -698,33 +698,15 @@
                   <span class="field-hint">{{ t('components.main.form.hints.forceResponsesStoreFalse') }}</span>
                 </div>
 
-                <div v-if="modalState.tabId === 'codex'" class="form-field switch-field">
-                  <span>{{ t('components.main.form.labels.dropResponsesMaxOutputTokens') }}</span>
-                  <div class="switch-inline">
-                    <label class="mac-switch">
-                      <input type="checkbox" v-model="modalState.form.dropResponsesMaxOutputTokens" />
-                      <span></span>
-                    </label>
-                    <span class="switch-text">
-                      {{ modalState.form.dropResponsesMaxOutputTokens ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-                    </span>
-                  </div>
-                  <span class="field-hint">{{ t('components.main.form.hints.dropResponsesMaxOutputTokens') }}</span>
-                </div>
-
-                <div v-if="modalState.tabId === 'codex'" class="form-field switch-field">
-                  <span>{{ t('components.main.form.labels.dropResponsesTemperature') }}</span>
-                  <div class="switch-inline">
-                    <label class="mac-switch">
-                      <input type="checkbox" v-model="modalState.form.dropResponsesTemperature" />
-                      <span></span>
-                    </label>
-                    <span class="switch-text">
-                      {{ modalState.form.dropResponsesTemperature ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-                    </span>
-                  </div>
-                  <span class="field-hint">{{ t('components.main.form.hints.dropResponsesTemperature') }}</span>
-                </div>
+                <label v-if="modalState.tabId === 'codex'" class="form-field">
+                  <span>{{ t('components.main.form.labels.dropResponsesFields') }}</span>
+                  <BaseInput
+                    v-model="modalState.form.dropResponsesFieldsText"
+                    type="text"
+                    :placeholder="t('components.main.form.placeholders.dropResponsesFields')"
+                  />
+                  <span class="field-hint">{{ t('components.main.form.hints.dropResponsesFields') }}</span>
+                </label>
 
                 <!-- 认证方式 -->
                 <div class="form-field">
@@ -1653,6 +1635,9 @@ const cardToGemini = (card: AutomationCard, original: GeminiProvider): GeminiPro
 const serializeProviders = (providers: AutomationCard[]) =>
   providers.map((provider) => ({
     ...provider,
+    dropResponsesFields: getResponsesDropFields(provider),
+    dropResponsesMaxOutputTokens: false,
+    dropResponsesTemperature: false,
     // 确保可用性配置正确序列化
     availabilityMonitorEnabled: !!provider.availabilityMonitorEnabled,
     connectivityAutoBlacklist: !!provider.connectivityAutoBlacklist,
@@ -2595,8 +2580,7 @@ type VendorForm = {
   openAIEndpointMode?: string
   bridgeResponsesInstructions?: boolean
   forceResponsesStoreFalse?: boolean
-  dropResponsesMaxOutputTokens?: boolean
-  dropResponsesTemperature?: boolean
+  dropResponsesFieldsText?: string
   cliConfig?: Record<string, any>
   // === 可用性监控配置（新） ===
   availabilityMonitorEnabled?: boolean
@@ -2621,6 +2605,39 @@ type VendorForm = {
 
 const iconOptions = Object.keys(lobeIcons).sort((a, b) => a.localeCompare(b))
 const defaultIconKey = iconOptions[0] ?? 'aicoding'
+const responsesDropFieldMaxOutputTokens = 'max_output_tokens'
+const responsesDropFieldTemperature = 'temperature'
+
+const normalizeResponsesDropFields = (fields: string[] = []): string[] => {
+  const normalized: string[] = []
+  const seen = new Set<string>()
+  for (const rawField of fields) {
+    const field = rawField.trim().toLowerCase()
+    if (!field || seen.has(field)) continue
+    seen.add(field)
+    normalized.push(field)
+  }
+  return normalized
+}
+
+const getResponsesDropFields = (source?: {
+  dropResponsesFields?: string[]
+  dropResponsesMaxOutputTokens?: boolean
+  dropResponsesTemperature?: boolean
+} | null): string[] => {
+  const fields = Array.isArray(source?.dropResponsesFields) ? [...source.dropResponsesFields] : []
+  if (source?.dropResponsesMaxOutputTokens) {
+    fields.push(responsesDropFieldMaxOutputTokens)
+  }
+  if (source?.dropResponsesTemperature) {
+    fields.push(responsesDropFieldTemperature)
+  }
+  return normalizeResponsesDropFields(fields)
+}
+
+const formatResponsesDropFields = (fields: string[]): string => fields.join(', ')
+const parseResponsesDropFields = (text?: string): string[] =>
+  normalizeResponsesDropFields((text || '').split(/[,\n]/))
 
 // 图标搜索筛选
 const iconSearchQuery = ref('')
@@ -2646,8 +2663,7 @@ const defaultFormValues = (platform?: string): VendorForm => ({
   openAIEndpointMode: 'auto', // OpenAI 入口能力（仅 codex 使用）
   bridgeResponsesInstructions: false, // Responses instructions 兼容开关
   forceResponsesStoreFalse: false, // Responses store=false 兼容开关
-  dropResponsesMaxOutputTokens: false, // Responses max_output_tokens 兼容开关
-  dropResponsesTemperature: false, // Responses temperature 兼容开关
+  dropResponsesFieldsText: '', // Responses 丢弃字段列表
   // 可用性监控配置（新）
   availabilityMonitorEnabled: false,
   connectivityAutoBlacklist: false,
@@ -2772,8 +2788,7 @@ const openEditModal = (card: AutomationCard) => {
     openAIEndpointMode: card.openAIEndpointMode || 'auto',
     bridgeResponsesInstructions: !!card.bridgeResponsesInstructions,
     forceResponsesStoreFalse: !!card.forceResponsesStoreFalse,
-    dropResponsesMaxOutputTokens: !!card.dropResponsesMaxOutputTokens,
-    dropResponsesTemperature: !!card.dropResponsesTemperature,
+    dropResponsesFieldsText: formatResponsesDropFields(getResponsesDropFields(card)),
     // 可用性监控配置（新）- 兼容从旧字段迁移
     availabilityMonitorEnabled:
       card.availabilityMonitorEnabled ?? card.connectivityCheck ?? false,
@@ -2847,6 +2862,7 @@ const submitModal = async (): Promise<boolean> => {
   const apiKey = modalState.form.apiKey.trim()
   const officialSite = modalState.form.officialSite.trim()
   const icon = (modalState.form.icon || defaultIconKey).toString().trim().toLowerCase() || defaultIconKey
+  const dropResponsesFields = parseResponsesDropFields(modalState.form.dropResponsesFieldsText)
   modalState.errors.apiUrl = ''
   try {
     const parsed = new URL(apiUrl)
@@ -2875,8 +2891,9 @@ const submitModal = async (): Promise<boolean> => {
       openAIEndpointMode: modalState.form.openAIEndpointMode || 'auto',
       bridgeResponsesInstructions: !!modalState.form.bridgeResponsesInstructions,
       forceResponsesStoreFalse: !!modalState.form.forceResponsesStoreFalse,
-      dropResponsesMaxOutputTokens: !!modalState.form.dropResponsesMaxOutputTokens,
-      dropResponsesTemperature: !!modalState.form.dropResponsesTemperature,
+      dropResponsesFields,
+      dropResponsesMaxOutputTokens: false,
+      dropResponsesTemperature: false,
       // 可用性监控配置（新）
       availabilityMonitorEnabled: !!modalState.form.availabilityMonitorEnabled,
       connectivityAutoBlacklist: !!modalState.form.connectivityAutoBlacklist,
@@ -2921,8 +2938,9 @@ const submitModal = async (): Promise<boolean> => {
       openAIEndpointMode: modalState.form.openAIEndpointMode || 'auto',
       bridgeResponsesInstructions: !!modalState.form.bridgeResponsesInstructions,
       forceResponsesStoreFalse: !!modalState.form.forceResponsesStoreFalse,
-      dropResponsesMaxOutputTokens: !!modalState.form.dropResponsesMaxOutputTokens,
-      dropResponsesTemperature: !!modalState.form.dropResponsesTemperature,
+      dropResponsesFields,
+      dropResponsesMaxOutputTokens: false,
+      dropResponsesTemperature: false,
       // 可用性监控配置（新）
       availabilityMonitorEnabled: !!modalState.form.availabilityMonitorEnabled,
       connectivityAutoBlacklist: !!modalState.form.connectivityAutoBlacklist,

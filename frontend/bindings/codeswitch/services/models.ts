@@ -2063,14 +2063,20 @@ export class Provider {
     "forceResponsesStoreFalse"?: boolean;
 
     /**
-     * Responses max_output_tokens 兼容开关
-     * 仅用于 OpenAI Responses 请求，必要时移除顶层 max_output_tokens。
+     * Responses 丢弃字段列表
+     * 仅用于 OpenAI Responses 请求，必要时在转发前移除这些顶层字段。
+     */
+    "dropResponsesFields"?: string[];
+
+    /**
+     * [已废弃] Responses max_output_tokens 兼容开关
+     * 已迁移到 dropResponsesFields。
      */
     "dropResponsesMaxOutputTokens"?: boolean;
 
     /**
-     * Responses temperature 兼容开关
-     * 仅用于 OpenAI Responses 请求，必要时移除顶层 temperature。
+     * [已废弃] Responses temperature 兼容开关
+     * 已迁移到 dropResponsesFields。
      */
     "dropResponsesTemperature"?: boolean;
 

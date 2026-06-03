@@ -370,6 +370,56 @@ func TestForceResponsesStoreFalseOverridesTrue(t *testing.T) {
 	}
 }
 
+func TestDropResponsesFieldsRemovesConfiguredFields(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"max_output_tokens": 128,
+		"temperature": 1,
+		"safety_identifier": "user-123",
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, removedFields, err := DropResponsesFields(body, []string{
+		"max_output_tokens",
+		" temperature ",
+		"safety_identifier",
+		"temperature",
+	})
+	if err != nil {
+		t.Fatalf("DropResponsesFields returned error: %v", err)
+	}
+
+	expectedRemoved := []string{"max_output_tokens", "temperature", "safety_identifier"}
+	if strings.Join(removedFields, ",") != strings.Join(expectedRemoved, ",") {
+		t.Fatalf("removedFields = %v, want %v", removedFields, expectedRemoved)
+	}
+
+	result := gjson.ParseBytes(bridged)
+	for _, field := range expectedRemoved {
+		if result.Get(field).Exists() {
+			t.Fatalf("%s should be removed, got %s", field, result.Get(field).Raw)
+		}
+	}
+}
+
+func TestDropResponsesFieldsNoopWhenNothingMatches(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, removedFields, err := DropResponsesFields(body, []string{"max_output_tokens", "temperature"})
+	if err != nil {
+		t.Fatalf("DropResponsesFields returned error: %v", err)
+	}
+	if len(removedFields) != 0 {
+		t.Fatalf("expected no removed fields, got %v", removedFields)
+	}
+	if string(bridged) != string(body) {
+		t.Fatalf("body should remain unchanged when configured fields are absent")
+	}
+}
+
 func TestDropResponsesMaxOutputTokensRemovesWhenPresent(t *testing.T) {
 	body := []byte(`{
 		"model": "gpt-5.4",

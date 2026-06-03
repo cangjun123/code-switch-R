@@ -370,6 +370,52 @@ func TestProvider_ResolveOpenAIUpstreamEndpoint(t *testing.T) {
 	}
 }
 
+func TestProvider_GetResponsesDropFields(t *testing.T) {
+	provider := Provider{
+		DropResponsesFields:          []string{" safety_identifier ", "temperature"},
+		DropResponsesMaxOutputTokens: true,
+		DropResponsesTemperature:     true,
+	}
+
+	got := provider.GetResponsesDropFields()
+	want := []string{"safety_identifier", "temperature", "max_output_tokens"}
+
+	if len(got) != len(want) {
+		t.Fatalf("GetResponsesDropFields() len = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("GetResponsesDropFields()[%d] = %q, want %q (all=%v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestProvider_MigrateFromLegacyResponsesDropFields(t *testing.T) {
+	provider := Provider{
+		DropResponsesMaxOutputTokens: true,
+		DropResponsesTemperature:     true,
+	}
+
+	if !provider.migrateFromLegacy() {
+		t.Fatalf("expected migrateFromLegacy to report migration")
+	}
+
+	want := []string{"max_output_tokens", "temperature"}
+	if len(provider.DropResponsesFields) != len(want) {
+		t.Fatalf("DropResponsesFields len = %d, want %d (%v)", len(provider.DropResponsesFields), len(want), provider.DropResponsesFields)
+	}
+	for i := range want {
+		if provider.DropResponsesFields[i] != want[i] {
+			t.Fatalf("DropResponsesFields[%d] = %q, want %q", i, provider.DropResponsesFields[i], want[i])
+		}
+	}
+
+	provider.clearLegacyFields()
+	if provider.DropResponsesMaxOutputTokens || provider.DropResponsesTemperature {
+		t.Fatalf("legacy drop flags should be cleared after save path")
+	}
+}
+
 // ==================== IsModelSupported 测试 ====================
 
 func TestProvider_IsModelSupported(t *testing.T) {
