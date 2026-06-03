@@ -435,6 +435,10 @@ func applyOpenAIChatCompletionsCORS(c *gin.Context) {
 }
 
 func (prs *ProviderRelayService) resolveRelayEndpoint(kind string, provider Provider, routeEndpoint string) string {
+	if strings.EqualFold(kind, ProviderKindCodex) {
+		return provider.ResolveOpenAIUpstreamEndpoint(routeEndpoint)
+	}
+
 	if strings.TrimSpace(provider.APIEndpoint) != "" {
 		return provider.GetEffectiveEndpoint(routeEndpoint)
 	}
@@ -493,6 +497,12 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 			// 核心过滤：只保留支持请求模型的 provider
 			if requestedModel != "" && !provider.IsModelSupported(requestedModel) {
 				fmt.Printf("[INFO] Provider %s 不支持模型 %s，已跳过\n", provider.Name, requestedModel)
+				skippedCount++
+				continue
+			}
+
+			if kind == ProviderKindCodex && !provider.SupportsOpenAIEndpoint(endpoint) {
+				fmt.Printf("[INFO] Provider %s 不支持入口 %s，已跳过\n", provider.Name, endpoint)
 				skippedCount++
 				continue
 			}
@@ -935,6 +945,39 @@ func (prs *ProviderRelayService) forwardRequest(
 
 	}
 	_ = convertInfo // 避免未使用警告
+
+	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) && provider.BridgeResponsesInstructions {
+		bridgedBody, bridged, err := BridgeResponsesInstructionsFromInput(bodyBytes)
+		if err != nil {
+			fmt.Printf("[WARN] Provider %s Responses instructions 兼容处理失败，继续透传原请求: %v\n", provider.Name, err)
+		} else if bridged {
+			bodyBytes = bridgedBody
+			fmt.Printf("[INFO] Provider %s 已为 Responses 请求补齐顶层 instructions\n", provider.Name)
+		}
+	}
+
+	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) && provider.ForceResponsesStoreFalse {
+		bridgedBody, bridged, err := ForceResponsesStoreFalse(bodyBytes)
+		if err != nil {
+			fmt.Printf("[WARN] Provider %s Responses store=false 兼容处理失败，继续透传原请求: %v\n", provider.Name, err)
+		} else if bridged {
+			bodyBytes = bridgedBody
+			fmt.Printf("[INFO] Provider %s 已为 Responses 请求显式设置 store=false\n", provider.Name)
+		}
+	}
+
+	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) {
+		dropFields := provider.GetResponsesDropFields()
+		if len(dropFields) > 0 {
+			bridgedBody, removedFields, err := DropResponsesFields(bodyBytes, dropFields)
+			if err != nil {
+				fmt.Printf("[WARN] Provider %s Responses 字段移除兼容处理失败，继续透传原请求: %v\n", provider.Name, err)
+			} else if len(removedFields) > 0 {
+				bodyBytes = bridgedBody
+				fmt.Printf("[INFO] Provider %s 已为 Responses 请求移除顶层字段: %v\n", provider.Name, removedFields)
+			}
+		}
+	}
 
 	removeInboundAuthHeaders(headers)
 

@@ -2045,6 +2045,48 @@ export class Provider {
     "upstreamProtocol"?: string;
 
     /**
+     * OpenAI 接口能力 - auto / responses / chat_completions / both
+     * 仅用于 Codex/OpenAI 兼容入口的 provider 选择。
+     */
+    "openAIEndpointMode"?: string;
+
+    /**
+     * Responses instructions 兼容开关
+     * 仅用于 OpenAI Responses 请求，必要时从 developer/system message 补齐顶层 instructions。
+     */
+    "bridgeResponsesInstructions"?: boolean;
+
+    /**
+     * Responses store=false 兼容开关
+     * 仅用于 OpenAI Responses 请求，必要时显式把顶层 store 设为 false。
+     */
+    "forceResponsesStoreFalse"?: boolean;
+
+    /**
+     * Responses 丢弃字段列表
+     * 仅用于 OpenAI Responses 请求，必要时在转发前移除这些顶层字段。
+     */
+    "dropResponsesFields"?: string[];
+
+    /**
+     * Images 丢弃字段列表
+     * 仅用于 GPT 图片请求，必要时在转发前移除这些顶层 JSON 字段或 multipart field。
+     */
+    "dropImageFields"?: string[];
+
+    /**
+     * [已废弃] Responses max_output_tokens 兼容开关
+     * 已迁移到 dropResponsesFields。
+     */
+    "dropResponsesMaxOutputTokens"?: boolean;
+
+    /**
+     * [已废弃] Responses temperature 兼容开关
+     * 已迁移到 dropResponsesFields。
+     */
+    "dropResponsesTemperature"?: boolean;
+
+    /**
      * [已废弃] 连通性检测开关 - 迁移到 AvailabilityMonitorEnabled
      */
     "connectivityCheck"?: boolean;

@@ -241,6 +241,263 @@ func TestConvertAnthropicToOpenAIResponsesAllowsWebSearchWhenEnabled(t *testing.
 	}
 }
 
+func TestBridgeResponsesInstructionsFromInput(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"input": [
+			{
+				"type": "message",
+				"role": "developer",
+				"content": [
+					{"type":"input_text","text":"system rule"},
+					{"type":"input_text","text":"extra rule"}
+				]
+			},
+			{
+				"type": "message",
+				"role": "user",
+				"content": [{"type":"input_text","text":"hello"}]
+			}
+		]
+	}`)
+
+	bridged, changed, err := BridgeResponsesInstructionsFromInput(body)
+	if err != nil {
+		t.Fatalf("BridgeResponsesInstructionsFromInput returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected instructions bridge to change payload")
+	}
+
+	result := gjson.ParseBytes(bridged)
+	if got := result.Get("instructions").String(); got != "system rule\nextra rule" {
+		t.Fatalf("instructions = %q, want %q", got, "system rule\nextra rule")
+	}
+	if got := result.Get("input.0.role").String(); got != "developer" {
+		t.Fatalf("input should be preserved, got first role %q", got)
+	}
+}
+
+func TestBridgeResponsesInstructionsFromInputNoopWhenInstructionsPresent(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"instructions": "already set",
+		"input": [
+			{
+				"type": "message",
+				"role": "developer",
+				"content": [{"type":"input_text","text":"system rule"}]
+			}
+		]
+	}`)
+
+	bridged, changed, err := BridgeResponsesInstructionsFromInput(body)
+	if err != nil {
+		t.Fatalf("BridgeResponsesInstructionsFromInput returned error: %v", err)
+	}
+	if changed {
+		t.Fatalf("expected payload to remain unchanged when instructions already present")
+	}
+	if string(bridged) != string(body) {
+		t.Fatalf("body should remain unchanged when instructions already exist")
+	}
+}
+
+func TestBridgeResponsesInstructionsFromInputFallsBackToDefault(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"input": [
+			{
+				"type": "message",
+				"role": "user",
+				"content": [{"type":"input_text","text":"hello"}]
+			}
+		]
+	}`)
+
+	bridged, changed, err := BridgeResponsesInstructionsFromInput(body)
+	if err != nil {
+		t.Fatalf("BridgeResponsesInstructionsFromInput returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected instructions bridge to add default instructions")
+	}
+
+	result := gjson.ParseBytes(bridged)
+	if got := result.Get("instructions").String(); got != defaultResponsesInstructions {
+		t.Fatalf("instructions = %q, want %q", got, defaultResponsesInstructions)
+	}
+}
+
+func TestForceResponsesStoreFalseAddsWhenMissing(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, changed, err := ForceResponsesStoreFalse(body)
+	if err != nil {
+		t.Fatalf("ForceResponsesStoreFalse returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected payload to change when store is missing")
+	}
+
+	result := gjson.ParseBytes(bridged)
+	if !result.Get("store").Exists() || result.Get("store").Bool() {
+		t.Fatalf("store = %v, want explicit false", result.Get("store").Value())
+	}
+}
+
+func TestForceResponsesStoreFalseOverridesTrue(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"store": true,
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, changed, err := ForceResponsesStoreFalse(body)
+	if err != nil {
+		t.Fatalf("ForceResponsesStoreFalse returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected payload to change when store=true")
+	}
+
+	result := gjson.ParseBytes(bridged)
+	if result.Get("store").Bool() {
+		t.Fatalf("store should be forced to false, got %v", result.Get("store").Value())
+	}
+}
+
+func TestDropResponsesFieldsRemovesConfiguredFields(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"max_output_tokens": 128,
+		"temperature": 1,
+		"safety_identifier": "user-123",
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, removedFields, err := DropResponsesFields(body, []string{
+		"max_output_tokens",
+		" temperature ",
+		"safety_identifier",
+		"temperature",
+	})
+	if err != nil {
+		t.Fatalf("DropResponsesFields returned error: %v", err)
+	}
+
+	expectedRemoved := []string{"max_output_tokens", "temperature", "safety_identifier"}
+	if strings.Join(removedFields, ",") != strings.Join(expectedRemoved, ",") {
+		t.Fatalf("removedFields = %v, want %v", removedFields, expectedRemoved)
+	}
+
+	result := gjson.ParseBytes(bridged)
+	for _, field := range expectedRemoved {
+		if result.Get(field).Exists() {
+			t.Fatalf("%s should be removed, got %s", field, result.Get(field).Raw)
+		}
+	}
+}
+
+func TestDropResponsesFieldsNoopWhenNothingMatches(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, removedFields, err := DropResponsesFields(body, []string{"max_output_tokens", "temperature"})
+	if err != nil {
+		t.Fatalf("DropResponsesFields returned error: %v", err)
+	}
+	if len(removedFields) != 0 {
+		t.Fatalf("expected no removed fields, got %v", removedFields)
+	}
+	if string(bridged) != string(body) {
+		t.Fatalf("body should remain unchanged when configured fields are absent")
+	}
+}
+
+func TestDropResponsesMaxOutputTokensRemovesWhenPresent(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"max_output_tokens": 128,
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, changed, err := DropResponsesMaxOutputTokens(body)
+	if err != nil {
+		t.Fatalf("DropResponsesMaxOutputTokens returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected payload to change when max_output_tokens exists")
+	}
+
+	result := gjson.ParseBytes(bridged)
+	if result.Get("max_output_tokens").Exists() {
+		t.Fatalf("max_output_tokens should be removed, got %s", result.Get("max_output_tokens").Raw)
+	}
+}
+
+func TestDropResponsesMaxOutputTokensNoopWhenAbsent(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, changed, err := DropResponsesMaxOutputTokens(body)
+	if err != nil {
+		t.Fatalf("DropResponsesMaxOutputTokens returned error: %v", err)
+	}
+	if changed {
+		t.Fatalf("expected payload to remain unchanged when max_output_tokens is absent")
+	}
+	if string(bridged) != string(body) {
+		t.Fatalf("body should remain unchanged when max_output_tokens is absent")
+	}
+}
+
+func TestDropResponsesTemperatureRemovesWhenPresent(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"temperature": 1,
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, changed, err := DropResponsesTemperature(body)
+	if err != nil {
+		t.Fatalf("DropResponsesTemperature returned error: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected payload to change when temperature exists")
+	}
+
+	result := gjson.ParseBytes(bridged)
+	if result.Get("temperature").Exists() {
+		t.Fatalf("temperature should be removed, got %s", result.Get("temperature").Raw)
+	}
+}
+
+func TestDropResponsesTemperatureNoopWhenAbsent(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"input": [{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`)
+
+	bridged, changed, err := DropResponsesTemperature(body)
+	if err != nil {
+		t.Fatalf("DropResponsesTemperature returned error: %v", err)
+	}
+	if changed {
+		t.Fatalf("expected payload to remain unchanged when temperature is absent")
+	}
+	if string(bridged) != string(body) {
+		t.Fatalf("body should remain unchanged when temperature is absent")
+	}
+}
+
 func TestConvertOpenAIResponsesToAnthropic(t *testing.T) {
 	body := []byte(`{
 		"id": "resp_1",

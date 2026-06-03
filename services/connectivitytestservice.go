@@ -216,6 +216,9 @@ func (cts *ConnectivityTestService) getEffectiveEndpoint(provider *Provider, pla
 	}
 
 	if strings.TrimSpace(provider.APIEndpoint) != "" {
+		if strings.ToLower(platform) == ProviderKindCodex {
+			return provider.ResolveOpenAIUpstreamEndpoint("/responses")
+		}
 		return provider.GetEffectiveEndpoint("")
 	}
 	// 平台默认端点
@@ -226,7 +229,7 @@ func (cts *ConnectivityTestService) getEffectiveEndpoint(provider *Provider, pla
 		}
 		return "/v1/messages"
 	case "codex":
-		return "/responses"
+		return provider.ResolveOpenAIUpstreamEndpoint("/responses")
 	case "gpt-image":
 		return "/v1/images/generations"
 	default:
@@ -282,8 +285,7 @@ func (cts *ConnectivityTestService) buildTestRequest(platform string, provider *
 	// Codex 格式: /responses
 	if strings.Contains(endpoint, "/responses") {
 		reqBody := map[string]interface{}{
-			"model":             model,
-			"max_output_tokens": 1,
+			"model": model,
 			"input": []map[string]interface{}{
 				{
 					"role": "user",
@@ -292,6 +294,15 @@ func (cts *ConnectivityTestService) buildTestRequest(platform string, provider *
 					},
 				},
 			},
+		}
+		if provider.BridgeResponsesInstructions {
+			reqBody["instructions"] = defaultResponsesInstructions
+		}
+		if !provider.ShouldDropResponsesField(responsesDropFieldMaxOutputTokens) {
+			reqBody["max_output_tokens"] = 1
+		}
+		if provider.ForceResponsesStoreFalse {
+			reqBody["store"] = false
 		}
 		data, _ := json.Marshal(reqBody)
 		return data, "output"

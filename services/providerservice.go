@@ -70,6 +70,36 @@ type Provider struct {
 	// auto: 根据 APIEndpoint 自动检测（包含 /responses 或 /chat/completions 则为 openai_chat）
 	UpstreamProtocol string `json:"upstreamProtocol,omitempty"`
 
+	// OpenAI 接口能力 - auto / responses / chat_completions / both
+	// 仅用于 Codex/OpenAI 兼容入口的 provider 选择，不影响 Claude 协议转换。
+	// auto: 根据 APIEndpoint 推断；如果未配置 APIEndpoint，则默认视为 both 以保持向后兼容
+	// responses: 仅参与 /responses 请求
+	// chat_completions: 仅参与 /v1/chat/completions 请求
+	// both: 同时参与两种 OpenAI 入口，请保持 APIEndpoint 为空，让 relay 按客户端请求路径透传
+	OpenAIEndpointMode string `json:"openAIEndpointMode,omitempty"`
+
+	// Responses instructions 兼容开关
+	// 仅用于 Codex/OpenAI Responses 请求。
+	// 为 true 时，如果顶层缺少 instructions，则从首个 developer/system message 提升生成 instructions，
+	// 用于兼容要求顶层 instructions 的非标准 Responses 上游。
+	BridgeResponsesInstructions bool `json:"bridgeResponsesInstructions,omitempty"`
+
+	// Responses store=false 兼容开关
+	// 仅用于 Codex/OpenAI Responses 请求。
+	// 为 true 时，会显式把顶层 store 设为 false，
+	// 用于兼容要求 store 必须为 false 的非标准 Responses 上游。
+	ForceResponsesStoreFalse bool `json:"forceResponsesStoreFalse,omitempty"`
+
+	// Responses 丢弃字段列表
+	// 仅用于 Codex/OpenAI Responses 请求。
+	// 会在转发前移除这些顶层字段，用于兼容不支持对应参数的非标准 Responses 上游。
+	DropResponsesFields []string `json:"dropResponsesFields,omitempty"`
+
+	// Images 丢弃字段列表
+	// 仅用于 GPT 生图请求。
+	// 会在转发前移除这些顶层 JSON 字段或 multipart field，用于兼容不支持对应参数的非标准 Images 上游。
+	DropImageFields []string `json:"dropImageFields,omitempty"`
+
 	// Claude WebSearch 兼容开关
 	// 仅用于 Claude -> OpenAI Responses 协议适配。
 	// 为 true 时，允许把 Claude hosted web_search 工具映射为 Responses API 的 web_search_preview。
@@ -94,6 +124,12 @@ type Provider struct {
 
 	// [已废弃] 连通性检测端点 - 迁移到 AvailabilityConfig.TestEndpoint
 	ConnectivityTestEndpoint string `json:"connectivityTestEndpoint,omitempty"`
+
+	// [已废弃] Responses max_output_tokens 兼容开关 - 迁移到 DropResponsesFields
+	DropResponsesMaxOutputTokens bool `json:"dropResponsesMaxOutputTokens,omitempty"`
+
+	// [已废弃] Responses temperature 兼容开关 - 迁移到 DropResponsesFields
+	DropResponsesTemperature bool `json:"dropResponsesTemperature,omitempty"`
 
 	// 内部字段：配置验证错误（不持久化）
 	configErrors []string `json:"-"`
@@ -273,7 +309,7 @@ func (ps *ProviderService) LoadProviders(kind string) ([]Provider, error) {
 
 	// 如果有迁移，记录日志并持久化到磁盘
 	if migrated {
-		fmt.Printf("[ProviderService] 已从旧配置迁移可用性字段 (kind=%s)\n", kind)
+		fmt.Printf("[ProviderService] 已从旧配置迁移兼容字段 (kind=%s)\n", kind)
 		// 自动保存迁移后的配置（使用带锁的保存方法避免死锁）
 		ps.mu.Lock()
 		err := ps.saveProvidersLocked(kind, envelope.Providers)
@@ -324,7 +360,7 @@ func (ps *ProviderService) loadProvidersNoLock(kind string) ([]Provider, error) 
 	}
 
 	if migrated {
-		fmt.Printf("[ProviderService] 已从旧配置迁移可用性字段 (kind=%s, 锁内模式)\n", kind)
+		fmt.Printf("[ProviderService] 已从旧配置迁移兼容字段 (kind=%s, 锁内模式)\n", kind)
 		// 在锁内模式下，直接保存而不再加锁
 		if err := ps.saveProvidersLocked(kind, envelope.Providers); err != nil {
 			log.Printf("[ProviderService] 锁内迁移保存失败: %v\n", err)
@@ -362,15 +398,60 @@ func (p *Provider) migrateFromLegacy() bool {
 		}
 	}
 
+	normalizedFields := NormalizeResponsesDropFields(p.DropResponsesFields)
+	effectiveFields := NormalizeResponsesDropFields(append([]string{}, p.DropResponsesFields...))
+	if p.DropResponsesMaxOutputTokens {
+		effectiveFields = NormalizeResponsesDropFields(append(effectiveFields, responsesDropFieldMaxOutputTokens))
+	}
+	if p.DropResponsesTemperature {
+		effectiveFields = NormalizeResponsesDropFields(append(effectiveFields, responsesDropFieldTemperature))
+	}
+	if len(normalizedFields) != len(effectiveFields) || strings.Join(normalizedFields, "\n") != strings.Join(effectiveFields, "\n") {
+		p.DropResponsesFields = effectiveFields
+		migrated = true
+	}
+
 	return migrated
 }
 
 // clearLegacyFields 清除旧字段值，使其在序列化时被 omitempty 跳过
 func (p *Provider) clearLegacyFields() {
+	p.DropResponsesFields = p.GetResponsesDropFields()
+	p.DropImageFields = p.GetImageDropFields()
 	p.ConnectivityCheck = false
 	p.ConnectivityTestModel = ""
 	p.ConnectivityTestEndpoint = ""
+	p.DropResponsesMaxOutputTokens = false
+	p.DropResponsesTemperature = false
 	// 注意：ConnectivityAuthType 现在是活跃字段，不再清除
+}
+
+func (p *Provider) GetResponsesDropFields() []string {
+	fields := append([]string{}, p.DropResponsesFields...)
+	if p.DropResponsesMaxOutputTokens {
+		fields = append(fields, responsesDropFieldMaxOutputTokens)
+	}
+	if p.DropResponsesTemperature {
+		fields = append(fields, responsesDropFieldTemperature)
+	}
+	return NormalizeResponsesDropFields(fields)
+}
+
+func (p *Provider) GetImageDropFields() []string {
+	return NormalizeImageDropFields(p.DropImageFields)
+}
+
+func (p *Provider) ShouldDropResponsesField(field string) bool {
+	normalizedField := normalizeResponsesDropFieldName(field)
+	if normalizedField == "" {
+		return false
+	}
+	for _, candidate := range p.GetResponsesDropFields() {
+		if candidate == normalizedField {
+			return true
+		}
+	}
+	return false
 }
 
 // DuplicateProvider 复制供应商配置，生成新的副本
@@ -411,21 +492,26 @@ func (ps *ProviderService) DuplicateProvider(kind string, sourceID int64) (*Prov
 
 	// 5. 克隆配置（深拷贝）
 	cloned := &Provider{
-		ID:                   newID,
-		Name:                 source.Name + " (副本)",
-		APIURL:               source.APIURL,
-		APIKey:               source.APIKey,
-		Site:                 source.Site,
-		Icon:                 source.Icon,
-		Tint:                 source.Tint,
-		Accent:               source.Accent,
-		Enabled:              false, // 默认禁用，避免与源供应商冲突
-		Level:                source.Level,
-		APIEndpoint:          source.APIEndpoint,          // 复制端点配置
-		UpstreamProtocol:     source.UpstreamProtocol,     // 复制上游协议配置
-		SupportsWebSearch:    source.SupportsWebSearch,    // 复制 WebSearch 兼容开关
-		SupportsCountTokens:  source.SupportsCountTokens,  // 复制 count_tokens 支持开关
-		ConnectivityAuthType: source.ConnectivityAuthType, // 复制认证方式
+		ID:                          newID,
+		Name:                        source.Name + " (副本)",
+		APIURL:                      source.APIURL,
+		APIKey:                      source.APIKey,
+		Site:                        source.Site,
+		Icon:                        source.Icon,
+		Tint:                        source.Tint,
+		Accent:                      source.Accent,
+		Enabled:                     false, // 默认禁用，避免与源供应商冲突
+		Level:                       source.Level,
+		APIEndpoint:                 source.APIEndpoint,                 // 复制端点配置
+		UpstreamProtocol:            source.UpstreamProtocol,            // 复制上游协议配置
+		OpenAIEndpointMode:          source.OpenAIEndpointMode,          // 复制 OpenAI 接口能力配置
+		BridgeResponsesInstructions: source.BridgeResponsesInstructions, // 复制 Responses instructions 兼容开关
+		ForceResponsesStoreFalse:    source.ForceResponsesStoreFalse,    // 复制 Responses store=false 兼容开关
+		DropResponsesFields:         append([]string{}, source.GetResponsesDropFields()...),
+		DropImageFields:             append([]string{}, source.GetImageDropFields()...),
+		SupportsWebSearch:           source.SupportsWebSearch,    // 复制 WebSearch 兼容开关
+		SupportsCountTokens:         source.SupportsCountTokens,  // 复制 count_tokens 支持开关
+		ConnectivityAuthType:        source.ConnectivityAuthType, // 复制认证方式
 		// 可用性监控配置
 		AvailabilityMonitorEnabled: source.AvailabilityMonitorEnabled,
 		ConnectivityAutoBlacklist:  false, // 副本默认关闭自动拉黑
@@ -563,6 +649,15 @@ const (
 	UpstreamProtocolAuto UpstreamProtocolType = "auto"
 )
 
+type OpenAIEndpointModeType string
+
+const (
+	OpenAIEndpointModeAuto            OpenAIEndpointModeType = "auto"
+	OpenAIEndpointModeResponses       OpenAIEndpointModeType = "responses"
+	OpenAIEndpointModeChatCompletions OpenAIEndpointModeType = "chat_completions"
+	OpenAIEndpointModeBoth            OpenAIEndpointModeType = "both"
+)
+
 // GetUpstreamProtocol 获取上游协议类型
 // 空值或无效值默认返回 anthropic
 func (p *Provider) GetUpstreamProtocol() UpstreamProtocolType {
@@ -587,6 +682,92 @@ func DetectUpstreamProtocol(endpoint string) UpstreamProtocolType {
 	}
 	// 默认 Anthropic
 	return UpstreamProtocolAnthropic
+}
+
+func normalizeOpenAIEndpointMode(mode string) OpenAIEndpointModeType {
+	switch strings.TrimSpace(strings.ToLower(mode)) {
+	case "", "auto":
+		return OpenAIEndpointModeAuto
+	case "responses", "response":
+		return OpenAIEndpointModeResponses
+	case "chat_completions", "chat-completions", "chatcompletions":
+		return OpenAIEndpointModeChatCompletions
+	case "both", "all":
+		return OpenAIEndpointModeBoth
+	default:
+		return OpenAIEndpointModeAuto
+	}
+}
+
+func classifyOpenAIEndpoint(endpoint string) OpenAIEndpointModeType {
+	ep := strings.ToLower(strings.TrimSpace(endpoint))
+	switch {
+	case strings.Contains(ep, "/responses"):
+		return OpenAIEndpointModeResponses
+	case strings.Contains(ep, "/chat/completions"):
+		return OpenAIEndpointModeChatCompletions
+	default:
+		return ""
+	}
+}
+
+// GetOpenAIEndpointMode 获取 provider 声明的 OpenAI 入口能力。
+// 未显式配置时会根据 APIEndpoint 推断；若仍无法推断，则默认 both 以保持旧配置可用。
+func (p *Provider) GetOpenAIEndpointMode() OpenAIEndpointModeType {
+	mode := normalizeOpenAIEndpointMode(p.OpenAIEndpointMode)
+	if mode != OpenAIEndpointModeAuto {
+		return mode
+	}
+
+	if inferred := classifyOpenAIEndpoint(p.APIEndpoint); inferred != "" {
+		return inferred
+	}
+
+	return OpenAIEndpointModeBoth
+}
+
+// SupportsOpenAIEndpoint 判断 provider 是否应该参与指定 OpenAI 入口。
+func (p *Provider) SupportsOpenAIEndpoint(endpoint string) bool {
+	requested := classifyOpenAIEndpoint(endpoint)
+	if requested == "" {
+		return true
+	}
+
+	mode := p.GetOpenAIEndpointMode()
+	switch requested {
+	case OpenAIEndpointModeResponses:
+		return mode == OpenAIEndpointModeResponses || mode == OpenAIEndpointModeBoth
+	case OpenAIEndpointModeChatCompletions:
+		return mode == OpenAIEndpointModeChatCompletions || mode == OpenAIEndpointModeBoth
+	default:
+		return true
+	}
+}
+
+// ResolveOpenAIUpstreamEndpoint 解析 OpenAI 兼容请求应命中的上游端点。
+func (p *Provider) ResolveOpenAIUpstreamEndpoint(routeEndpoint string) string {
+	requested := classifyOpenAIEndpoint(routeEndpoint)
+	if requested == "" {
+		return p.GetEffectiveEndpoint(routeEndpoint)
+	}
+
+	mode := p.GetOpenAIEndpointMode()
+	if strings.TrimSpace(p.APIEndpoint) != "" {
+		effective := p.GetEffectiveEndpoint(routeEndpoint)
+		if mode == OpenAIEndpointModeBoth && classifyOpenAIEndpoint(effective) != "" {
+			return routeEndpoint
+		}
+		return effective
+	}
+
+	switch mode {
+	case OpenAIEndpointModeResponses:
+		return "/responses"
+	case OpenAIEndpointModeChatCompletions:
+		return "/v1/chat/completions"
+	default:
+		return routeEndpoint
+	}
 }
 
 // ResolveUpstreamProtocol 解析最终的上游协议
@@ -641,6 +822,22 @@ func (p *Provider) ValidateConfiguration() []string {
 	// 用户可能只想映射模型名，不需要白名单过滤
 
 	// 规则 3 移除：自映射不会破坏功能，最多是无效配置，不阻塞保存
+
+	// 规则 4：OpenAI 接口能力与固定 APIEndpoint 不应相互矛盾
+	configuredMode := normalizeOpenAIEndpointMode(p.OpenAIEndpointMode)
+	endpointMode := classifyOpenAIEndpoint(p.APIEndpoint)
+	if endpointMode != "" {
+		switch configuredMode {
+		case OpenAIEndpointModeResponses:
+			if endpointMode != OpenAIEndpointModeResponses {
+				errors = append(errors, "OpenAI 接口能力配置为 responses，但 API Endpoint 指向了 /v1/chat/completions")
+			}
+		case OpenAIEndpointModeChatCompletions:
+			if endpointMode != OpenAIEndpointModeChatCompletions {
+				errors = append(errors, "OpenAI 接口能力配置为 chat_completions，但 API Endpoint 指向了 /responses")
+			}
+		}
+	}
 
 	p.configErrors = errors
 	return errors

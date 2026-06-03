@@ -537,7 +537,7 @@ func (hcs *HealthCheckService) checkProvider(ctx context.Context, provider Provi
 	result.Endpoint = endpoint
 
 	// 构建请求体
-	reqBody := hcs.buildTestRequest(platform, endpoint, model)
+	reqBody := hcs.buildTestRequest(&provider, platform, endpoint, model)
 	if reqBody == nil {
 		result.ErrorMessage = "无法构建测试请求"
 		return result
@@ -713,6 +713,9 @@ func (hcs *HealthCheckService) getEffectiveEndpoint(provider *Provider, platform
 
 	// 优先级 2：用户配置的生产端点（如果配置了 apiEndpoint）
 	if provider.APIEndpoint != "" {
+		if strings.ToLower(platform) == ProviderKindCodex {
+			return provider.ResolveOpenAIUpstreamEndpoint("/responses")
+		}
 		return provider.GetEffectiveEndpoint("")
 	}
 
@@ -724,7 +727,7 @@ func (hcs *HealthCheckService) getEffectiveEndpoint(provider *Provider, platform
 		}
 		return "/v1/messages"
 	case "codex":
-		return "/responses"
+		return provider.ResolveOpenAIUpstreamEndpoint("/responses")
 	case "gpt-image":
 		return "/v1/images/generations"
 	default:
@@ -742,7 +745,7 @@ func (hcs *HealthCheckService) getEffectiveTimeout(provider *Provider) int {
 }
 
 // buildTestRequest 构建测试请求体
-func (hcs *HealthCheckService) buildTestRequest(platform, endpoint, model string) []byte {
+func (hcs *HealthCheckService) buildTestRequest(provider *Provider, platform, endpoint, model string) []byte {
 	endpoint = strings.ToLower(endpoint)
 
 	if platform == "gpt-image" || strings.Contains(endpoint, "/images/generations") {
@@ -771,8 +774,7 @@ func (hcs *HealthCheckService) buildTestRequest(platform, endpoint, model string
 
 	if strings.Contains(endpoint, "/responses") {
 		reqBody := map[string]interface{}{
-			"model":             model,
-			"max_output_tokens": 1,
+			"model": model,
 			"input": []map[string]interface{}{
 				{
 					"role": "user",
@@ -781,6 +783,15 @@ func (hcs *HealthCheckService) buildTestRequest(platform, endpoint, model string
 					},
 				},
 			},
+		}
+		if provider.BridgeResponsesInstructions {
+			reqBody["instructions"] = defaultResponsesInstructions
+		}
+		if !provider.ShouldDropResponsesField(responsesDropFieldMaxOutputTokens) {
+			reqBody["max_output_tokens"] = 1
+		}
+		if provider.ForceResponsesStoreFalse {
+			reqBody["store"] = false
 		}
 		data, _ := json.Marshal(reqBody)
 		return data

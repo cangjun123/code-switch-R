@@ -479,6 +479,549 @@ func TestOpenAIChatCompletionsProxyUsesCodexProviders(t *testing.T) {
 	}
 }
 
+func TestCodexResponsesRouteSkipsChatOnlyProviders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var responsesHits int
+	responsesServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		responsesHits++
+		if r.URL.Path != "/responses" {
+			t.Errorf("期望路径 /responses，收到 %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_ok","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
+	}))
+	defer responsesServer.Close()
+
+	var chatHits int
+	chatServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chatHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-should-not-hit","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"wrong"},"finish_reason":"stop"}]}`))
+	}))
+	defer chatServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindCodex, []Provider{
+		{
+			ID:                 1,
+			Name:               "ChatOnly",
+			APIURL:             chatServer.URL,
+			APIKey:             "chat-only-key",
+			Enabled:            true,
+			OpenAIEndpointMode: "chat_completions",
+			SupportedModels: map[string]bool{
+				"mimo-upstream": true,
+			},
+			ModelMapping: map[string]string{
+				"mimo-v2.5-pro": "mimo-upstream",
+			},
+		},
+		{
+			ID:                 2,
+			Name:               "ResponsesOnly",
+			APIURL:             responsesServer.URL,
+			APIKey:             "responses-only-key",
+			Enabled:            true,
+			OpenAIEndpointMode: "responses",
+			SupportedModels: map[string]bool{
+				"mimo-upstream": true,
+			},
+			ModelMapping: map[string]string{
+				"mimo-v2.5-pro": "mimo-upstream",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{"model":"mimo-v2.5-pro","input":"ping"}`))
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if responsesHits != 1 {
+		t.Fatalf("responses provider 应命中 1 次，实际 %d", responsesHits)
+	}
+	if chatHits != 0 {
+		t.Fatalf("chat-only provider 不应参与 /responses，实际命中 %d 次", chatHits)
+	}
+}
+
+func TestCodexResponsesBridgeInstructionsWhenProviderEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var upstreamHits int
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		if r.URL.Path != "/responses" {
+			t.Errorf("期望路径 /responses，收到 %s", r.URL.Path)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("读取上游请求体失败: %v", err)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("上游请求体不是 JSON: %v", err)
+		}
+		if payload["instructions"] != "system rule" {
+			t.Fatalf("顶层 instructions 未补齐，收到 %v", payload["instructions"])
+		}
+
+		input, ok := payload["input"].([]interface{})
+		if !ok || len(input) == 0 {
+			t.Fatalf("input 应继续保留，实际: %s", string(body))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_ok","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
+	}))
+	defer upstreamServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindCodex, []Provider{
+		{
+			ID:                          1,
+			Name:                        "EtoCompatible",
+			APIURL:                      upstreamServer.URL,
+			APIKey:                      "eto-key",
+			Enabled:                     true,
+			OpenAIEndpointMode:          "responses",
+			BridgeResponsesInstructions: true,
+			SupportedModels: map[string]bool{
+				"gpt-5.4": true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{
+		"model":"gpt-5.4",
+		"input":[
+			{"type":"message","role":"developer","content":[{"type":"input_text","text":"system rule"}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"ping"}]}
+		]
+	}`))
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("期望命中上游 1 次，实际 %d", upstreamHits)
+	}
+}
+
+func TestCodexResponsesForceStoreFalseWhenProviderEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var upstreamHits int
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		if r.URL.Path != "/responses" {
+			t.Errorf("期望路径 /responses，收到 %s", r.URL.Path)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("读取上游请求体失败: %v", err)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("上游请求体不是 JSON: %v", err)
+		}
+		if store, ok := payload["store"].(bool); !ok || store {
+			t.Fatalf("顶层 store 未被强制设为 false，收到 %v", payload["store"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_ok","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
+	}))
+	defer upstreamServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindCodex, []Provider{
+		{
+			ID:                       1,
+			Name:                     "EtoStoreCompatible",
+			APIURL:                   upstreamServer.URL,
+			APIKey:                   "eto-key",
+			Enabled:                  true,
+			OpenAIEndpointMode:       "responses",
+			ForceResponsesStoreFalse: true,
+			SupportedModels: map[string]bool{
+				"gpt-5.4": true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{
+		"model":"gpt-5.4",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"ping"}]}
+		]
+	}`))
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("期望命中上游 1 次，实际 %d", upstreamHits)
+	}
+}
+
+func TestCodexResponsesDropMaxOutputTokensWhenProviderEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var upstreamHits int
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		if r.URL.Path != "/responses" {
+			t.Errorf("期望路径 /responses，收到 %s", r.URL.Path)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("读取上游请求体失败: %v", err)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("上游请求体不是 JSON: %v", err)
+		}
+		if _, ok := payload["max_output_tokens"]; ok {
+			t.Fatalf("顶层 max_output_tokens 应被移除，实际: %s", string(body))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_ok","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
+	}))
+	defer upstreamServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindCodex, []Provider{
+		{
+			ID:                           1,
+			Name:                         "EtoMaxOutputCompatible",
+			APIURL:                       upstreamServer.URL,
+			APIKey:                       "eto-key",
+			Enabled:                      true,
+			OpenAIEndpointMode:           "responses",
+			DropResponsesMaxOutputTokens: true,
+			SupportedModels: map[string]bool{
+				"gpt-5.4": true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{
+		"model":"gpt-5.4",
+		"max_output_tokens":64,
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"ping"}]}
+		]
+	}`))
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("期望命中上游 1 次，实际 %d", upstreamHits)
+	}
+}
+
+func TestCodexResponsesDropTemperatureWhenProviderEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var upstreamHits int
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		if r.URL.Path != "/responses" {
+			t.Errorf("期望路径 /responses，收到 %s", r.URL.Path)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("读取上游请求体失败: %v", err)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("上游请求体不是 JSON: %v", err)
+		}
+		if _, ok := payload["temperature"]; ok {
+			t.Fatalf("顶层 temperature 应被移除，实际: %s", string(body))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_ok","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
+	}))
+	defer upstreamServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindCodex, []Provider{
+		{
+			ID:                       1,
+			Name:                     "EtoTemperatureCompatible",
+			APIURL:                   upstreamServer.URL,
+			APIKey:                   "eto-key",
+			Enabled:                  true,
+			OpenAIEndpointMode:       "responses",
+			DropResponsesTemperature: true,
+			SupportedModels: map[string]bool{
+				"gpt-5.4": true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{
+		"model":"gpt-5.4",
+		"temperature":1,
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"ping"}]}
+		]
+	}`))
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("期望命中上游 1 次，实际 %d", upstreamHits)
+	}
+}
+
+func TestCodexResponsesDropConfiguredFieldsWhenProviderEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var upstreamHits int
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		if r.URL.Path != "/responses" {
+			t.Errorf("期望路径 /responses，收到 %s", r.URL.Path)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("读取上游请求体失败: %v", err)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("上游请求体不是 JSON: %v", err)
+		}
+		if _, ok := payload["safety_identifier"]; ok {
+			t.Fatalf("顶层 safety_identifier 应被移除，实际: %s", string(body))
+		}
+		if _, ok := payload["temperature"]; ok {
+			t.Fatalf("顶层 temperature 应被移除，实际: %s", string(body))
+		}
+		if _, ok := payload["max_output_tokens"]; ok {
+			t.Fatalf("顶层 max_output_tokens 应被移除，实际: %s", string(body))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_ok","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
+	}))
+	defer upstreamServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindCodex, []Provider{
+		{
+			ID:                 1,
+			Name:               "EtoDropFieldsCompatible",
+			APIURL:             upstreamServer.URL,
+			APIKey:             "eto-key",
+			Enabled:            true,
+			OpenAIEndpointMode: "responses",
+			DropResponsesFields: []string{
+				"safety_identifier",
+				"temperature",
+				"max_output_tokens",
+			},
+			SupportedModels: map[string]bool{
+				"gpt-5.4": true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{
+		"model":"gpt-5.4",
+		"max_output_tokens":64,
+		"temperature":1,
+		"safety_identifier":"user-123",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"ping"}]}
+		]
+	}`))
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("期望命中上游 1 次，实际 %d", upstreamHits)
+	}
+}
+
+func TestOpenAIChatRouteSkipsResponsesOnlyProviders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var responsesHits int
+	responsesServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		responsesHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-should-not-hit","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"wrong"}]}]}`))
+	}))
+	defer responsesServer.Close()
+
+	var chatHits int
+	chatServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chatHits++
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("期望路径 /v1/chat/completions，收到 %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}]}`))
+	}))
+	defer chatServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindCodex, []Provider{
+		{
+			ID:                 1,
+			Name:               "ResponsesOnly",
+			APIURL:             responsesServer.URL,
+			APIKey:             "responses-only-key",
+			Enabled:            true,
+			OpenAIEndpointMode: "responses",
+			SupportedModels: map[string]bool{
+				"mimo-upstream": true,
+			},
+			ModelMapping: map[string]string{
+				"mimo-v2.5-pro": "mimo-upstream",
+			},
+		},
+		{
+			ID:                 2,
+			Name:               "ChatOnly",
+			APIURL:             chatServer.URL,
+			APIKey:             "chat-only-key",
+			Enabled:            true,
+			OpenAIEndpointMode: "chat_completions",
+			SupportedModels: map[string]bool{
+				"mimo-upstream": true,
+			},
+			ModelMapping: map[string]string{
+				"mimo-v2.5-pro": "mimo-upstream",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"mimo-v2.5-pro","messages":[{"role":"user","content":"ping"}]}`))
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if chatHits != 1 {
+		t.Fatalf("chat provider 应命中 1 次，实际 %d", chatHits)
+	}
+	if responsesHits != 0 {
+		t.Fatalf("responses-only provider 不应参与 /v1/chat/completions，实际命中 %d 次", responsesHits)
+	}
+}
+
 func TestOpenAIChatCompletionsCORSPreflight(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	_, relayService := newTestRelayService(t)
@@ -580,6 +1123,75 @@ func TestOpenAIImagesGenerationsProxy(t *testing.T) {
 		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), `"b64_json":"aW1hZ2U="`) {
+		t.Fatalf("响应体不包含上游图片数据: %s", w.Body.String())
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("期望命中上游 1 次，实际 %d", upstreamHits)
+	}
+}
+
+func TestOpenAIImagesGenerationsDropConfiguredFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var upstreamHits int
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("读取上游请求体失败: %v", err)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("上游请求体不是 JSON: %v", err)
+		}
+		if _, ok := payload["response_format"]; ok {
+			t.Fatalf("顶层 response_format 应被移除，实际: %s", string(body))
+		}
+		if payload["model"] != "gpt-image-2" {
+			t.Fatalf("模型字段不正确，收到 %v", payload["model"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"ZHJvcHBlZA=="}]}`))
+	}))
+	defer upstreamServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindGPTImage, []Provider{
+		{
+			ID:              1,
+			Name:            "ImageProvider",
+			APIURL:          upstreamServer.URL,
+			APIKey:          "provider-api-key",
+			Enabled:         true,
+			DropImageFields: []string{"response_format"},
+			SupportedModels: map[string]bool{
+				"gpt-image-2": true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"gpt-image-2","prompt":"a red apple","response_format":"b64_json"}`))
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"b64_json":"ZHJvcHBlZA=="`) {
 		t.Fatalf("响应体不包含上游图片数据: %s", w.Body.String())
 	}
 	if upstreamHits != 1 {
@@ -875,6 +1487,82 @@ func TestOpenAIImagesEditsProxyMultipart(t *testing.T) {
 		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), `"b64_json":"ZWRpdA=="`) {
+		t.Fatalf("响应体不包含上游图片数据: %s", w.Body.String())
+	}
+}
+
+func TestOpenAIImagesEditsDropConfiguredMultipartFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			t.Fatalf("解析 multipart 失败: %v", err)
+		}
+		if got := r.FormValue("response_format"); got != "" {
+			t.Fatalf("response_format 应被移除，收到 %q", got)
+		}
+		if got := r.FormValue("model"); got != "gpt-image-2" {
+			t.Fatalf("上游 model 字段错误，收到 %q", got)
+		}
+		if got := r.FormValue("prompt"); got != "edit this" {
+			t.Fatalf("上游 prompt 字段错误，收到 %q", got)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"ZHJvcC1tdWx0aXBhcnQ="}]}`))
+	}))
+	defer upstreamServer.Close()
+
+	providerService, relayService := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindGPTImage, []Provider{
+		{
+			ID:              1,
+			Name:            "ImageProvider",
+			APIURL:          upstreamServer.URL,
+			APIKey:          "provider-api-key",
+			Enabled:         true,
+			DropImageFields: []string{"response_format"},
+			SupportedModels: map[string]bool{
+				"gpt-image-2": true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("保存 provider 失败: %v", err)
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("model", "gpt-image-2")
+	_ = writer.WriteField("prompt", "edit this")
+	_ = writer.WriteField("response_format", "b64_json")
+	part, err := writer.CreateFormFile("image[]", "one.png")
+	if err != nil {
+		t.Fatalf("创建 image[] 字段失败: %v", err)
+	}
+	_, _ = part.Write([]byte("image"))
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭 multipart writer 失败: %v", err)
+	}
+
+	relayKey, err := relayService.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("创建 relay key 失败: %v", err)
+	}
+
+	router := gin.New()
+	relayService.registerRoutes(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", &body)
+	req.Header.Set("Authorization", "Bearer "+relayKey.Key)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d，响应体: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"b64_json":"ZHJvcC1tdWx0aXBhcnQ="`) {
 		t.Fatalf("响应体不包含上游图片数据: %s", w.Body.String())
 	}
 }

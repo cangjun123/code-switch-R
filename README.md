@@ -193,9 +193,27 @@ OpenAI Chat Completions 兼容客户端可以直接请求：
 适合接入只支持 `/v1/chat/completions` 的上游，例如 OpenAI 兼容聊天模型。配置建议：
 
 - `API URL`: 上游 base URL
-- `API Endpoint`: `/v1/chat/completions`
+- `OpenAI 入口能力`: 选 `仅 /v1/chat/completions`
+- `API Endpoint`: 通常填 `/v1/chat/completions`
 - `认证方式`: `Bearer`
 - `适用模型`: 上游模型名，或使用模型映射
+
+如果一个 `Codex` provider 只支持其中一种 OpenAI 入口，可以在管理页显式标记：
+
+- `仅 /responses`
+- `仅 /v1/chat/completions`
+- `同时支持两者`
+
+relay 会先按请求路由筛选 provider，再按模型白名单/映射筛选。这样可以避免把 `/responses` 请求误打到只支持 `/v1/chat/completions` 的上游，或反过来。
+
+兼容规则：
+
+- `auto`：根据 `API Endpoint` 推断；如果 `API Endpoint` 留空，则默认视为同时支持两者，以保持旧配置可用。
+- `同时支持两者`：建议 `API Endpoint` 留空，让 relay 按客户端请求路径透传。
+- 如果能力配置和固定 `API Endpoint` 冲突，保存时会报配置错误。
+- 如果某个 Responses 上游要求顶层必须有 `instructions`，可以开启 `Responses instructions 兼容`。relay 会在缺少 `instructions` 时，优先从首个 `developer/system message` 自动补齐；如果没有可提取内容，则回退为默认值 `You are a helpful assistant.`。
+- 如果某个 Responses 上游要求顶层必须显式传 `store=false`，可以开启 `Responses store=false 兼容`，relay 会强制把顶层 `store` 设为 `false`。
+- 如果某个 Responses 上游会因为不支持某些顶层字段而返回 400，可以在 `Responses 丢弃字段` 中填写字段名，relay 会在转发前删除它们。常见值有 `max_output_tokens`、`temperature`、`safety_identifier`。
 
 示例：
 
@@ -225,6 +243,7 @@ curl http://127.0.0.1:18100/v1/chat/completions \
 - `API Key`: 上游 key
 - `API Endpoint`: 通常留空即可；只有上游使用特殊路径时才需要覆盖
 - 认证方式：`Bearer`
+- 如果某个图片上游会因为不支持某些字段而返回 400，可以在 `Images 丢弃字段` 中填写字段名。`eto` 常见值是 `response_format`
 - 模型白名单/映射可按需填写
 
 relay 会按客户端请求路径转发到上游：`/v1/images/generations` 走文生图，`/v1/images/edits` 走图片编辑。即使 provider 里填了 `/v1/images/generations`，也不会把 edits 请求错转到 generations。

@@ -16,6 +16,20 @@ export type AutomationCard = {
   level?: number
   // API 端点路径（可选）：覆盖平台默认端点
   apiEndpoint?: string
+  // OpenAI 入口能力：auto / responses / chat_completions / both
+  openAIEndpointMode?: string
+  // Responses instructions 兼容：为缺失 instructions 的 Responses 请求补齐顶层 instructions
+  bridgeResponsesInstructions?: boolean
+  // Responses store=false 兼容：为要求 store=false 的 Responses 请求显式设置顶层 store=false
+  forceResponsesStoreFalse?: boolean
+  // Responses 丢弃字段列表：为不支持指定顶层字段的 Responses 请求在转发前移除对应字段
+  dropResponsesFields?: string[]
+  // [已废弃] Responses max_output_tokens 兼容：迁移到 dropResponsesFields
+  dropResponsesMaxOutputTokens?: boolean
+  // [已废弃] Responses temperature 兼容：迁移到 dropResponsesFields
+  dropResponsesTemperature?: boolean
+  // Images 丢弃字段列表：为不支持指定 JSON key 或 multipart field 的生图请求在转发前移除对应字段
+  dropImageFields?: string[]
   // CLI 配置：存储供应商关联的 CLI 可编辑配置
   cliConfig?: Record<string, any>
 
@@ -128,5 +142,15 @@ export function createAutomationCards(data: AutomationCard[] = []): AutomationCa
   return data.map((item) => ({
     ...item,
     officialSite: item.officialSite ?? '',
+    dropResponsesFields: Array.isArray(item.dropResponsesFields)
+      ? item.dropResponsesFields
+        .map((field) => field.trim())
+        .filter(Boolean)
+      : [],
+    dropImageFields: Array.isArray(item.dropImageFields)
+      ? item.dropImageFields
+        .map((field) => field.trim())
+        .filter(Boolean)
+      : [],
   }))
 }

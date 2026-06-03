@@ -20,6 +20,7 @@ import (
 )
 
 const defaultOpenAIImageModel = "gpt-image-2"
+const imageDropFieldResponseFormat = "response_format"
 
 type imageProviderCandidate struct {
 	kind     string
@@ -114,6 +115,20 @@ func (prs *ProviderRelayService) openAIImagesProxyHandler(endpoint string) gin.H
 				if contentType != "" {
 					currentBody = modifiedBody
 					currentHeaders["Content-Type"] = contentType
+				}
+			}
+			if dropFields := candidate.provider.GetImageDropFields(); len(dropFields) > 0 {
+				modifiedBody, contentType, removedFields, err := dropOpenAIImageFields(currentHeaders["Content-Type"], currentBody, dropFields)
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				if len(removedFields) > 0 {
+					currentBody = modifiedBody
+					if contentType != "" {
+						currentHeaders["Content-Type"] = contentType
+					}
+					fmt.Printf("[Images] Provider %s 已移除图片请求字段: %v\n", candidate.provider.Name, removedFields)
 				}
 			}
 			if streamRequested {
@@ -368,6 +383,150 @@ func isTruthyString(value string) bool {
 
 func isJSONContentType(contentType string) bool {
 	return strings.Contains(strings.ToLower(contentType), "application/json")
+}
+
+func normalizeImageDropFieldName(field string) string {
+	return strings.ToLower(strings.TrimSpace(field))
+}
+
+func NormalizeImageDropFields(fields []string) []string {
+	if len(fields) == 0 {
+		return nil
+	}
+
+	normalized := make([]string, 0, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		name := normalizeImageDropFieldName(field)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		normalized = append(normalized, name)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+func dropOpenAIImageFields(contentType string, body []byte, fields []string) ([]byte, string, []string, error) {
+	normalizedFields := NormalizeImageDropFields(fields)
+	if len(normalizedFields) == 0 {
+		return body, "", nil, nil
+	}
+	if isJSONContentType(contentType) {
+		modifiedBody, removedFields, err := dropOpenAIImageJSONFields(body, normalizedFields)
+		return modifiedBody, "", removedFields, err
+	}
+	return dropOpenAIImageMultipartFields(contentType, body, normalizedFields)
+}
+
+func dropOpenAIImageJSONFields(body []byte, fields []string) ([]byte, []string, error) {
+	req, err := decodeJSONObject(body)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	remaining := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		remaining[field] = struct{}{}
+	}
+
+	removedFields := make([]string, 0, len(fields))
+	for key := range req {
+		normalizedKey := normalizeImageDropFieldName(key)
+		if _, ok := remaining[normalizedKey]; !ok {
+			continue
+		}
+		delete(req, key)
+		removedFields = append(removedFields, normalizedKey)
+		delete(remaining, normalizedKey)
+	}
+	if len(removedFields) == 0 {
+		return body, nil, nil
+	}
+
+	result, err := json.Marshal(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	return result, removedFields, nil
+}
+
+func dropOpenAIImageMultipartFields(contentType string, body []byte, fields []string) ([]byte, string, []string, error) {
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || !strings.HasPrefix(strings.ToLower(mediaType), "multipart/") {
+		return body, "", nil, nil
+	}
+	boundary := params["boundary"]
+	if boundary == "" {
+		return body, "", nil, nil
+	}
+
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	var out bytes.Buffer
+	writer := multipart.NewWriter(&out)
+
+	removeSet := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		removeSet[field] = struct{}{}
+	}
+	removedSet := make(map[string]struct{}, len(fields))
+
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			_ = writer.Close()
+			return nil, "", nil, err
+		}
+
+		partBody, readErr := io.ReadAll(part)
+		if closeErr := part.Close(); readErr == nil {
+			readErr = closeErr
+		}
+		if readErr != nil {
+			_ = writer.Close()
+			return nil, "", nil, readErr
+		}
+
+		fieldName := normalizeImageDropFieldName(part.FormName())
+		if _, ok := removeSet[fieldName]; ok {
+			removedSet[fieldName] = struct{}{}
+			continue
+		}
+
+		partWriter, err := writer.CreatePart(cloneMIMEHeader(part.Header))
+		if err != nil {
+			_ = writer.Close()
+			return nil, "", nil, err
+		}
+		if _, err := partWriter.Write(partBody); err != nil {
+			_ = writer.Close()
+			return nil, "", nil, err
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		return nil, "", nil, err
+	}
+	if len(removedSet) == 0 {
+		return body, "", nil, nil
+	}
+
+	removedFields := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if _, ok := removedSet[field]; ok {
+			removedFields = append(removedFields, field)
+		}
+	}
+	return out.Bytes(), writer.FormDataContentType(), removedFields, nil
 }
 
 func replaceMultipartFormField(contentType string, body []byte, fieldName string, value string) ([]byte, string, error) {
