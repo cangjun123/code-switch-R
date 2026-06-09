@@ -969,6 +969,80 @@ func TestProviderLevelJSON(t *testing.T) {
 	}
 }
 
+func TestProviderCLIConfigJSON(t *testing.T) {
+	provider := Provider{
+		ID:     1,
+		Name:   "Test",
+		APIURL: "https://api.example.com",
+		CLIConfig: map[string]interface{}{
+			"wire_api": "chat",
+			"env": map[string]interface{}{
+				"DEBUG": "1",
+			},
+		},
+	}
+
+	data, err := json.Marshal(provider)
+	if err != nil {
+		t.Fatalf("JSON 序列化失败: %v", err)
+	}
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("JSON 反序列化失败: %v", err)
+	}
+
+	cliConfig, ok := decoded["cliConfig"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("期望 cliConfig 被序列化为对象，实际 JSON: %s", string(data))
+	}
+	if cliConfig["wire_api"] != "chat" {
+		t.Fatalf("期望 cliConfig.wire_api = chat，实际: %v", cliConfig["wire_api"])
+	}
+}
+
+func TestProviderServicePreservesCLIConfig(t *testing.T) {
+	testHome := t.TempDir()
+	t.Setenv("HOME", testHome)
+	t.Setenv("USERPROFILE", testHome)
+
+	service := NewProviderService()
+	original := Provider{
+		ID:      1,
+		Name:    "Provider With CLI Config",
+		APIURL:  "https://api.example.com",
+		APIKey:  "sk-test",
+		Enabled: true,
+		CLIConfig: map[string]interface{}{
+			"wire_api":    "chat",
+			"customField": "customValue",
+		},
+	}
+
+	if err := service.SaveProviders("custom:cli-config-test", []Provider{original}); err != nil {
+		t.Fatalf("SaveProviders 失败: %v", err)
+	}
+
+	loaded, err := service.LoadProviders("custom:cli-config-test")
+	if err != nil {
+		t.Fatalf("LoadProviders 失败: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("期望加载 1 个 provider，实际: %d", len(loaded))
+	}
+
+	cliConfig := loaded[0].CLIConfig
+	if cliConfig == nil {
+		t.Fatalf("期望 cliConfig 被保留，实际为空")
+	}
+	if cliConfig["wire_api"] != "chat" {
+		t.Fatalf("期望 cliConfig.wire_api = chat，实际: %v", cliConfig["wire_api"])
+	}
+	if cliConfig["customField"] != "customValue" {
+		t.Fatalf("期望 cliConfig.customField = customValue，实际: %v", cliConfig["customField"])
+	}
+}
+
 // 辅助函数
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && findSubstring(s, substr))

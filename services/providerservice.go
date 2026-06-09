@@ -100,6 +100,10 @@ type Provider struct {
 	// 会在转发前移除这些顶层 JSON 字段或 multipart field，用于兼容不支持对应参数的非标准 Images 上游。
 	DropImageFields []string `json:"dropImageFields,omitempty"`
 
+	// CLI 配置 - 供应商编辑弹窗中关联的 CLI 可编辑配置
+	// 需要持久化到 provider 配置文件，否则前端保存的自定义字段会在 Go 反序列化时被丢弃。
+	CLIConfig map[string]interface{} `json:"cliConfig,omitempty"`
+
 	// Claude WebSearch 兼容开关
 	// 仅用于 Claude -> OpenAI Responses 协议适配。
 	// 为 true 时，允许把 Claude hosted web_search 工具映射为 Responses API 的 web_search_preview。
@@ -509,6 +513,7 @@ func (ps *ProviderService) DuplicateProvider(kind string, sourceID int64) (*Prov
 		ForceResponsesStoreFalse:    source.ForceResponsesStoreFalse,    // 复制 Responses store=false 兼容开关
 		DropResponsesFields:         append([]string{}, source.GetResponsesDropFields()...),
 		DropImageFields:             append([]string{}, source.GetImageDropFields()...),
+		CLIConfig:                   cloneStringAnyMap(source.CLIConfig),
 		SupportsWebSearch:           source.SupportsWebSearch,    // 复制 WebSearch 兼容开关
 		SupportsCountTokens:         source.SupportsCountTokens,  // 复制 count_tokens 支持开关
 		ConnectivityAuthType:        source.ConnectivityAuthType, // 复制认证方式
@@ -548,6 +553,26 @@ func (ps *ProviderService) DuplicateProvider(kind string, sourceID int64) (*Prov
 	}
 
 	return cloned, nil
+}
+
+func cloneStringAnyMap(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return nil
+	}
+
+	data, err := json.Marshal(src)
+	if err == nil {
+		var dst map[string]interface{}
+		if err := json.Unmarshal(data, &dst); err == nil {
+			return dst
+		}
+	}
+
+	dst := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 // IsModelSupported 检查 provider 是否支持指定的模型

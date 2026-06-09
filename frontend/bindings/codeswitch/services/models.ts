@@ -2091,6 +2091,11 @@ export class Provider {
     "dropImageFields"?: string[];
 
     /**
+     * CLI 配置 - 供应商编辑弹窗中关联的 CLI 可编辑配置
+     */
+    "cliConfig"?: { [_ in string]?: any };
+
+    /**
      * [已废弃] Responses max_output_tokens 兼容开关
      * 已迁移到 dropResponsesFields。
      */
@@ -2157,6 +2162,7 @@ export class Provider {
         const $$createField10_0 = $$createType20;
         const $$createField11_0 = $$createType4;
         const $$createField15_0 = $$createType22;
+        const $$createField23_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("supportedModels" in $$parsedSource) {
             $$parsedSource["supportedModels"] = $$createField10_0($$parsedSource["supportedModels"]);
@@ -2166,6 +2172,9 @@ export class Provider {
         }
         if ("availabilityConfig" in $$parsedSource) {
             $$parsedSource["availabilityConfig"] = $$createField15_0($$parsedSource["availabilityConfig"]);
+        }
+        if ("cliConfig" in $$parsedSource) {
+            $$parsedSource["cliConfig"] = $$createField23_0($$parsedSource["cliConfig"]);
         }
         return new Provider($$parsedSource as Partial<Provider>);
     }
