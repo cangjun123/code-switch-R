@@ -32,17 +32,21 @@
       <Line :data="chartData" :options="chartOptions" />
     </section>
 
-    <section class="maintenance-panel">
+    <section class="maintenance-panel" :class="{ collapsed: maintenanceCollapsed }">
       <div class="maintenance-header">
         <div>
           <h2>{{ t('components.logs.maintenance.title') }}</h2>
           <p>{{ t('components.logs.maintenance.subtitle') }}</p>
         </div>
         <div class="maintenance-actions">
-          <BaseButton variant="outline" size="sm" :disabled="maintenanceLoading" @click="loadMaintenanceInfo">
+          <BaseButton variant="outline" size="sm" @click="maintenanceCollapsed = !maintenanceCollapsed">
+            {{ maintenanceCollapsed ? t('components.logs.maintenance.expand') : t('components.logs.maintenance.collapse') }}
+          </BaseButton>
+          <BaseButton v-if="!maintenanceCollapsed" variant="outline" size="sm" :disabled="maintenanceLoading" @click="loadMaintenanceInfo">
             {{ t('components.logs.maintenance.refresh') }}
           </BaseButton>
           <BaseButton
+            v-if="!maintenanceCollapsed"
             variant="danger"
             size="sm"
             :disabled="maintenanceLoading || cleanupBusy || !maintenanceInfo || maintenanceInfo.expired_rows <= 0"
@@ -53,7 +57,7 @@
         </div>
       </div>
 
-      <div class="maintenance-body">
+      <div v-show="!maintenanceCollapsed" class="maintenance-body">
         <label class="retention-control">
           <span>{{ t('components.logs.maintenance.retentionDays') }}</span>
           <input
@@ -277,6 +281,7 @@ const cleanupBusy = ref(false)
 const saveRetentionBusy = ref(false)
 const retentionDaysInput = ref(30)
 const maintenanceMessage = ref('')
+const maintenanceCollapsed = ref(true)
 
 // 金额明细弹窗状态
 const costDetailModal = reactive<{
@@ -871,6 +876,10 @@ onUnmounted(() => {
   gap: 1rem;
   align-items: flex-start;
   margin-bottom: 0.85rem;
+}
+
+.maintenance-panel.collapsed .maintenance-header {
+  margin-bottom: 0;
 }
 
 .maintenance-header h2 {

@@ -195,7 +195,7 @@
       "logoutFailed": "Failed to sign out",
       "keepHint": "Leave blank to keep the current value",
       "keysCardTitle": "Codex API Keys",
-      "keysCardDescription": "The Codex relay on 18100 validates these keys and no longer accepts arbitrary secrets.",
+      "keysCardDescription": "Manage access keys used by the 18100 Codex API.",
       "createLabel": "New key name",
       "createPlaceholder": "For example: Local dev / CI / automation",
       "create": "Generate key",
@@ -212,8 +212,8 @@
       "loadKeysFailed": "Failed to load Codex key list",
       "loadingKeys": "Loading Codex keys...",
       "empty": "No Codex keys yet. Generate one to start using the relay.",
-      "oneTimeTitle": "The full key is shown only once",
-      "oneTimeDescription": "Copy and store it now. The list only shows a masked value afterwards."
+      "oneTimeTitle": "New full key",
+      "oneTimeDescription": "Copy it for Codex API access. The list shows a masked value."
     }
   },
   "prompts": {
@@ -467,8 +467,8 @@
           "apiEndpoint": "Override the platform default endpoint. Leave blank for default (Claude: /v1/messages for Anthropic, /v1/responses for OpenAI Compatible; Codex: /responses). For GLM models use /v1/chat/completions",
           "upstreamProtocol": "Specify the upstream API protocol. Auto detects from the endpoint; OpenAI Compatible converts Claude Messages requests to OpenAI Responses or Chat Completions",
           "openAIEndpointMode": "Used only for Codex/OpenAI-compatible provider selection. Auto infers from API Endpoint; with no fixed endpoint it defaults to supporting both /responses and /v1/chat/completions.",
-          "bridgeResponsesInstructions": "Used only for /responses. When enabled, if the client request has no top-level instructions, relay will first promote the first developer/system message into instructions; if nothing can be derived, it falls back to the default value \"You are a helpful assistant.\" for upstreams that require top-level instructions.",
-          "forceResponsesStoreFalse": "Used only for /responses. When enabled, relay will explicitly set top-level store=false for upstreams that require it; an incoming store=true will also be overridden.",
+          "bridgeResponsesInstructions": "Fill missing instructions, falling back to a default assistant prompt.",
+          "forceResponsesStoreFalse": "Force store=false before forwarding /responses requests.",
           "dropResponsesFields": "Used only for /responses. Enter top-level field names to remove before relay, separated by commas. Common values are max_output_tokens, temperature, and safety_identifier.",
           "dropImageFields": "Used only for GPT image requests. Enter top-level JSON field names or multipart field names to remove before relay, separated by commas. A common eto value is response_format.",
           "dropResponsesMaxOutputTokens": "Used only for /responses. When enabled, relay will remove top-level max_output_tokens for upstreams that reject this field.",
@@ -654,6 +654,8 @@
         "subtitle": "Inspect request_log size and remove expired rows.",
         "refresh": "Refresh maintenance",
         "cleanup": "Clean expired logs",
+        "expand": "Expand",
+        "collapse": "Collapse",
         "cleaning": "Cleaning...",
         "retentionDays": "Retention days",
         "save": "Save",

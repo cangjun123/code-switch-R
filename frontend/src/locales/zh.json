@@ -195,7 +195,7 @@
       "logoutFailed": "退出登录失败",
       "keepHint": "留空则保持不变",
       "keysCardTitle": "Codex API Keys",
-      "keysCardDescription": "18100 上的 Codex 服务会校验这些 key，不再接受任意伪造的密钥。",
+      "keysCardDescription": "管理 18100 Codex API 使用的访问 key。",
       "createLabel": "新 key 名称",
       "createPlaceholder": "例如：本地开发 / CI / 自动化脚本",
       "create": "生成 key",
@@ -212,8 +212,8 @@
       "loadKeysFailed": "读取 Codex key 列表失败",
       "loadingKeys": "正在加载 Codex key 列表...",
       "empty": "当前还没有可用的 Codex key，可以先生成一个。",
-      "oneTimeTitle": "完整 key 只显示这一次",
-      "oneTimeDescription": "请立即复制并妥善保存，列表里只会显示脱敏后的值。"
+      "oneTimeTitle": "新生成的完整 key",
+      "oneTimeDescription": "可以复制后用于 Codex API 访问；列表里会显示脱敏后的值。"
     }
   },
   "prompts": {
@@ -468,8 +468,8 @@
           "apiEndpoint": "覆盖平台默认端点。留空使用默认（Claude: Anthropic 为 /v1/messages，OpenAI Compatible 为 /v1/responses；Codex: /responses）。GLM 模型请使用 /v1/chat/completions",
           "upstreamProtocol": "指定上游 API 的协议类型。选择 auto 时根据端点自动检测；选择 OpenAI Compatible 时会把 Claude Messages 请求转换到 OpenAI Responses 或 Chat Completions",
           "openAIEndpointMode": "仅用于 Codex/OpenAI 兼容请求的 provider 选择。auto 会根据 API Endpoint 推断；留空且未固定端点时默认同时支持 /responses 和 /v1/chat/completions。",
-          "bridgeResponsesInstructions": "仅用于 /responses。启用后，当客户端请求缺少顶层 instructions 时，会优先从首个 developer/system message 自动补齐；如果没有可提取内容，则回退为默认值 \"You are a helpful assistant.\"，用于兼容要求顶层 instructions 的上游。",
-          "forceResponsesStoreFalse": "仅用于 /responses。启用后，会显式把顶层 store 设为 false，用于兼容要求 store=false 的上游；如果客户端原本传了 true，也会被覆盖。",
+          "bridgeResponsesInstructions": "缺少 instructions 时自动补齐，必要时使用默认助手提示词。",
+          "forceResponsesStoreFalse": "转发 /responses 前强制设置 store=false。",
           "dropResponsesFields": "仅用于 /responses。填写需要在转发前删除的顶层字段名，使用逗号分隔。常见值有 max_output_tokens、temperature、safety_identifier。",
           "dropImageFields": "仅用于 GPT 生图请求。填写需要在转发前删除的顶层 JSON 字段名或 multipart field，使用逗号分隔。`eto` 常见值是 response_format。",
           "dropResponsesMaxOutputTokens": "仅用于 /responses。启用后，会移除顶层 max_output_tokens，用于兼容不支持该字段的上游。",
@@ -655,6 +655,8 @@
         "subtitle": "查看 request_log 规模并清理过期日志。",
         "refresh": "刷新维护信息",
         "cleanup": "清理过期日志",
+        "expand": "展开",
+        "collapse": "收起",
         "cleaning": "清理中...",
         "retentionDays": "保留天数",
         "save": "保存",
