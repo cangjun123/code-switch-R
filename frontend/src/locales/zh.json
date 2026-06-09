@@ -726,7 +726,12 @@
         "trayPanelCodex": "Codex",
         "autoStart": "开机自启动",
         "switchNotify": "切换通知",
-        "switchNotifyHint": "供应商切换或拉黑时发送系统通知",
+        "switchNotifyHint": "供应商切换或拉黑时发送页面事件；填写 Webhook 后额外推送",
+        "notificationWebhookUrl": "Webhook URL",
+        "notificationWebhookMethod": "请求方法",
+        "notificationWebhookHeaders": "请求头",
+        "notificationWebhookBody": "请求体",
+        "saveNotificationWebhook": "保存通知配置",
         "roundRobin": "同 Level 轮询",
         "roundRobinHint": "启用后同 Level 的供应商轮流处理请求，关闭则始终从第一个开始",
         "autoUpdate": "自动更新",
@@ -750,6 +755,16 @@
         "minutes": "分钟",
         "save": "保存",
         "saving": "保存中..."
+      },
+      "placeholder": {
+        "notificationWebhookUrl": "例如：http://127.0.0.1:8588",
+        "notificationWebhookHeaders": "{\n  \"Content-Type\": \"application/json\"\n}",
+        "notificationWebhookBody": "{\n  \"topic\": \"alex-starrail\",\n  \"message\": \"{content}\",\n  \"title\": \"{title}\",\n  \"priority\": 4,\n  \"tags\": [\"white_check_mark\"]\n}"
+      },
+      "hint": {
+        "notificationWebhookUrl": "留空时不发送远程通知，转发请求不受影响。",
+        "notificationWebhookHeaders": "填写 JSON 对象，也兼容单引号示例。",
+        "notificationWebhookBody": "支持 {title} 和 {content} 占位符。"
       },
       "subLabel": {
         "sb_assistant_access": "需要无障碍访问权限来操作剪切板内容",

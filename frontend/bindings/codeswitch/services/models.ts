@@ -43,6 +43,10 @@ export class AppSettings {
      * 同 Level 轮询负载均衡开关（默认关闭）
      */
     "enable_round_robin": boolean;
+    "notification_webhook_url": string;
+    "notification_webhook_method": string;
+    "notification_webhook_headers": string;
+    "notification_webhook_body": string;
 
     /** Creates a new AppSettings instance. */
     constructor($$source: Partial<AppSettings> = {}) {
@@ -120,6 +124,18 @@ export class AppSettings {
         }
         if (!("enable_round_robin" in $$source)) {
             this["enable_round_robin"] = false;
+        }
+        if (!("notification_webhook_url" in $$source)) {
+            this["notification_webhook_url"] = "";
+        }
+        if (!("notification_webhook_method" in $$source)) {
+            this["notification_webhook_method"] = "";
+        }
+        if (!("notification_webhook_headers" in $$source)) {
+            this["notification_webhook_headers"] = "";
+        }
+        if (!("notification_webhook_body" in $$source)) {
+            this["notification_webhook_body"] = "";
         }
 
         Object.assign(this, $$source);

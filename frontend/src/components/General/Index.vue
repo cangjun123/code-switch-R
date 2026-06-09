@@ -38,6 +38,10 @@ const autoConnectivityTestEnabled = ref(getCachedValue('autoConnectivityTest', f
 const switchNotifyEnabled = ref(getCachedValue('switchNotify', true)) // 切换通知开关
 const roundRobinEnabled = ref(getCachedValue('roundRobin', false))    // 同 Level 轮询开关
 const autoUpdateEnabled = ref(getCachedValue('autoUpdate', true))     // 自动更新开关
+const notificationWebhookUrl = ref(getCachedString('notificationWebhookUrl', ''))
+const notificationWebhookMethod = ref(getCachedString('notificationWebhookMethod', 'POST'))
+const notificationWebhookHeaders = ref(getCachedString('notificationWebhookHeaders', '{\n  "Content-Type": "application/json"\n}'))
+const notificationWebhookBody = ref(getCachedString('notificationWebhookBody', '{\n  "message": "{content}",\n  "title": "{title}"\n}'))
 const budgetTotal = ref(getCachedNumber('budgetTotal', 0))
 const budgetUsedAdjustment = ref(getCachedNumber('budgetUsedAdjustment', 0))
 const budgetForecastMethod = ref(getCachedString('budgetForecastMethod', 'cycle'))
@@ -85,6 +89,11 @@ const normalizeBudgetForecastMethod = (value: string) => {
   return 'cycle'
 }
 
+const normalizeNotificationWebhookMethod = (value: string) => {
+  const method = value?.trim().toUpperCase()
+  return ['POST', 'PUT', 'PATCH', 'GET'].includes(method) ? method : 'POST'
+}
+
 const loadAppSettings = async () => {
   settingsLoading.value = true
   try {
@@ -114,6 +123,10 @@ const loadAppSettings = async () => {
     switchNotifyEnabled.value = data?.enable_switch_notify ?? true
     roundRobinEnabled.value = data?.enable_round_robin ?? false
     autoUpdateEnabled.value = data?.auto_update ?? true
+    notificationWebhookUrl.value = data?.notification_webhook_url ?? ''
+    notificationWebhookMethod.value = normalizeNotificationWebhookMethod(data?.notification_webhook_method ?? 'POST')
+    notificationWebhookHeaders.value = data?.notification_webhook_headers || '{\n  "Content-Type": "application/json"\n}'
+    notificationWebhookBody.value = data?.notification_webhook_body || '{\n  "message": "{content}",\n  "title": "{title}"\n}'
 
     // 缓存到 localStorage，下次打开时直接显示正确状态
     localStorage.setItem('app-settings-heatmap', String(heatmapEnabled.value))
@@ -141,6 +154,10 @@ const loadAppSettings = async () => {
     localStorage.setItem('app-settings-switchNotify', String(switchNotifyEnabled.value))
     localStorage.setItem('app-settings-roundRobin', String(roundRobinEnabled.value))
     localStorage.setItem('app-settings-autoUpdate', String(autoUpdateEnabled.value))
+    localStorage.setItem('app-settings-notificationWebhookUrl', notificationWebhookUrl.value)
+    localStorage.setItem('app-settings-notificationWebhookMethod', notificationWebhookMethod.value)
+    localStorage.setItem('app-settings-notificationWebhookHeaders', notificationWebhookHeaders.value)
+    localStorage.setItem('app-settings-notificationWebhookBody', notificationWebhookBody.value)
   } catch (error) {
     console.error('failed to load app settings', error)
     heatmapEnabled.value = true
@@ -167,6 +184,10 @@ const loadAppSettings = async () => {
     autoConnectivityTestEnabled.value = false
     switchNotifyEnabled.value = true
     roundRobinEnabled.value = false
+    notificationWebhookUrl.value = ''
+    notificationWebhookMethod.value = 'POST'
+    notificationWebhookHeaders.value = '{\n  "Content-Type": "application/json"\n}'
+    notificationWebhookBody.value = '{\n  "message": "{content}",\n  "title": "{title}"\n}'
   } finally {
     settingsLoading.value = false
   }
@@ -206,6 +227,8 @@ const persistAppSettings = async () => {
     budgetRefreshDayCodex.value = normalizedBudgetRefreshDayCodex
     const normalizedBudgetCycleModeCodex = budgetCycleModeCodex.value === 'weekly' ? 'weekly' : 'daily'
     budgetCycleModeCodex.value = normalizedBudgetCycleModeCodex
+    const normalizedNotificationWebhookMethod = normalizeNotificationWebhookMethod(notificationWebhookMethod.value)
+    notificationWebhookMethod.value = normalizedNotificationWebhookMethod
     const payload: AppSettings = {
       show_heatmap: heatmapEnabled.value,
       show_home_title: homeTitleVisible.value,
@@ -232,6 +255,10 @@ const persistAppSettings = async () => {
       enable_switch_notify: switchNotifyEnabled.value,
       enable_round_robin: roundRobinEnabled.value,
       auto_update: autoUpdateEnabled.value,
+      notification_webhook_url: notificationWebhookUrl.value.trim(),
+      notification_webhook_method: normalizedNotificationWebhookMethod,
+      notification_webhook_headers: notificationWebhookHeaders.value.trim(),
+      notification_webhook_body: notificationWebhookBody.value.trim(),
     }
     await saveAppSettings(payload)
 
@@ -267,6 +294,10 @@ const persistAppSettings = async () => {
     localStorage.setItem('app-settings-switchNotify', String(switchNotifyEnabled.value))
     localStorage.setItem('app-settings-roundRobin', String(roundRobinEnabled.value))
     localStorage.setItem('app-settings-autoUpdate', String(autoUpdateEnabled.value))
+    localStorage.setItem('app-settings-notificationWebhookUrl', notificationWebhookUrl.value.trim())
+    localStorage.setItem('app-settings-notificationWebhookMethod', normalizedNotificationWebhookMethod)
+    localStorage.setItem('app-settings-notificationWebhookHeaders', notificationWebhookHeaders.value.trim())
+    localStorage.setItem('app-settings-notificationWebhookBody', notificationWebhookBody.value.trim())
 
     window.dispatchEvent(new CustomEvent('app-settings-updated'))
   } catch (error) {
@@ -467,6 +498,88 @@ onMounted(async () => {
               <span class="hint-text">{{ $t('components.general.label.switchNotifyHint') }}</span>
             </div>
           </ListItem>
+          <div v-if="switchNotifyEnabled" class="notification-webhook-settings">
+            <div class="notification-field">
+              <label class="notification-label" for="notification-webhook-url">
+                {{ $t('components.general.label.notificationWebhookUrl') }}
+              </label>
+              <div class="notification-control">
+                <input
+                  id="notification-webhook-url"
+                  v-model="notificationWebhookUrl"
+                  type="url"
+                  class="mac-input notification-input"
+                  :placeholder="$t('components.general.placeholder.notificationWebhookUrl')"
+                  :disabled="settingsLoading || saveBusy"
+                  @blur="persistAppSettings"
+                />
+                <span class="field-hint">{{ $t('components.general.hint.notificationWebhookUrl') }}</span>
+              </div>
+            </div>
+            <div class="notification-field">
+              <label class="notification-label" for="notification-webhook-method">
+                {{ $t('components.general.label.notificationWebhookMethod') }}
+              </label>
+              <div class="notification-control">
+                <select
+                  id="notification-webhook-method"
+                  v-model="notificationWebhookMethod"
+                  class="mac-select notification-method-select"
+                  :disabled="settingsLoading || saveBusy"
+                  @change="persistAppSettings">
+                  <option value="POST">POST</option>
+                  <option value="PUT">PUT</option>
+                  <option value="PATCH">PATCH</option>
+                  <option value="GET">GET</option>
+                </select>
+              </div>
+            </div>
+            <div class="notification-field">
+              <label class="notification-label" for="notification-webhook-headers">
+                {{ $t('components.general.label.notificationWebhookHeaders') }}
+              </label>
+              <div class="notification-control">
+                <textarea
+                  id="notification-webhook-headers"
+                  v-model="notificationWebhookHeaders"
+                  class="mac-input notification-textarea"
+                  rows="4"
+                  spellcheck="false"
+                  :placeholder="$t('components.general.placeholder.notificationWebhookHeaders')"
+                  :disabled="settingsLoading || saveBusy"
+                  @blur="persistAppSettings"
+                ></textarea>
+                <span class="field-hint">{{ $t('components.general.hint.notificationWebhookHeaders') }}</span>
+              </div>
+            </div>
+            <div class="notification-field">
+              <label class="notification-label" for="notification-webhook-body">
+                {{ $t('components.general.label.notificationWebhookBody') }}
+              </label>
+              <div class="notification-control">
+                <textarea
+                  id="notification-webhook-body"
+                  v-model="notificationWebhookBody"
+                  class="mac-input notification-textarea notification-body-textarea"
+                  rows="6"
+                  spellcheck="false"
+                  :placeholder="$t('components.general.placeholder.notificationWebhookBody')"
+                  :disabled="settingsLoading || saveBusy"
+                  @blur="persistAppSettings"
+                ></textarea>
+                <span class="field-hint">{{ $t('components.general.hint.notificationWebhookBody') }}</span>
+              </div>
+            </div>
+            <div class="notification-actions">
+              <button
+                type="button"
+                class="primary-btn"
+                :disabled="settingsLoading || saveBusy"
+                @click="persistAppSettings">
+                {{ saveBusy ? $t('components.general.label.saving') : $t('components.general.label.saveNotificationWebhook') }}
+              </button>
+            </div>
+          </div>
           <ListItem :label="$t('components.general.label.roundRobin')">
             <div class="toggle-with-hint">
               <label class="mac-switch">
@@ -673,7 +786,7 @@ onMounted(async () => {
   line-height: 1.4;
   max-width: 320px;
   text-align: right;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 :global(.dark) .hint-text {
@@ -712,11 +825,89 @@ onMounted(async () => {
   color: var(--mac-text-warning, #e67e22);
 }
 
+.notification-webhook-settings {
+  border-top: 1px solid var(--mac-divider);
+  display: grid;
+  gap: 12px;
+  padding: 14px 18px 16px;
+}
+
+.notification-field {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.notification-label {
+  color: var(--mac-text);
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 30px;
+}
+
+.notification-control {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.notification-input,
+.notification-textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.notification-textarea {
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.notification-body-textarea {
+  min-height: 130px;
+}
+
+.notification-method-select {
+  width: 140px;
+}
+
+.field-hint {
+  color: var(--mac-text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.notification-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 :global(.dark) .info-text.warning {
   color: #f39c12;
 }
 
 :global(.dark) .mac-input {
   background: var(--mac-surface-strong);
+}
+
+@media (max-width: 720px) {
+  .notification-field {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .notification-label {
+    line-height: 1.3;
+  }
+
+  .toggle-with-hint {
+    align-items: flex-start;
+  }
+
+  .hint-text {
+    text-align: left;
+  }
 }
 </style>
