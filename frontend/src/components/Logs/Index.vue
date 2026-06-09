@@ -435,8 +435,23 @@ const cleanupExpiredLogs = async () => {
 
 const parseLogDate = (value?: string) => {
   if (!value) return null
+  const localMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/)
+  if (localMatch) {
+    const [, year, month, day, hour, minute, second] = localMatch
+    const parsed = new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second),
+    )
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed
+    }
+  }
   const normalize = value.replace(' ', 'T')
-  const attempts = [value, `${normalize}`, `${normalize}Z`]
+  const attempts = [`${normalize}`, `${normalize}Z`, value]
   for (const candidate of attempts) {
     const parsed = new Date(candidate)
     if (!Number.isNaN(parsed.getTime())) {
