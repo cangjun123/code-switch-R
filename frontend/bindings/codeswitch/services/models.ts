@@ -2355,6 +2355,8 @@ export class ReqeustLog {
     "reasoning_tokens": number;
     "is_stream": boolean;
     "duration_sec": number;
+    "first_token_duration_sec": number;
+    "client_ip": string;
     "created_at": string;
     "input_cost": number;
     "output_cost": number;
@@ -2403,6 +2405,12 @@ export class ReqeustLog {
         }
         if (!("duration_sec" in $$source)) {
             this["duration_sec"] = 0;
+        }
+        if (!("first_token_duration_sec" in $$source)) {
+            this["first_token_duration_sec"] = 0;
+        }
+        if (!("client_ip" in $$source)) {
+            this["client_ip"] = "";
         }
         if (!("created_at" in $$source)) {
             this["created_at"] = "";

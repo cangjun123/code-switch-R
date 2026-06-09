@@ -623,8 +623,10 @@
         "platform": "Platform",
         "provider": "Provider",
         "model": "Model",
+        "clientIp": "Client IP",
         "httpCode": "HTTP",
         "stream": "Stream",
+        "firstToken": "First token",
         "duration": "Duration",
         "cost": "Cost",
         "tokens": "Tokens"

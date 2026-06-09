@@ -113,19 +113,21 @@ func (ls *LogService) ListRequestLogs(platform string, provider string, limit in
 			createdAt = parsed.Format(timeLayout)
 		}
 		logEntry := ReqeustLog{
-			ID:                record.GetInt64("id"),
-			Platform:          record.GetString("platform"),
-			Model:             record.GetString("model"),
-			Provider:          record.GetString("provider"),
-			HttpCode:          record.GetInt("http_code"),
-			InputTokens:       record.GetInt("input_tokens"),
-			OutputTokens:      record.GetInt("output_tokens"),
-			CacheCreateTokens: record.GetInt("cache_create_tokens"),
-			CacheReadTokens:   record.GetInt("cache_read_tokens"),
-			ReasoningTokens:   record.GetInt("reasoning_tokens"),
-			CreatedAt:         createdAt,
-			IsStream:          record.GetBool("is_stream"),
-			DurationSec:       record.GetFloat64("duration_sec"),
+			ID:                    record.GetInt64("id"),
+			Platform:              record.GetString("platform"),
+			Model:                 record.GetString("model"),
+			Provider:              record.GetString("provider"),
+			HttpCode:              record.GetInt("http_code"),
+			InputTokens:           record.GetInt("input_tokens"),
+			OutputTokens:          record.GetInt("output_tokens"),
+			CacheCreateTokens:     record.GetInt("cache_create_tokens"),
+			CacheReadTokens:       record.GetInt("cache_read_tokens"),
+			ReasoningTokens:       record.GetInt("reasoning_tokens"),
+			CreatedAt:             createdAt,
+			IsStream:              record.GetBool("is_stream"),
+			DurationSec:           record.GetFloat64("duration_sec"),
+			FirstTokenDurationSec: record.GetFloat64("first_token_duration_sec"),
+			ClientIP:              record.GetString("client_ip"),
 		}
 		ls.decorateCost(&logEntry)
 		logs = append(logs, logEntry)

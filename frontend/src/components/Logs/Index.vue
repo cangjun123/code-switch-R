@@ -119,10 +119,11 @@
             <th class="col-platform">{{ t('components.logs.table.platform') }}</th>
             <th class="col-provider">{{ t('components.logs.table.provider') }}</th>
             <th class="col-model">{{ t('components.logs.table.model') }}</th>
+            <th class="col-client-ip">{{ t('components.logs.table.clientIp') }}</th>
             <th class="col-http">{{ t('components.logs.table.httpCode') }}</th>
             <th class="col-stream">{{ t('components.logs.table.stream') }}</th>
+            <th class="col-first-token">{{ t('components.logs.table.firstToken') }}</th>
             <th class="col-duration">{{ t('components.logs.table.duration') }}</th>
-            <th class="col-cost">{{ t('components.logs.table.cost') }}</th>
             <th class="col-tokens">{{ t('components.logs.table.tokens') }}</th>
           </tr>
         </thead>
@@ -132,10 +133,11 @@
             <td>{{ item.platform || '—' }}</td>
             <td>{{ item.provider || '—' }}</td>
             <td>{{ item.model || '—' }}</td>
+            <td class="client-ip-cell">{{ item.client_ip || '—' }}</td>
             <td :class="['code', httpCodeClass(item.http_code)]">{{ item.http_code }}</td>
             <td><span :class="['stream-tag', item.is_stream ? 'on' : 'off']">{{ formatStream(item.is_stream) }}</span></td>
+            <td><span :class="['duration-tag', durationColor(item.first_token_duration_sec)]">{{ formatDuration(item.first_token_duration_sec) }}</span></td>
             <td><span :class="['duration-tag', durationColor(item.duration_sec)]">{{ formatDuration(item.duration_sec) }}</span></td>
-            <td class="cost-cell">{{ formatCurrency(item.total_cost) }}</td>
             <td class="token-cell">
               <div>
                 <span class="token-label">{{ t('components.logs.tokenLabels.input') }}</span>
@@ -160,7 +162,7 @@
             </td>
           </tr>
           <tr v-if="!pagedLogs.length && !loading">
-            <td colspan="9" class="empty">{{ t('components.logs.empty') }}</td>
+            <td colspan="10" class="empty">{{ t('components.logs.empty') }}</td>
           </tr>
         </tbody>
       </table>
@@ -1173,12 +1175,19 @@ html.dark .token-detail-item__name {
 }
 
 /* 金额列 */
-.col-cost {
-  width: 80px;
+.col-client-ip {
+  width: 130px;
 }
-.cost-cell {
-  color: #f97316;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
+.client-ip-cell {
+  color: #475569;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+html.dark .client-ip-cell {
+  color: #cbd5e1;
+}
+.col-first-token {
+  width: 90px;
 }
 </style>

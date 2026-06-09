@@ -664,6 +664,7 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 		Provider: provider.Name,
 		Model:    model,
 		IsStream: streamRequested,
+		ClientIP: clientIPFromRequest(c.Request),
 	}
 	start := time.Now()
 	defer prs.writeRelayRequestLog(requestLog, start)
@@ -686,7 +687,7 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 
 	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 		if streamRequested || isOpenAIImageStreamingResponse(resp) {
-			if err := streamOpenAIImageResponse(c.Writer, resp, streamRequested); err != nil {
+			if err := streamOpenAIImageResponse(c.Writer, resp, streamRequested, requestLog, start); err != nil {
 				if isClientAbortError(c.Request.Context(), err) {
 					requestLog.SkipLog = true
 				}
@@ -721,7 +722,7 @@ func isOpenAIImageStreamingResponse(resp *http.Response) bool {
 	return strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
 }
 
-func streamOpenAIImageResponse(w http.ResponseWriter, resp *http.Response, forceSSE bool) error {
+func streamOpenAIImageResponse(w http.ResponseWriter, resp *http.Response, forceSSE bool, requestLog *ReqeustLog, start time.Time) error {
 	if resp == nil {
 		return fmt.Errorf("empty upstream response")
 	}
@@ -740,6 +741,7 @@ func streamOpenAIImageResponse(w http.ResponseWriter, resp *http.Response, force
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
+			markFirstTokenDuration(requestLog, start)
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 				return fmt.Errorf("%w: %v", errClientAbort, writeErr)
 			}
@@ -809,8 +811,8 @@ func (prs *ProviderRelayService) writeRelayRequestLog(requestLog *ReqeustLog, st
 		INSERT INTO request_log (
 			platform, model, provider, http_code,
 			input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-			reasoning_tokens, is_stream, duration_sec
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		requestLog.Platform,
 		requestLog.Model,
@@ -823,6 +825,8 @@ func (prs *ProviderRelayService) writeRelayRequestLog(requestLog *ReqeustLog, st
 		requestLog.ReasoningTokens,
 		boolToInt(requestLog.IsStream),
 		requestLog.DurationSec,
+		requestLog.FirstTokenDurationSec,
+		requestLog.ClientIP,
 	)
 	if err != nil {
 		fmt.Printf("写入 request_log 失败: %v\n", err)
