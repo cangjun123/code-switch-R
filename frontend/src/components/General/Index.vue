@@ -573,7 +573,7 @@ onMounted(async () => {
                   id="notification-webhook-headers"
                   v-model="notificationWebhookHeaders"
                   class="mac-input notification-textarea"
-                  rows="4"
+                  rows="2"
                   spellcheck="false"
                   :placeholder="notificationWebhookHeadersPlaceholder"
                   :disabled="settingsLoading || saveBusy"
@@ -591,7 +591,7 @@ onMounted(async () => {
                   id="notification-webhook-body"
                   v-model="notificationWebhookBody"
                   class="mac-input notification-textarea notification-body-textarea"
-                  rows="6"
+                  rows="3"
                   spellcheck="false"
                   :placeholder="notificationWebhookBodyPlaceholder"
                   :disabled="settingsLoading || saveBusy"
@@ -899,11 +899,12 @@ onMounted(async () => {
 
 .notification-textarea {
   line-height: 1.45;
+  min-height: 58px;
   resize: vertical;
 }
 
 .notification-body-textarea {
-  min-height: 130px;
+  min-height: 86px;
 }
 
 .notification-method-select {

@@ -138,7 +138,7 @@
   "auth": {
     "eyebrow": "管理端访问控制",
     "title": "先验证管理员身份",
-    "lead": "8080 管理界面现在需要账号密码，18100 上的 Codex relay 也只接受后台生成的专用 key。",
+    "lead": "8080 管理界面现在需要账号密码，Codex relay 也只接受后台生成的专用 key。",
     "noteTitle": "当前保护范围",
     "noteBody": "未登录时只能访问初始化 / 登录接口，业务 RPC 与事件流都会被拦住。",
     "statusChecking": "正在检查管理员会话...",
@@ -183,7 +183,7 @@
       "success": "登录成功"
     },
     "security": {
-      "description": "管理 8080 后台账号与 18100 的 Codex relay key。只有这里生成的 key 才能访问 Codex API。",
+      "description": "管理 8080 后台账号与 Codex relay key。只有这里生成的 key 才能访问 Codex API。",
       "adminCardTitle": "管理员账号",
       "adminCardDescription": "当前登录账号：{username}。新账号或新密码留空时表示保持不变。",
       "update": "更新账号密码",
@@ -195,7 +195,7 @@
       "logoutFailed": "退出登录失败",
       "keepHint": "留空则保持不变",
       "keysCardTitle": "Codex API Keys",
-      "keysCardDescription": "管理 18100 Codex API 使用的访问 key。",
+      "keysCardDescription": "管理 Codex API 使用的访问 key。",
       "createLabel": "新 key 名称",
       "createPlaceholder": "例如：本地开发 / CI / 自动化脚本",
       "create": "生成 key",

@@ -138,7 +138,7 @@
   "auth": {
     "eyebrow": "Admin Access Control",
     "title": "Authenticate before entering",
-    "lead": "The 8080 admin UI now requires a username and password, and the Codex relay on 18100 only accepts managed keys created here.",
+    "lead": "The 8080 admin UI now requires a username and password, and the Codex relay only accepts managed keys created here.",
     "noteTitle": "Protected scope",
     "noteBody": "Before login, only initialization and login endpoints stay open. RPC traffic and event streams are blocked.",
     "statusChecking": "Checking admin session...",
@@ -183,7 +183,7 @@
       "success": "Signed in successfully"
     },
     "security": {
-      "description": "Manage the 8080 admin account and the Codex relay keys for 18100. Only keys created here can access the Codex API.",
+      "description": "Manage the 8080 admin account and the Codex relay keys. Only keys created here can access the Codex API.",
       "adminCardTitle": "Admin account",
       "adminCardDescription": "Current signed-in account: {username}. Leave the new username or password blank to keep the current value.",
       "update": "Update credentials",
@@ -195,7 +195,7 @@
       "logoutFailed": "Failed to sign out",
       "keepHint": "Leave blank to keep the current value",
       "keysCardTitle": "Codex API Keys",
-      "keysCardDescription": "Manage access keys used by the 18100 Codex API.",
+      "keysCardDescription": "Manage access keys used by the Codex API.",
       "createLabel": "New key name",
       "createPlaceholder": "For example: Local dev / CI / automation",
       "create": "Generate key",
