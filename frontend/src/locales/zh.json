@@ -383,16 +383,14 @@
         "github": "打开 GitHub",
         "theme": "切换主题",
         "settings": "打开设置",
-        "mcp": "打开 MCP 面板",
-        "skill": "打开 Skill 列表",
         "gemini": "打开 Gemini CLI 管理",
         "import": "导入 cc-switch 配置",
         "duplicate": "复制供应商"
       },
       "importConfig": {
-        "tooltip": "导入 {providers} 个供应商 · {servers} 个 MCP 服务器",
-        "success": "已导入 {providers} 个供应商与 {servers} 个 MCP 服务器",
-        "empty": "cc-switch 中的供应商与 MCP 均已同步",
+        "tooltip": "导入 {providers} 个供应商",
+        "success": "已导入 {providers} 个供应商",
+        "empty": "cc-switch 中的供应商均已同步",
         "error": "导入 cc-switch 配置失败"
       },
       "firstRun": {
@@ -767,11 +765,11 @@
         "loading": "加载中...",
         "configFound": "已找到配置文件",
         "configNotFound": "未找到配置文件",
-        "pendingCount": "{providers} 个供应商，{mcp} 个 MCP",
+        "pendingCount": "{providers} 个供应商",
         "action": "导入操作",
         "importBtn": "导入配置",
         "importing": "导入中...",
-        "success": "导入成功：{providers} 个供应商，{mcp} 个 MCP 服务器",
+        "success": "导入成功：{providers} 个供应商",
         "nothingToImport": "没有需要导入的配置（可能已全部导入）",
         "failed": "导入失败",
         "fileNotFound": "配置文件不存在，请检查路径是否正确"

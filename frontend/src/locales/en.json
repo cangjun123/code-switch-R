@@ -382,15 +382,13 @@
         "github": "Open project GitHub",
         "theme": "Toggle theme",
         "settings": "Open settings",
-        "mcp": "Open MCP panel",
-        "skill": "Open skill catalog",
         "gemini": "Open Gemini CLI manager",
         "import": "Import cc-switch config",
         "duplicate": "Duplicate provider"
       },
       "importConfig": {
-        "tooltip": "Import {providers} providers · {servers} MCP servers",
-        "success": "Imported {providers} providers and {servers} MCP servers",
+        "tooltip": "Import {providers} providers",
+        "success": "Imported {providers} providers",
         "empty": "Everything from cc-switch is already in sync",
         "error": "Failed to import cc-switch config"
       },
@@ -766,11 +764,11 @@
         "loading": "Loading...",
         "configFound": "Config file found",
         "configNotFound": "Config file not found",
-        "pendingCount": "{providers} providers, {mcp} MCPs",
+        "pendingCount": "{providers} providers",
         "action": "Import action",
         "importBtn": "Import config",
         "importing": "Importing...",
-        "success": "Imported: {providers} providers, {mcp} MCP servers",
+        "success": "Imported: {providers} providers",
         "nothingToImport": "Nothing to import (all may have been imported)",
         "failed": "Import failed",
         "fileNotFound": "Config file not found, please check the path"
