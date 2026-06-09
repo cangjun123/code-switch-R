@@ -733,6 +733,11 @@
         "notificationWebhookHeaders": "Headers",
         "notificationWebhookBody": "Body",
         "saveNotificationWebhook": "Save notification settings",
+        "saveNotificationWebhookFailed": "Failed to save notification settings",
+        "testNotificationWebhook": "Send test notification",
+        "testingNotificationWebhook": "Sending...",
+        "testNotificationWebhookSuccess": "Test notification sent",
+        "testNotificationWebhookFailed": "Failed to send test notification",
         "roundRobin": "Same-Level Round Robin",
         "roundRobinHint": "When enabled, providers at the same Level take turns handling requests; when disabled, always starts from the first",
         "autoUpdate": "Automatic update",
@@ -757,13 +762,13 @@
       },
       "placeholder": {
         "notificationWebhookUrl": "Example: http://127.0.0.1:8588",
-        "notificationWebhookHeaders": "{\n  \"Content-Type\": \"application/json\"\n}",
-        "notificationWebhookBody": "{\n  \"topic\": \"alex-starrail\",\n  \"message\": \"{content}\",\n  \"title\": \"{title}\",\n  \"priority\": 4,\n  \"tags\": [\"white_check_mark\"]\n}"
+        "notificationWebhookHeaders": "JSON header object",
+        "notificationWebhookBody": "JSON body template"
       },
       "hint": {
         "notificationWebhookUrl": "Leave empty to disable remote notifications without affecting request relay.",
         "notificationWebhookHeaders": "Use a JSON object; single-quoted examples are tolerated.",
-        "notificationWebhookBody": "Supports {title} and {content} placeholders."
+        "notificationWebhookBody": "Supports title and content placeholders."
       },
       "subLabel": {
         "sb_assistant_access": "Accessibility permission is required to operate clipboard contents",

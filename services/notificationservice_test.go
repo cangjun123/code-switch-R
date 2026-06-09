@@ -97,6 +97,58 @@ func TestNotificationWebhookSendsNtfyStylePayload(t *testing.T) {
 	}
 }
 
+func TestNotificationWebhookTestRequiresURL(t *testing.T) {
+	appSettings := newTestAppSettingsService(t)
+	settings := appSettings.defaultSettings()
+	settings.NotificationWebhookURL = ""
+	if _, err := appSettings.SaveAppSettings(settings); err != nil {
+		t.Fatalf("保存测试配置失败: %v", err)
+	}
+
+	notificationService := NewNotificationService(appSettings)
+	err := notificationService.TestWebhookNotification()
+	if err == nil {
+		t.Fatal("空 Webhook URL 应该返回提示错误")
+	}
+	if !strings.Contains(err.Error(), "Webhook URL") {
+		t.Fatalf("错误信息 = %q, want Webhook URL hint", err.Error())
+	}
+}
+
+func TestNotificationWebhookTestSendsPayload(t *testing.T) {
+	received := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("webhook body 不是有效 JSON: %v", err)
+		}
+		received <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	appSettings := newTestAppSettingsService(t)
+	settings := appSettings.defaultSettings()
+	settings.NotificationWebhookURL = server.URL
+	if _, err := appSettings.SaveAppSettings(settings); err != nil {
+		t.Fatalf("保存测试配置失败: %v", err)
+	}
+
+	notificationService := NewNotificationService(appSettings)
+	if err := notificationService.TestWebhookNotification(); err != nil {
+		t.Fatalf("测试通知发送失败: %v", err)
+	}
+
+	got := <-received
+	if got["title"] != "Code Switch 测试通知" {
+		t.Fatalf("title = %v, want test title", got["title"])
+	}
+	if got["message"] != "这是一条来自 Code Switch 的测试通知" {
+		t.Fatalf("message = %v, want test message", got["message"])
+	}
+}
+
 func TestNotificationWebhookReportsNon2xx(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)

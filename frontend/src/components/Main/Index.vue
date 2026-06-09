@@ -599,7 +599,10 @@
                           <path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
                         </svg>
                       </ListboxButton>
-                      <ListboxOptions v-if="open" class="level-select-options">
+                      <ListboxOptions
+                        v-if="open"
+                        :class="['level-select-options', { dark: resolvedTheme === 'dark' }]"
+                      >
                         <ListboxOption
                           v-for="option in upstreamProtocolOptions"
                           :key="option.value"
@@ -629,7 +632,10 @@
                           <path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
                         </svg>
                       </ListboxButton>
-                      <ListboxOptions v-if="open" class="level-select-options">
+                      <ListboxOptions
+                        v-if="open"
+                        :class="['level-select-options', { dark: resolvedTheme === 'dark' }]"
+                      >
                         <ListboxOption
                           v-for="option in openAIEndpointModeOptions"
                           :key="option.value"
@@ -708,7 +714,10 @@
                           <path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
                         </svg>
                       </ListboxButton>
-                      <ListboxOptions v-if="open" class="level-select-options">
+                      <ListboxOptions
+                        v-if="open"
+                        :class="['level-select-options', { dark: resolvedTheme === 'dark' }]"
+                      >
                         <ListboxOption
                           v-for="option in authTypeOptions"
                           :key="option.value"
@@ -787,7 +796,10 @@
                           <path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
                         </svg>
                       </ListboxButton>
-                      <ListboxOptions v-if="open" class="level-select-options">
+                      <ListboxOptions
+                        v-if="open"
+                        :class="['level-select-options', { dark: resolvedTheme === 'dark' }]"
+                      >
                         <ListboxOption
                           v-for="lvl in 10"
                           :key="lvl"
@@ -3674,17 +3686,21 @@ const confirmDeleteCliTool = async () => {
   right: 0;
   max-height: 280px;
   overflow-y: auto;
-  background: var(--mac-surface);
+  background: rgba(255, 255, 255, 0.98);
   border: 1px solid var(--mac-border);
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
   z-index: 50;
   padding: 4px;
+  color: var(--mac-text);
 }
 
-:global(.dark) .level-select-options {
-  background: var(--mac-surface);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+:global(.dark) .level-select-options,
+.level-select-options.dark {
+  background: #242731;
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.42);
+  color: #f5f5f7;
 }
 
 .level-option {
@@ -3702,10 +3718,22 @@ const confirmDeleteCliTool = async () => {
   background: var(--mac-surface-strong);
 }
 
+:global(.dark) .level-select-options .level-option:hover,
+:global(.dark) .level-select-options .level-option.active,
+.level-select-options.dark .level-option:hover,
+.level-select-options.dark .level-option.active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .level-option.selected {
   background: rgba(10, 132, 255, 0.12); /* fallback for old WebKit */
   background: color-mix(in srgb, var(--mac-accent) 12%, transparent);
   font-weight: 500;
+}
+
+:global(.dark) .level-select-options .level-option.selected,
+.level-select-options.dark .level-option.selected {
+  background: rgba(10, 132, 255, 0.24);
 }
 
 .level-option .level-name {
@@ -3714,8 +3742,20 @@ const confirmDeleteCliTool = async () => {
   color: var(--mac-text);
 }
 
+:global(.dark) .level-select-options .level-name,
+:global(.dark) .level-select-options .level-desc,
+.level-select-options.dark .level-name,
+.level-select-options.dark .level-desc {
+  color: #f5f5f7;
+}
+
 .level-option.selected .level-name {
   color: var(--mac-accent);
+}
+
+:global(.dark) .level-select-options .level-option.selected .level-name,
+.level-select-options.dark .level-option.selected .level-name {
+  color: #65aaff;
 }
 
 /* 黑名单横幅 */
@@ -4399,6 +4439,13 @@ const confirmDeleteCliTool = async () => {
   outline-offset: 2px;
 }
 
+.tool-select option,
+.config-format-select option,
+.target-file-select option {
+  background: var(--mac-surface);
+  color: var(--mac-text);
+}
+
 .proxy-fields-row {
   display: flex;
   gap: 8px;
@@ -4433,6 +4480,13 @@ const confirmDeleteCliTool = async () => {
 :global(.dark) .config-format-select:hover,
 :global(.dark) .target-file-select:hover {
   border-color: rgba(255, 255, 255, 0.2);
+}
+
+:global(.dark) .tool-select option,
+:global(.dark) .config-format-select option,
+:global(.dark) .target-file-select option {
+  background: #242731;
+  color: #f5f5f7;
 }
 
 /* 直连应用按钮 */

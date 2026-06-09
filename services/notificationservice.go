@@ -135,6 +135,22 @@ func (ns *NotificationService) NotifyProviderBlacklisted(platform, providerName 
 	}()
 }
 
+func (ns *NotificationService) TestWebhookNotification() error {
+	if ns == nil || ns.appSettings == nil {
+		return fmt.Errorf("通知服务未初始化")
+	}
+
+	settings, err := ns.appSettings.GetAppSettings()
+	if err != nil {
+		return fmt.Errorf("读取通知配置失败: %w", err)
+	}
+	if strings.TrimSpace(settings.NotificationWebhookURL) == "" {
+		return fmt.Errorf("请先填写 Webhook URL")
+	}
+
+	return ns.sendWebhookNotification("Code Switch 测试通知", "这是一条来自 Code Switch 的测试通知")
+}
+
 // emitBlacklistEvent 发送拉黑事件到前端
 func (ns *NotificationService) emitBlacklistEvent(platform, providerName string, level, durationMinutes int) {
 	if ns.emitter == nil {

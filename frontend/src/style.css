@@ -191,6 +191,18 @@ html.dark .mac-sidebar-item:hover {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--mac-accent) 25%, transparent);
 }
 
+.mac-select option,
+.form-field select option {
+  background: var(--mac-surface);
+  color: var(--mac-text);
+}
+
+html.dark .mac-select option,
+html.dark .form-field select option {
+  background: #242731;
+  color: #f5f5f7;
+}
+
 .mac-switch {
   width: 44px;
   height: 24px;

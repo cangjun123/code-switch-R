@@ -31,6 +31,10 @@ const getCachedString = (key: string, defaultValue: string): string => {
   const cached = localStorage.getItem(`app-settings-${key}`)
   return cached !== null ? cached : defaultValue
 }
+const DEFAULT_NOTIFICATION_WEBHOOK_HEADERS = '{\n  "Content-Type": "application/json"\n}'
+const DEFAULT_NOTIFICATION_WEBHOOK_BODY = '{\n  "message": "{content}",\n  "title": "{title}"\n}'
+const notificationWebhookHeadersPlaceholder = DEFAULT_NOTIFICATION_WEBHOOK_HEADERS
+const notificationWebhookBodyPlaceholder = '{\n  "topic": "alex-starrail",\n  "message": "{content}",\n  "title": "{title}",\n  "priority": 4,\n  "tags": ["white_check_mark"]\n}'
 const heatmapEnabled = ref(getCachedValue('heatmap', true))
 const homeTitleVisible = ref(getCachedValue('homeTitle', true))
 const autoStartEnabled = ref(getCachedValue('autoStart', false))
@@ -40,8 +44,8 @@ const roundRobinEnabled = ref(getCachedValue('roundRobin', false))    // 同 Lev
 const autoUpdateEnabled = ref(getCachedValue('autoUpdate', true))     // 自动更新开关
 const notificationWebhookUrl = ref(getCachedString('notificationWebhookUrl', ''))
 const notificationWebhookMethod = ref(getCachedString('notificationWebhookMethod', 'POST'))
-const notificationWebhookHeaders = ref(getCachedString('notificationWebhookHeaders', '{\n  "Content-Type": "application/json"\n}'))
-const notificationWebhookBody = ref(getCachedString('notificationWebhookBody', '{\n  "message": "{content}",\n  "title": "{title}"\n}'))
+const notificationWebhookHeaders = ref(getCachedString('notificationWebhookHeaders', DEFAULT_NOTIFICATION_WEBHOOK_HEADERS))
+const notificationWebhookBody = ref(getCachedString('notificationWebhookBody', DEFAULT_NOTIFICATION_WEBHOOK_BODY))
 const budgetTotal = ref(getCachedNumber('budgetTotal', 0))
 const budgetUsedAdjustment = ref(getCachedNumber('budgetUsedAdjustment', 0))
 const budgetForecastMethod = ref(getCachedString('budgetForecastMethod', 'cycle'))
@@ -62,6 +66,7 @@ const budgetShowCountdownCodex = ref(getCachedValue('budgetShowCountdownCodex', 
 const budgetShowForecastCodex = ref(getCachedValue('budgetShowForecastCodex', false))
 const settingsLoading = ref(true)
 const saveBusy = ref(false)
+const testingWebhookNotification = ref(false)
 
 // 拉黑配置相关状态
 const blacklistEnabled = ref(false)  // 拉黑功能总开关
@@ -125,8 +130,8 @@ const loadAppSettings = async () => {
     autoUpdateEnabled.value = data?.auto_update ?? true
     notificationWebhookUrl.value = data?.notification_webhook_url ?? ''
     notificationWebhookMethod.value = normalizeNotificationWebhookMethod(data?.notification_webhook_method ?? 'POST')
-    notificationWebhookHeaders.value = data?.notification_webhook_headers || '{\n  "Content-Type": "application/json"\n}'
-    notificationWebhookBody.value = data?.notification_webhook_body || '{\n  "message": "{content}",\n  "title": "{title}"\n}'
+    notificationWebhookHeaders.value = data?.notification_webhook_headers || DEFAULT_NOTIFICATION_WEBHOOK_HEADERS
+    notificationWebhookBody.value = data?.notification_webhook_body || DEFAULT_NOTIFICATION_WEBHOOK_BODY
 
     // 缓存到 localStorage，下次打开时直接显示正确状态
     localStorage.setItem('app-settings-heatmap', String(heatmapEnabled.value))
@@ -186,15 +191,15 @@ const loadAppSettings = async () => {
     roundRobinEnabled.value = false
     notificationWebhookUrl.value = ''
     notificationWebhookMethod.value = 'POST'
-    notificationWebhookHeaders.value = '{\n  "Content-Type": "application/json"\n}'
-    notificationWebhookBody.value = '{\n  "message": "{content}",\n  "title": "{title}"\n}'
+    notificationWebhookHeaders.value = DEFAULT_NOTIFICATION_WEBHOOK_HEADERS
+    notificationWebhookBody.value = DEFAULT_NOTIFICATION_WEBHOOK_BODY
   } finally {
     settingsLoading.value = false
   }
 }
 
-const persistAppSettings = async () => {
-  if (settingsLoading.value || saveBusy.value) return
+const persistAppSettings = async (): Promise<boolean> => {
+  if (settingsLoading.value || saveBusy.value) return false
   saveBusy.value = true
   try {
     const normalizedBudgetTotal = Number.isFinite(budgetTotal.value) ? Math.max(0, budgetTotal.value) : 0
@@ -300,10 +305,35 @@ const persistAppSettings = async () => {
     localStorage.setItem('app-settings-notificationWebhookBody', notificationWebhookBody.value.trim())
 
     window.dispatchEvent(new CustomEvent('app-settings-updated'))
+    return true
   } catch (error) {
     console.error('failed to save app settings', error)
+    return false
   } finally {
     saveBusy.value = false
+  }
+}
+
+const sendTestNotificationWebhook = async () => {
+  if (settingsLoading.value || saveBusy.value || testingWebhookNotification.value) return
+  testingWebhookNotification.value = true
+  try {
+    const saved = await persistAppSettings()
+    if (!saved) {
+      alert(t('components.general.label.saveNotificationWebhookFailed'))
+      return
+    }
+    await Call.ByName('codeswitch/services.NotificationService.TestWebhookNotification')
+    alert(t('components.general.label.testNotificationWebhookSuccess'))
+  } catch (error) {
+    console.error('failed to send test notification webhook', error)
+    alert(
+      t('components.general.label.testNotificationWebhookFailed') +
+        ': ' +
+        extractErrorMessage(error, t('components.general.label.testNotificationWebhookFailed'))
+    )
+  } finally {
+    testingWebhookNotification.value = false
   }
 }
 
@@ -545,7 +575,7 @@ onMounted(async () => {
                   class="mac-input notification-textarea"
                   rows="4"
                   spellcheck="false"
-                  :placeholder="$t('components.general.placeholder.notificationWebhookHeaders')"
+                  :placeholder="notificationWebhookHeadersPlaceholder"
                   :disabled="settingsLoading || saveBusy"
                   @blur="persistAppSettings"
                 ></textarea>
@@ -563,7 +593,7 @@ onMounted(async () => {
                   class="mac-input notification-textarea notification-body-textarea"
                   rows="6"
                   spellcheck="false"
-                  :placeholder="$t('components.general.placeholder.notificationWebhookBody')"
+                  :placeholder="notificationWebhookBodyPlaceholder"
                   :disabled="settingsLoading || saveBusy"
                   @blur="persistAppSettings"
                 ></textarea>
@@ -577,6 +607,13 @@ onMounted(async () => {
                 :disabled="settingsLoading || saveBusy"
                 @click="persistAppSettings">
                 {{ saveBusy ? $t('components.general.label.saving') : $t('components.general.label.saveNotificationWebhook') }}
+              </button>
+              <button
+                type="button"
+                class="secondary-btn"
+                :disabled="settingsLoading || saveBusy || testingWebhookNotification"
+                @click="sendTestNotificationWebhook">
+                {{ testingWebhookNotification ? $t('components.general.label.testingNotificationWebhook') : $t('components.general.label.testNotificationWebhook') }}
               </button>
             </div>
           </div>
@@ -882,6 +919,8 @@ onMounted(async () => {
 .notification-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 :global(.dark) .info-text.warning {
