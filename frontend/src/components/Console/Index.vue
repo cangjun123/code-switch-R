@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { computed, ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { Call } from '@wailsio/runtime'
 
@@ -13,17 +13,32 @@ const router = useRouter()
 const logs = ref<ConsoleLog[]>([])
 const autoScroll = ref(true)
 const loading = ref(false)
+const copyStatus = ref('')
 const logsContainer = ref<HTMLElement>()
 let refreshInterval: number | null = null
+let copyStatusTimer: number | null = null
+let loadingLogs = false
+let lastLogSignature = ''
+
+const maxRenderedLogs = 300
+const maxCopyLogs = 1000
+
+const renderedLogs = computed(() => logs.value.slice(-maxRenderedLogs))
 
 const goBack = () => {
   router.push('/')
 }
 
 const loadLogs = async () => {
+  if (loadingLogs) return
+  loadingLogs = true
   try {
-    const result = await Call.ByName('codeswitch/services.ConsoleService.GetLogs')
-    logs.value = result as ConsoleLog[]
+    const result = (await Call.ByName('codeswitch/services.ConsoleService.GetRecentLogs', maxRenderedLogs)) as ConsoleLog[]
+    const signature = getLogsSignature(result)
+    if (signature === lastLogSignature) return
+
+    lastLogSignature = signature
+    logs.value = result
 
     if (autoScroll.value) {
       await nextTick()
@@ -31,6 +46,8 @@ const loadLogs = async () => {
     }
   } catch (error) {
     console.error('加载控制台日志失败:', error)
+  } finally {
+    loadingLogs = false
   }
 }
 
@@ -42,6 +59,7 @@ const clearLogs = async () => {
   try {
     await Call.ByName('codeswitch/services.ConsoleService.ClearLogs')
     logs.value = []
+    lastLogSignature = ''
   } catch (error) {
     console.error('清空日志失败:', error)
     alert('清空失败：' + (error as Error).message)
@@ -50,8 +68,18 @@ const clearLogs = async () => {
 
 const scrollToBottom = () => {
   if (logsContainer.value) {
-    logsContainer.value.scrollTop = logsContainer.value.scrollHeight
+    window.requestAnimationFrame(() => {
+      if (logsContainer.value) {
+        logsContainer.value.scrollTop = logsContainer.value.scrollHeight
+      }
+    })
   }
+}
+
+const getLogsSignature = (items: ConsoleLog[]) => {
+  const last = items[items.length - 1]
+  if (!last) return '0'
+  return `${items.length}|${last.timestamp}|${last.level}|${last.message.length}|${last.message.slice(-80)}`
 }
 
 const formatTimestamp = (timestamp: string) => {
@@ -70,6 +98,66 @@ const getLevelClass = (level: string) => {
   }
 }
 
+const formatLogLine = (log: ConsoleLog) => {
+  return `[${formatTimestamp(log.timestamp)}] [${log.level}] ${log.message}`.trimEnd()
+}
+
+const copyToClipboard = async (value: string) => {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value)
+    return
+  }
+
+  const textArea = document.createElement('textarea')
+  textArea.value = value
+  textArea.style.position = 'fixed'
+  textArea.style.opacity = '0'
+  document.body.appendChild(textArea)
+  textArea.focus()
+  textArea.select()
+  const success = document.execCommand('copy')
+  document.body.removeChild(textArea)
+  if (!success) {
+    throw new Error('copy failed')
+  }
+}
+
+const setCopyStatus = (message: string) => {
+  copyStatus.value = message
+  if (copyStatusTimer) {
+    window.clearTimeout(copyStatusTimer)
+  }
+  copyStatusTimer = window.setTimeout(() => {
+    copyStatus.value = ''
+    copyStatusTimer = null
+  }, 1800)
+}
+
+const copyLogs = async (items: ConsoleLog[], successMessage: string) => {
+  if (!items.length) return
+  try {
+    await copyToClipboard(items.map(formatLogLine).join('\n'))
+    setCopyStatus(successMessage)
+  } catch (error) {
+    console.error('复制控制台日志失败:', error)
+    setCopyStatus('复制失败')
+  }
+}
+
+const copyVisibleLogs = async () => {
+  await copyLogs(renderedLogs.value, '已复制可见日志')
+}
+
+const copyAllLogs = async () => {
+  try {
+    const result = (await Call.ByName('codeswitch/services.ConsoleService.GetRecentLogs', maxCopyLogs)) as ConsoleLog[]
+    await copyLogs(result, '已复制全部日志')
+  } catch (error) {
+    console.error('读取控制台日志失败:', error)
+    setCopyStatus('复制失败')
+  }
+}
+
 onMounted(async () => {
   loading.value = true
   await loadLogs()
@@ -83,6 +171,9 @@ onUnmounted(() => {
   if (refreshInterval) {
     clearInterval(refreshInterval)
   }
+  if (copyStatusTimer) {
+    clearTimeout(copyStatusTimer)
+  }
 })
 </script>
 
@@ -91,6 +182,9 @@ onUnmounted(() => {
     <div class="global-actions">
       <p class="global-eyebrow">控制台</p>
       <div class="actions-group">
+        <button class="secondary-btn" :disabled="renderedLogs.length === 0" @click="copyVisibleLogs">复制可见</button>
+        <button class="secondary-btn" :disabled="logs.length === 0" @click="copyAllLogs">复制全部</button>
+        <span v-if="copyStatus" class="copy-status">{{ copyStatus }}</span>
         <button class="secondary-btn" @click="clearLogs">清空日志</button>
         <label class="auto-scroll-toggle">
           <input type="checkbox" v-model="autoScroll" />
@@ -118,13 +212,13 @@ onUnmounted(() => {
       </div>
 
       <div v-else class="console-content" ref="logsContainer">
-        <div v-if="logs.length === 0" class="empty-state">
+        <div v-if="renderedLogs.length === 0" class="empty-state">
           <p>暂无日志</p>
         </div>
 
         <div
-          v-for="(log, index) in logs"
-          :key="index"
+          v-for="(log, index) in renderedLogs"
+          :key="`${log.timestamp}-${index}`"
           class="log-entry"
           :class="getLevelClass(log.level)"
         >
@@ -149,6 +243,12 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
+}
+
+.copy-status {
+  color: var(--mac-text-secondary);
+  font-size: 0.85rem;
 }
 
 .auto-scroll-toggle {
@@ -184,6 +284,8 @@ onUnmounted(() => {
   line-height: 1.6;
   background: #1e1e1e;
   color: #d4d4d4;
+  contain: content;
+  user-select: text;
 }
 
 html.dark .console-content {
@@ -196,6 +298,10 @@ html.dark .console-content {
   gap: 12px;
   padding: 4px 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  align-items: flex-start;
+  content-visibility: auto;
+  contain-intrinsic-size: 24px;
+  user-select: text;
 }
 
 .log-entry:last-child {
@@ -230,6 +336,7 @@ html.dark .console-content {
   flex: 1;
   white-space: pre-wrap;
   word-break: break-word;
+  user-select: text;
 }
 
 .loading-state,
