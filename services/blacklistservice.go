@@ -405,6 +405,11 @@ func (bs *BlacklistService) recordFailureFixedMode(platform string, providerName
 		log.Printf("⛔ Provider %s/%s 已拉黑 %d 分钟（固定模式，失败 %d 次），过期时间: %s",
 			platform, providerName, fallbackDuration, failureCount, blacklistedUntil.Format("15:04:05"))
 
+		// 固定拉黑模式也需要触发和等级拉黑一致的页面事件/webhook 通知。
+		if bs.notificationService != nil {
+			bs.notificationService.NotifyProviderBlacklisted(platform, providerName, 0, fallbackDuration)
+		}
+
 	} else {
 		// 更新失败计数
 		err = GlobalDBQueue.Exec(`
