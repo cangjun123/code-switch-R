@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/daodao97/xgo/xdb"
 )
 
 func newTestAppSettingsService(t *testing.T) *AppSettingsService {
@@ -170,6 +173,75 @@ func TestNotificationWebhookReportsNon2xx(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "webhook 状态码 502") {
 		t.Fatalf("错误信息 = %q, want status code context", err.Error())
+	}
+}
+
+func TestFixedModeBlacklistSendsWebhookNotification(t *testing.T) {
+	setupRelayTestEnv(t)
+	if GlobalDBQueue == nil {
+		if err := InitGlobalDBQueue(); err != nil {
+			t.Fatalf("初始化测试写入队列失败: %v", err)
+		}
+	}
+
+	db, err := xdb.DB("default")
+	if err != nil {
+		t.Fatalf("获取数据库连接失败: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM provider_blacklist`); err != nil {
+		t.Fatalf("清理黑名单表失败: %v", err)
+	}
+
+	received := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("webhook body 不是有效 JSON: %v", err)
+		}
+		received <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	appSettings := newTestAppSettingsService(t)
+	settings := appSettings.defaultSettings()
+	settings.NotificationWebhookURL = server.URL
+	if _, err := appSettings.SaveAppSettings(settings); err != nil {
+		t.Fatalf("保存测试配置失败: %v", err)
+	}
+
+	settingsService := NewSettingsService()
+	if err := settingsService.UpdateBlacklistEnabled(true); err != nil {
+		t.Fatalf("开启拉黑失败: %v", err)
+	}
+	if err := settingsService.SetLevelBlacklistEnabled(false); err != nil {
+		t.Fatalf("关闭等级拉黑失败: %v", err)
+	}
+	if err := settingsService.UpdateBlacklistSettings(2, 5); err != nil {
+		t.Fatalf("更新固定拉黑配置失败: %v", err)
+	}
+
+	notificationService := NewNotificationService(appSettings)
+	blacklistService := NewBlacklistService(settingsService, notificationService)
+
+	if err := blacklistService.RecordFailure("claude", "fixed-webhook-provider"); err != nil {
+		t.Fatalf("记录首次失败失败: %v", err)
+	}
+	if err := blacklistService.RecordFailure("claude", "fixed-webhook-provider"); err != nil {
+		t.Fatalf("触发固定拉黑失败: %v", err)
+	}
+
+	select {
+	case got := <-received:
+		if got["title"] != "Code Switch" {
+			t.Fatalf("title = %v, want Code Switch", got["title"])
+		}
+		if got["message"] != "fixed-webhook-provider 已拉黑 5 分钟" {
+			t.Fatalf("message = %v, want fixed-mode blacklist message", got["message"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("固定拉黑模式未发送 webhook 通知")
 	}
 }
 
