@@ -667,6 +667,9 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 		ClientIP: clientIPFromRequest(c.Request),
 	}
 	start := time.Now()
+	activeRequestID := defaultActiveRequestTracker.Start(requestLog, start)
+	requestLog.ActiveRequestID = activeRequestID
+	defer defaultActiveRequestTracker.Finish(activeRequestID)
 	defer prs.writeRelayRequestLog(requestLog, start)
 
 	if isClientAbortError(c.Request.Context(), c.Request.Context().Err()) {

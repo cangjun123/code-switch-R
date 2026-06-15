@@ -93,6 +93,7 @@ func (ls *LogService) ListRequestLogs(platform string, provider string, limit in
 	if limit > 1000 {
 		limit = 1000
 	}
+	activeLogs := defaultActiveRequestTracker.List(platform, provider, loc)
 	model := xdb.New("request_log")
 	options := []xdb.Option{
 		xdb.OrderByDesc("id"),
@@ -130,11 +131,21 @@ func (ls *LogService) ListRequestLogs(platform string, provider string, limit in
 			DurationSec:           record.GetFloat64("duration_sec"),
 			FirstTokenDurationSec: record.GetFloat64("first_token_duration_sec"),
 			ClientIP:              record.GetString("client_ip"),
+			Status:                requestLogStatusCompleted,
 		}
 		ls.decorateCost(&logEntry)
 		logs = append(logs, logEntry)
 	}
-	return logs, nil
+	if len(activeLogs) == 0 {
+		return logs, nil
+	}
+	merged := make([]ReqeustLog, 0, len(activeLogs)+len(logs))
+	merged = append(merged, activeLogs...)
+	merged = append(merged, logs...)
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
 }
 
 func (ls *LogService) ListProviders(platform string) ([]string, error) {

@@ -132,36 +132,39 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="item in pagedLogs" :key="item.id">
+          <tr v-for="item in pagedLogs" :key="item.id" :class="{ 'processing-row': isProcessingLog(item) }">
             <td>{{ formatTime(item.created_at) }}</td>
             <td>{{ item.platform || '—' }}</td>
             <td>{{ item.provider || '—' }}</td>
             <td>{{ item.model || '—' }}</td>
             <td class="client-ip-cell">{{ item.client_ip || '—' }}</td>
-            <td :class="['code', httpCodeClass(item.http_code)]">{{ item.http_code }}</td>
+            <td :class="['code', httpCodeClassForLog(item)]">
+              <span v-if="isProcessingLog(item)" class="processing-tag">{{ t('components.logs.status.processing') }}</span>
+              <span v-else>{{ item.http_code || '—' }}</span>
+            </td>
             <td><span :class="['stream-tag', item.is_stream ? 'on' : 'off']">{{ formatStream(item.is_stream) }}</span></td>
-            <td><span :class="['duration-tag', durationColor(item.first_token_duration_sec)]">{{ formatDuration(item.first_token_duration_sec) }}</span></td>
+            <td><span :class="['duration-tag', durationColorForLog(item, item.first_token_duration_sec)]">{{ formatFirstTokenDuration(item) }}</span></td>
             <td><span :class="['duration-tag', durationColor(item.duration_sec)]">{{ formatDuration(item.duration_sec) }}</span></td>
             <td class="token-cell">
               <div>
                 <span class="token-label">{{ t('components.logs.tokenLabels.input') }}</span>
-                <span class="token-value">{{ formatTokenNumber(item.input_tokens) }}</span>
+                <span class="token-value">{{ formatLogTokenNumber(item, item.input_tokens) }}</span>
               </div>
               <div>
                 <span class="token-label">{{ t('components.logs.tokenLabels.output') }}</span>
-                <span class="token-value">{{ formatTokenNumber(item.output_tokens) }}</span>
+                <span class="token-value">{{ formatLogTokenNumber(item, item.output_tokens) }}</span>
               </div>
               <div>
                 <span class="token-label">{{ t('components.logs.tokenLabels.reasoning') }}</span>
-                <span class="token-value">{{ formatTokenNumber(item.reasoning_tokens) }}</span>
+                <span class="token-value">{{ formatLogTokenNumber(item, item.reasoning_tokens) }}</span>
               </div>
               <div>
                 <span class="token-label">{{ t('components.logs.tokenLabels.cacheWrite') }}</span>
-                <span class="token-value">{{ formatTokenNumber(item.cache_create_tokens) }}</span>
+                <span class="token-value">{{ formatLogTokenNumber(item, item.cache_create_tokens) }}</span>
               </div>
               <div>
                 <span class="token-label">{{ t('components.logs.tokenLabels.cacheRead') }}</span>
-                <span class="token-value">{{ formatTokenNumber(item.cache_read_tokens) }}</span>
+                <span class="token-value">{{ formatLogTokenNumber(item, item.cache_read_tokens) }}</span>
               </div>
             </td>
           </tr>
@@ -715,6 +718,13 @@ const formatDuration = (value?: number) => {
   return `${value.toFixed(2)}s`
 }
 
+const isProcessingLog = (item: RequestLog) => item.status === 'processing'
+
+const formatFirstTokenDuration = (item: RequestLog) => {
+  if (isProcessingLog(item)) return '—'
+  return formatDuration(item.first_token_duration_sec)
+}
+
 const httpCodeClass = (code: number) => {
   if (code >= 500) return 'http-server-error'
   if (code >= 400) return 'http-client-error'
@@ -723,11 +733,21 @@ const httpCodeClass = (code: number) => {
   return 'http-info'
 }
 
+const httpCodeClassForLog = (item: RequestLog) => {
+  if (isProcessingLog(item)) return 'http-processing'
+  return httpCodeClass(item.http_code)
+}
+
 const durationColor = (value?: number) => {
   if (!value || Number.isNaN(value)) return 'neutral'
   if (value < 2) return 'fast'
   if (value < 5) return 'medium'
   return 'slow'
+}
+
+const durationColorForLog = (item: RequestLog, value?: number) => {
+  if (isProcessingLog(item)) return 'neutral'
+  return durationColor(value)
 }
 
 const formatNumber = (value?: number) => {
@@ -766,6 +786,11 @@ const formatTokenNumber = (value?: number) => {
   }
 
   return value.toLocaleString()
+}
+
+const formatLogTokenNumber = (item: RequestLog, value?: number) => {
+  if (isProcessingLog(item)) return '—'
+  return formatTokenNumber(value)
 }
 
 /**

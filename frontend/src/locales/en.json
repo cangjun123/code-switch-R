@@ -637,6 +637,9 @@
         "cacheRead": "Cache read",
         "cost": "Cost"
       },
+      "status": {
+        "processing": "Processing"
+      },
       "streamOn": "Streaming",
       "streamOff": "Single response",
       "back": "Back to home",

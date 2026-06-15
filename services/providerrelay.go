@@ -1055,8 +1055,11 @@ func (prs *ProviderRelayService) forwardRequest(
 		ClientIP: clientIPFromRequest(c.Request),
 	}
 	start := time.Now()
+	activeRequestID := defaultActiveRequestTracker.Start(requestLog, start)
+	requestLog.ActiveRequestID = activeRequestID
 	defer func() {
 		requestLog.DurationSec = time.Since(start).Seconds()
+		defer defaultActiveRequestTracker.Finish(activeRequestID)
 		if requestLog.SkipLog {
 			return
 		}
@@ -1632,6 +1635,8 @@ type ReqeustLog struct {
 	Ephemeral1hCost       float64 `json:"ephemeral_1h_cost"`
 	TotalCost             float64 `json:"total_cost"`
 	HasPricing            bool    `json:"has_pricing"`
+	Status                string  `json:"status,omitempty"`
+	ActiveRequestID       int64   `json:"-"`
 	SkipLog               bool    `json:"-"`
 }
 
@@ -1897,10 +1902,13 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 			ClientIP:     clientIPFromRequest(c.Request),
 		}
 		start := time.Now()
+		activeRequestID := defaultActiveRequestTracker.Start(requestLog, start)
+		requestLog.ActiveRequestID = activeRequestID
 
 		// 保存日志的 defer
 		defer func() {
 			requestLog.DurationSec = time.Since(start).Seconds()
+			defer defaultActiveRequestTracker.Finish(activeRequestID)
 			if GlobalDBQueueLogs == nil {
 				return
 			}
@@ -1965,6 +1973,7 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 					// 预填日志
 					requestLog.Provider = provider.Name
 					requestLog.Model = provider.Model
+					defaultActiveRequestTracker.Update(requestLog.ActiveRequestID, requestLog)
 
 					// 同 Provider 内重试循环
 					for retryCount := 0; retryCount < maxRetryPerProvider; retryCount++ {
@@ -2060,6 +2069,7 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 				// 预填日志，失败也能落库
 				requestLog.Provider = provider.Name
 				requestLog.Model = provider.Model
+				defaultActiveRequestTracker.Update(requestLog.ActiveRequestID, requestLog)
 
 				ok, errMsg, responseWritten := prs.forwardGeminiRequest(c, &provider, endpoint, bodyBytes, isStream, requestLog, start)
 				if ok {
@@ -2150,6 +2160,7 @@ func (prs *ProviderRelayService) forwardGeminiRequest(
 	} else {
 		requestLog.Model = provider.Model
 	}
+	defaultActiveRequestTracker.Update(requestLog.ActiveRequestID, requestLog)
 
 	// 创建 HTTP 请求
 	req, err := http.NewRequest("POST", targetURL, bytes.NewReader(bodyBytes))

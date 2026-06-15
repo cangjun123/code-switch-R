@@ -638,6 +638,9 @@
         "cacheRead": "缓存读取",
         "cost": "金额"
       },
+      "status": {
+        "processing": "处理中"
+      },
       "streamOn": "流式",
       "streamOff": "非流",
       "back": "返回主页",
