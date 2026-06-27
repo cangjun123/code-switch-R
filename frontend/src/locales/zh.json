@@ -93,7 +93,8 @@
       "failureThreshold": "自动拉黑阈值",
       "failureThresholdHint": "连续检测失败 N 次后触发拉黑",
       "pollInterval": "检测间隔",
-      "pollIntervalHint": "后台自动检测的时间间隔",
+      "pollIntervalHint": "后台自动检测的时间间隔（30~3600）",
+      "seconds": "秒",
       "operationalThreshold": "正常状态阈值",
       "operationalThresholdHint": "响应延迟小于此值判定为正常"
     },

@@ -93,7 +93,8 @@
       "failureThreshold": "Auto-blacklist threshold",
       "failureThresholdHint": "Trigger blacklist after N consecutive failures",
       "pollInterval": "Poll interval",
-      "pollIntervalHint": "Background check interval",
+      "pollIntervalHint": "Background check interval (30~3600)",
+      "seconds": "seconds",
       "operationalThreshold": "Operational threshold",
       "operationalThresholdHint": "Response latency below this is considered operational"
     },
