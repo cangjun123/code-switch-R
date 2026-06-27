@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, watch } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { fetchCurrentVersion } from '../services/version'
@@ -7,6 +7,18 @@ import { fetchCurrentVersion } from '../services/version'
 const router = useRouter()
 const route = useRoute()
 const { t } = useI18n()
+
+// 移动端抽屉状态：≤768px 时侧边栏变为抽屉
+const isMobile = ref(false)
+const isMobileOpen = ref(false)
+let mobileMedia: MediaQueryList | null = null
+const onMediaChange = (e: MediaQueryListEvent) => {
+  isMobile.value = e.matches
+  if (!e.matches) isMobileOpen.value = false // 切回桌面端时收起抽屉
+}
+const toggleMobile = () => {
+  isMobileOpen.value = !isMobileOpen.value
+}
 
 // 动态版本号（从后端获取）
 const appVersion = ref('...')
@@ -41,6 +53,15 @@ onMounted(() => {
   }
   // 标记当前页面为已访问
   markAsVisited(route.path)
+
+  // 注册移动端断点监听
+  mobileMedia = window.matchMedia('(max-width: 768px)')
+  isMobile.value = mobileMedia.matches
+  mobileMedia.addEventListener('change', onMediaChange)
+})
+
+onUnmounted(() => {
+  mobileMedia?.removeEventListener('change', onMediaChange)
 })
 
 // 监听路由变化，标记为已访问
@@ -87,11 +108,37 @@ const currentPath = computed(() => route.path)
 
 const navigate = (path: string) => {
   router.push(path)
+  // 移动端点击导航项后收起抽屉
+  if (isMobile.value) isMobileOpen.value = false
 }
 </script>
 
 <template>
-  <nav class="mac-sidebar" :class="{ collapsed: isCollapsed }">
+  <!-- 移动端遮罩 -->
+  <div
+    v-if="isMobile"
+    class="sidebar-backdrop"
+    :class="{ visible: isMobileOpen }"
+    @click="isMobileOpen = false"
+  ></div>
+  <!-- 移动端顶栏汉堡按钮 -->
+  <div v-if="isMobile" class="mobile-topbar">
+    <button class="hamburger-btn" @click="toggleMobile" aria-label="menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="3" y1="6" x2="21" y2="6"></line>
+        <line x1="3" y1="12" x2="21" y2="12"></line>
+        <line x1="3" y1="18" x2="21" y2="18"></line>
+      </svg>
+    </button>
+  </div>
+  <nav
+    class="mac-sidebar"
+    :class="{
+      collapsed: isCollapsed && !isMobile,
+      mobile: isMobile,
+      'mobile-open': isMobile && isMobileOpen,
+    }"
+  >
     <div class="sidebar-header">
       <span class="sidebar-title" v-if="!isCollapsed">Code Switch R</span>
       <button class="collapse-btn" @click="toggleCollapse" :title="isCollapsed ? 'Expand' : 'Collapse'">
@@ -376,5 +423,84 @@ html.dark .nav-item:hover {
   font-size: 0.75rem;
   color: var(--mac-text-secondary);
   opacity: 0.6;
+}
+
+/* ============================================================ */
+/* 移动端抽屉模式 (≤768px) —— 桌面端(>768px)完全不触发           */
+/* ============================================================ */
+
+.mobile-topbar {
+  display: none;
+}
+
+.hamburger-btn {
+  width: 40px;
+  height: 40px;
+  border: none;
+  background: transparent;
+  color: var(--mac-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.hamburger-btn svg {
+  width: 22px;
+  height: 22px;
+}
+
+.sidebar-backdrop {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 50;
+    height: 48px;
+    padding-left: 8px;
+  }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 55;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+
+  .sidebar-backdrop.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* 侧边栏变抽屉：默认隐藏，mobile-open 时滑出 */
+  .mac-sidebar.mobile {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    z-index: 60;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: 2px 0 12px rgba(0, 0, 0, 0.15);
+  }
+
+  .mac-sidebar.mobile.mobile-open {
+    transform: translateX(0);
+  }
+
+  /* 移动端无 macOS 红绿灯，header padding 恢复正常 */
+  .mac-sidebar.mobile .sidebar-header {
+    padding: 16px;
+  }
 }
 </style>

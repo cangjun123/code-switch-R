@@ -490,4 +490,16 @@ const maskApiKey = (key: string): string => {
 .modal-leave-to .modal-container {
   transform: scale(0.95);
 }
+
+/* 移动端 (≤768px) */
+@media (max-width: 768px) {
+  .deep-link-dialog {
+    max-width: 100% !important;
+    margin: 8px !important;
+  }
+
+  .preview-field {
+    grid-template-columns: 1fr;
+  }
+}
 </style>

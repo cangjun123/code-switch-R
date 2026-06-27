@@ -92,4 +92,11 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   background: var(--mac-bg);
 }
+
+/* 移动端：给顶部汉堡按钮顶栏留出空间（桌面端不触发） */
+@media (max-width: 768px) {
+  .main-content {
+    padding-top: 48px;
+  }
+}
 </style>

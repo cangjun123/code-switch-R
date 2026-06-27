@@ -950,4 +950,25 @@ onMounted(async () => {
     text-align: left;
   }
 }
+
+/* 移动端 (≤768px)：固定宽度输入/选择框全宽，表单单列 */
+@media (max-width: 768px) {
+  .notification-field {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  :deep(.mac-input),
+  :deep(.mac-select),
+  input[type="text"],
+  input[type="url"],
+  input[type="number"],
+  textarea,
+  select {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+}
 </style>
