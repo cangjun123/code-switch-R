@@ -1917,7 +1917,7 @@ button svg {
     max-width: 100% !important;
   }
 
-  /* 供应商卡片（Main）：按钮组移动端换行到卡片内下一行，不溢出 */
+  /* 供应商卡片（Main）：卡片换行，按钮组独占一行、单行紧凑排列不换行 */
   .automation-card {
     flex-wrap: wrap !important;
     gap: 12px !important;
@@ -1930,12 +1930,13 @@ button svg {
   }
 
   .card-actions {
-    flex-wrap: wrap !important;
+    flex-wrap: nowrap !important;
     justify-content: flex-start !important;
-    width: 100% !important;
+    gap: 6px !important;
+    width: auto !important;
   }
 
-  /* Availability provider 卡片同理 */
+  /* Availability provider 卡片：允许整体换行 */
   .provider-card {
     flex-wrap: wrap !important;
     gap: 8px !important;

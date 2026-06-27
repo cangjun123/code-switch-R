@@ -617,12 +617,23 @@ onUnmounted(() => {
 
 /* 移动端适配 (≤768px) */
 @media (max-width: 768px) {
-  /* 卡片外层行 + 右侧按钮组都允许换行，按钮不再溢出卡片 */
-  .provider-card :deep(.flex.items-center.justify-between),
-  .provider-card :deep(.flex.items-center.gap-4) {
+  /* 卡片外层行允许换行（左侧内容与右侧按钮组之间） */
+  .provider-card :deep(.flex.items-center.justify-between) {
     flex-wrap: wrap;
     gap: 8px;
     justify-content: flex-start;
+  }
+
+  /* 右侧按钮组单行紧凑排列，不换行 */
+  .provider-card :deep(.flex.items-center.gap-4) {
+    flex-wrap: nowrap;
+    gap: 8px;
+    justify-content: flex-start;
+  }
+
+  /* 按钮文字不再撑破：允许按钮内文字正常换行收窄 */
+  .provider-card :deep(button) {
+    white-space: nowrap;
   }
 }
 </style>
