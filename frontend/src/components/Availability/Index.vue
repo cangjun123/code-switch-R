@@ -617,9 +617,12 @@ onUnmounted(() => {
 
 /* 移动端适配 (≤768px) */
 @media (max-width: 768px) {
-  .provider-card :deep(.flex.items-center.justify-between) {
+  /* 卡片外层行 + 右侧按钮组都允许换行，按钮不再溢出卡片 */
+  .provider-card :deep(.flex.items-center.justify-between),
+  .provider-card :deep(.flex.items-center.gap-4) {
     flex-wrap: wrap;
     gap: 8px;
+    justify-content: flex-start;
   }
 }
 </style>

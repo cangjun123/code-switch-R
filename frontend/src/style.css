@@ -1916,4 +1916,28 @@ button svg {
   select {
     max-width: 100% !important;
   }
+
+  /* 供应商卡片（Main）：按钮组移动端换行到卡片内下一行，不溢出 */
+  .automation-card {
+    flex-wrap: wrap !important;
+    gap: 12px !important;
+    padding: 14px !important;
+  }
+
+  .card-leading {
+    flex: 1 1 100% !important;
+    min-width: 0 !important;
+  }
+
+  .card-actions {
+    flex-wrap: wrap !important;
+    justify-content: flex-start !important;
+    width: 100% !important;
+  }
+
+  /* Availability provider 卡片同理 */
+  .provider-card {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+  }
 }
