@@ -437,4 +437,14 @@ html.dark code.detail-value {
 .refresh-btn svg.spin {
   animation: spin 1s linear infinite;
 }
+
+/* 移动端 (≤768px)：平台 tab 文字不超出按钮边界 */
+@media (max-width: 768px) {
+  .platform-tab {
+    padding: 8px 6px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+}
 </style>
