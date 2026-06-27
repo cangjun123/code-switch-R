@@ -91,6 +91,19 @@ const platforms = computed(() =>
   Object.keys(timelines.value).filter((platform) => (timelines.value[platform]?.length || 0) > 0)
 )
 
+// 平台分组折叠状态：记录被折叠的平台
+const collapsedPlatforms = ref<Set<string>>(new Set())
+const togglePlatform = (platform: string) => {
+  const next = new Set(collapsedPlatforms.value)
+  if (next.has(platform)) {
+    next.delete(platform)
+  } else {
+    next.add(platform)
+  }
+  collapsedPlatforms.value = next
+}
+const isPlatformCollapsed = (platform: string) => collapsedPlatforms.value.has(platform)
+
 // 加载数据
 async function loadData() {
   try {
@@ -383,10 +396,20 @@ onUnmounted(() => {
       <!-- 动态遍历所有平台 -->
       <div v-for="platform in platforms" :key="platform">
         <div v-if="timelines[platform]?.length">
-          <h2 class="text-lg font-semibold text-[var(--mac-text)] mb-3 capitalize">
+          <h2
+            class="flex items-center gap-2 text-lg font-semibold text-[var(--mac-text)] mb-3 capitalize cursor-pointer select-none hover:opacity-70 transition-opacity"
+            @click="togglePlatform(platform)"
+          >
+            <svg
+              class="w-4 h-4 transition-transform duration-200"
+              :class="{ 'rotate-90': !isPlatformCollapsed(platform) }"
+              viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            >
+              <polyline points="9 18 15 12 9 6"></polyline>
+            </svg>
             {{ platform }} {{ t('availability.providers') }}
           </h2>
-          <div class="space-y-3">
+          <div v-show="!isPlatformCollapsed(platform)" class="space-y-3">
             <div
               v-for="timeline in timelines[platform]"
               :key="timeline.providerId"
