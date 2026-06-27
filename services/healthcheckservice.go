@@ -103,6 +103,7 @@ type HealthCheckService struct {
 	running      bool
 	stopChan     chan struct{}
 	pollInterval time.Duration
+	lastPollAt   time.Time // 最近一次完成全部平台巡检的时间，用于计算下次探测剩余
 
 	// HTTP 客户端（带连接池）
 	client *http.Client
@@ -1048,6 +1049,26 @@ func (hcs *HealthCheckService) GetPollIntervalSeconds() int {
 	return DefaultPollIntervalSeconds
 }
 
+// GetNextPollIn 返回距离下一次后台巡检的剩余秒数（前端倒计时用，与后端真实节奏对齐）。
+// 若轮询未运行或尚未完成首次巡检，返回当前间隔（表示刚开始计时）。
+func (hcs *HealthCheckService) GetNextPollIn() int {
+	interval := hcs.GetPollIntervalSeconds()
+	hcs.mu.RLock()
+	last := hcs.lastPollAt
+	running := hcs.running
+	hcs.mu.RUnlock()
+
+	if !running || last.IsZero() {
+		return interval
+	}
+	elapsed := int(time.Since(last).Seconds())
+	remaining := interval - elapsed
+	if remaining < 0 {
+		remaining = 0
+	}
+	return remaining
+}
+
 // StopBackgroundPolling 停止后台巡检
 func (hcs *HealthCheckService) StopBackgroundPolling() {
 	hcs.mu.Lock()
@@ -1086,6 +1107,10 @@ func (hcs *HealthCheckService) runAllPlatformChecks() {
 	for _, platform := range providerServicePlatforms {
 		hcs.checkAllProviders(platform)
 	}
+	// 记录本次巡检完成时间，用于计算下次探测剩余
+	hcs.mu.Lock()
+	hcs.lastPollAt = time.Now()
+	hcs.mu.Unlock()
 }
 
 // SetAvailabilityMonitorEnabled 启用/禁用指定 Provider 的可用性监控
