@@ -1118,6 +1118,11 @@ html.dark .form-field select option {
   margin: 0;
 }
 
+/* tab 文字：桌面显示全称，移动端显示简称 */
+.tab-label-short {
+  display: none;
+}
+
 .tab-pill::before {
   content: '';
   position: absolute;
@@ -1902,6 +1907,19 @@ button svg {
     max-width: 100% !important;
     flex-shrink: 1;
     -webkit-overflow-scrolling: touch;
+  }
+
+  /* tab 移动端显示简称，节省宽度 */
+  .tab-pill .tab-label-full {
+    display: none;
+  }
+
+  .tab-pill .tab-label-short {
+    display: inline;
+  }
+
+  .tab-pill {
+    padding: 10px 14px;
   }
 
   /* 通用输入/选择/textarea 移动端全宽（表单友好） */
