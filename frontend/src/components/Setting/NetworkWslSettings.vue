@@ -599,4 +599,19 @@ onMounted(async () => {
   background: #4ade80;
   box-shadow: 0 0 6px rgba(74, 222, 128, 0.6);
 }
+
+/* 移动端 (≤768px)：固定宽度元素全宽，避免溢出 */
+@media (max-width: 768px) {
+  .mac-select,
+  .mac-input {
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .mac-button {
+    min-width: 0;
+  }
+}
 </style>

@@ -303,7 +303,7 @@ onUnmounted(() => {
 <template>
   <div class="availability-page p-6">
     <!-- 页面标题 -->
-    <div class="flex items-center justify-between mb-6">
+    <div class="flex items-center justify-between mb-6 flex-wrap gap-3">
       <div>
         <h1 class="text-2xl font-semibold text-[var(--mac-text)]">
           {{ t('availability.title') }}
@@ -325,7 +325,7 @@ onUnmounted(() => {
     </div>
 
     <!-- 状态概览 -->
-    <div class="grid grid-cols-4 gap-4 mb-6">
+    <div class="grid grid-cols-4 stat-grid-4 gap-4 mb-6">
       <div class="stat-card bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-4">
         <div class="text-3xl font-bold text-green-600 dark:text-green-400">{{ statusStats.operational }}</div>
         <div class="text-sm text-green-700 dark:text-green-300">{{ t('availability.stats.operational') }}</div>
@@ -613,5 +613,13 @@ onUnmounted(() => {
 
 .provider-card:hover {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* 移动端适配 (≤768px) */
+@media (max-width: 768px) {
+  .provider-card :deep(.flex.items-center.justify-between) {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
 }
 </style>
