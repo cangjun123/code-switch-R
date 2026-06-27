@@ -187,10 +187,12 @@ async function syncNextRefreshFromBackend() {
     const remaining = await getNextPollIn()
     if (typeof remaining === 'number' && remaining >= 0) {
       nextRefreshIn.value = remaining
+      return true
     }
-  } catch {
-    // 取不到则保持当前值
+  } catch (e) {
+    console.warn('[Availability] GetNextPollIn 调用失败，倒计时回退到固定间隔。可能是后端版本旧或 RPC 异常:', e)
   }
+  return false
 }
 
 // 启动刷新定时器（与后端真实节奏对齐：倒计时归零时刷新并重新校准）
