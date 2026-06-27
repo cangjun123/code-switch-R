@@ -433,3 +433,45 @@ func TestAdminServerRejectsCrossSiteAdminMutation(t *testing.T) {
 		t.Fatalf("expected cross-site mutation to return 403, got %d: %s", crossSite.Code, crossSite.Body.String())
 	}
 }
+
+// TestAdminServerAllowsTrustedNetHTTP 验证：把 Tailscale 网段加入可信代理后，
+// 该网段内来源的 HTTP 直连请求被放行（视为本地），不再因 https_required 被拦。
+// /api/admin/status 不需要登录，放行后返回 200。
+func TestAdminServerAllowsTrustedNetHTTP(t *testing.T) {
+	t.Setenv(adminTrustedProxiesEnv, "100.64.0.0/10")
+	rt := newTestWebRuntime(t)
+	server := newAdminServer(rt)
+
+	// Tailscale 网段内（云机 100.76.4.49）的 HTTP 直连应放行
+	status := performRequestWithOptions(t, server.Handler, http.MethodGet, "/api/admin/status", nil, requestOptions{
+		RemoteAddr: "100.76.4.49:54321",
+		Host:       "100.76.4.49:8080",
+	})
+	if status.Code != http.StatusOK {
+		t.Fatalf("expected trusted-net HTTP request to return 200, got %d: %s", status.Code, status.Body.String())
+	}
+
+	// 网段内其它 Tailscale 设备也应放行
+	other := performRequestWithOptions(t, server.Handler, http.MethodGet, "/api/admin/status", nil, requestOptions{
+		RemoteAddr: "100.76.235.112:54321",
+		Host:       "100.76.4.49:8080",
+	})
+	if other.Code != http.StatusOK {
+		t.Fatalf("expected trusted-net device request to return 200, got %d: %s", other.Code, other.Body.String())
+	}
+}
+
+// TestAdminServerStillRejectsPublicHTTPWithTrustedNet 验证：加入可信网段后，
+// 网段外的真实公网 IP 仍因 https_required 被拒，安全边界不变。
+func TestAdminServerStillRejectsPublicHTTPWithTrustedNet(t *testing.T) {
+	t.Setenv(adminTrustedProxiesEnv, "100.64.0.0/10")
+	rt := newTestWebRuntime(t)
+	server := newAdminServer(rt)
+
+	status := performRequestWithOptions(t, server.Handler, http.MethodGet, "/api/admin/status", nil, requestOptions{
+		RemoteAddr: "203.0.113.25:54321", // 非 Tailscale 网段的公网 IP
+	})
+	if status.Code != http.StatusForbidden {
+		t.Fatalf("expected public HTTP request to still return 403, got %d: %s", status.Code, status.Body.String())
+	}
+}

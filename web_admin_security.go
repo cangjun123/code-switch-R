@@ -201,7 +201,21 @@ func (s *adminSecurity) isSecureRequest(r *http.Request) bool {
 
 func (s *adminSecurity) isLocalClient(r *http.Request) bool {
 	clientIP := s.actualClientIP(r)
-	return clientIP.IsValid() && clientIP.IsLoopback()
+	if !clientIP.IsValid() {
+		return false
+	}
+	if clientIP.IsLoopback() {
+		return true
+	}
+	// 可信内网网段（如 Tailscale 100.64.0.0/10）视为本地来源，允许 HTTP 直连。
+	// Tailscale 流量本身已端到端加密，内网 HTTP 等同受保护的本机访问；
+	// 公网 IP 不在网段内，仍会被 https_required 拦截，安全边界不变。
+	for _, prefix := range s.trustedProxies {
+		if prefix.Contains(clientIP) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *adminSecurity) effectiveOrigin(r *http.Request) string {
