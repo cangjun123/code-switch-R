@@ -362,6 +362,7 @@ onUnmounted(() => {
         :max="MAX_POLL_INTERVAL"
         class="w-28 rounded-lg border border-[var(--mac-border)] bg-[var(--mac-surface-strong)] px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--mac-accent)]"
       />
+      <span class="text-sm text-[var(--mac-text-secondary)]">{{ t('availability.settings.seconds') }}</span>
       <span class="text-xs text-[var(--mac-text-secondary)]">{{ t('availability.settings.pollIntervalHint') }}</span>
       <button
         @click="savePollInterval"
