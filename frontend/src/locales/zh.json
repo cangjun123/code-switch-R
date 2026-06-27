@@ -523,9 +523,12 @@
         "confirmDeleteTitle": "删除供应商",
         "confirmDeleteMessage": "确认删除 {name} 吗？操作不可撤销",
         "errors": {
-          "invalidUrl": "请输入合法的 API 地址"
+          "invalidUrl": "请输入合法的 API 地址",
+          "nameEmpty": "请输入供应商名称",
+          "nameDuplicate": "该名称已被其它供应商占用"
         },
-        "saveFailed": "保存供应商配置失败"
+        "saveFailed": "保存供应商配置失败",
+        "renameHint": "修改名称会重置该供应商的黑名单状态"
       },
       "levelDesc": {
         "highest": "最高优先级",

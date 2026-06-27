@@ -567,6 +567,21 @@ func (bs *BlacklistService) ManualResetLevel(platform string, providerName strin
 	return nil
 }
 
+// ResetProviderBlacklist 删除指定 platform/providerName 的全部黑名单状态。
+// 用于供应商改名后清理旧 name 的黑名单记录：黑名单以 name 为关联键，
+// 改名后旧 name 的拉黑状态既无意义，也可能在将来有同名供应商时误伤，因此清空。
+// 经写队列执行，与其它黑名单写操作一致，避免 SQLITE_BUSY。
+func (bs *BlacklistService) ResetProviderBlacklist(platform string, providerName string) error {
+	if err := GlobalDBQueue.Exec(`
+		DELETE FROM provider_blacklist
+		WHERE platform = ? AND provider_name = ?
+	`, platform, providerName); err != nil {
+		return fmt.Errorf("清理旧 name 黑名单状态失败: %w", err)
+	}
+	log.Printf("🧹 已清理旧 name 的黑名单状态: %s/%s", platform, providerName)
+	return nil
+}
+
 // AutoRecoverExpired 自动恢复过期的黑名单（由定时器调用）
 // 使用事务批量处理，避免多次单独写入导致的并发锁冲突
 func (bs *BlacklistService) AutoRecoverExpired() error {

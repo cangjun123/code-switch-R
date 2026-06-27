@@ -144,11 +144,18 @@ type providerEnvelope struct {
 }
 
 type ProviderService struct {
-	mu sync.Mutex
+	mu               sync.Mutex
+	blacklistService *BlacklistService // 可选：改名时用于清理旧 name 的黑名单状态
 }
 
 func NewProviderService() *ProviderService {
 	return &ProviderService{}
+}
+
+// SetBlacklistService 注入黑名单服务。可选依赖：为 nil 时改名仍允许，
+// 只是不清理旧 name 的黑名单状态（便于测试时独立构造 ProviderService）。
+func (ps *ProviderService) SetBlacklistService(bs *BlacklistService) {
+	ps.blacklistService = bs
 }
 
 func (ps *ProviderService) Start() error { return nil }
@@ -242,14 +249,40 @@ func (ps *ProviderService) saveProvidersLocked(kind string, providers []Provider
 		nameByID[p.ID] = p.Name
 	}
 
+	// 统计本次提交中各 name（trim 后）出现次数，用于改名时的重名校验
+	nameCount := make(map[string]int, len(providers))
+	for i := range providers {
+		nameCount[strings.TrimSpace(providers[i].Name)]++
+	}
+
+	// 待重置黑名单的 name 集合（同 platform 内 name 唯一）。
+	// 改名：清“旧 name”（已弃用）+ 清“新 name”（可能是历史同名供应商的黑名单残留）。
+	// 新建：清“新 name”（同上）。
+	// 黑名单以 name 为键，残留行会让新/改名供应商继承历史拉黑状态（甚至被立即拉黑），必须清除。
+	platform := RelayPlatformForKind(kind)
+	blacklistResets := make(map[string]struct{})
+
 	// 验证每个 provider 的配置，并清除旧字段
 	validationErrors := make([]string, 0)
 	for i := range providers {
 		p := &providers[i]
+		newName := strings.TrimSpace(p.Name)
 
-		// 规则：name 不可修改（黑名单/统计以 name 为 key，改名会导致数据丢失）
-		if oldName, ok := nameByID[p.ID]; ok && oldName != p.Name {
-			return fmt.Errorf("provider id %d 的 name 不可修改（会导致黑名单和统计数据丢失）", p.ID)
+		if oldName, ok := nameByID[p.ID]; ok {
+			// 已有 provider：仅在 name 变化时处理
+			if oldName != newName {
+				if newName == "" {
+					return fmt.Errorf("provider id %d 的 name 不能为空", p.ID)
+				}
+				if nameCount[newName] > 1 {
+					return fmt.Errorf("name %q 已被其它供应商占用，不能改名为此名称", newName)
+				}
+				blacklistResets[oldName] = struct{}{} // 清旧 name
+				blacklistResets[newName] = struct{}{} // 清新 name（历史同名残留）
+			}
+		} else if newName != "" {
+			// 新建 provider：清新 name，避免继承历史同名供应商的黑名单残留
+			blacklistResets[newName] = struct{}{}
 		}
 
 		// 验证模型配置
@@ -277,7 +310,21 @@ func (ps *ProviderService) saveProvidersLocked(kind string, providers []Provider
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+
+	// 清理相关 name 的黑名单状态：改名清“旧+新 name”，新建清“新 name”。
+	// request_log / health_check_history 按约定保留（以旧 name 孤儿留存，按保留期过期）。
+	if ps.blacklistService != nil {
+		for name := range blacklistResets {
+			if err := ps.blacklistService.ResetProviderBlacklist(platform, name); err != nil {
+				log.Printf("[ProviderService] 清理黑名单状态失败 (%s/%s): %v", platform, name, err)
+			}
+		}
+	}
+
+	return nil
 }
 
 func (ps *ProviderService) LoadProviders(kind string) ([]Provider, error) {

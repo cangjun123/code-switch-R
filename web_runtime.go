@@ -89,6 +89,7 @@ func newAppRuntime() (*appRuntime, error) {
 	notificationService := services.NewNotificationService(appSettings)
 	notificationService.SetEventEmitter(eventHub)
 	blacklistService := services.NewBlacklistService(settingsService, notificationService)
+	providerService.SetBlacklistService(blacklistService)
 	geminiService := services.NewGeminiService(relayAddr)
 	providerRelay := services.NewProviderRelayService(providerService, geminiService, codexRelayKeys, blacklistService, notificationService, appSettings, relayAddr)
 	claudeSettings := services.NewClaudeSettingsService(providerRelay.Addr(), codexRelayKeys)

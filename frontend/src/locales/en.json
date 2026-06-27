@@ -522,9 +522,12 @@
         "confirmDeleteTitle": "Remove vendor",
         "confirmDeleteMessage": "Are you sure you want to remove {name}? This action cannot be undone.",
         "errors": {
-          "invalidUrl": "Please enter a valid API URL"
+          "invalidUrl": "Please enter a valid API URL",
+          "nameEmpty": "Please enter a provider name",
+          "nameDuplicate": "This name is already used by another provider"
         },
-        "saveFailed": "Failed to save provider configuration"
+        "saveFailed": "Failed to save provider configuration",
+        "renameHint": "Renaming resets this provider's blacklist state"
       },
       "levelDesc": {
         "highest": "Highest Priority",

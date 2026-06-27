@@ -531,14 +531,22 @@
     >
       <form class="vendor-form" @submit.prevent="submitModal">
                 <label class="form-field">
-                  <span>{{ t('components.main.form.labels.name') }}</span>
+                  <span class="label-row">
+                    {{ t('components.main.form.labels.name') }}
+                    <span v-if="modalState.errors.name" class="field-error">
+                      {{ modalState.errors.name }}
+                    </span>
+                  </span>
                   <BaseInput
                     v-model="modalState.form.name"
                     type="text"
                     :placeholder="t('components.main.form.placeholders.name')"
+                    :disabled="!!modalState.editingId && modalState.tabId === 'gemini'"
                     required
-                    :disabled="Boolean(modalState.editingId)"
                   />
+                  <span v-if="modalState.editingId && modalState.tabId !== 'gemini'" class="field-hint">
+                    {{ t('components.main.form.renameHint') }}
+                  </span>
                 </label>
 
                 <label class="form-field">
@@ -2693,6 +2701,7 @@ const modalState = reactive({
   form: defaultFormValues(),
   errors: {
     apiUrl: '',
+    name: '',
   },
 })
 
@@ -2734,6 +2743,7 @@ const openCreateModal = () => {
   customAuthHeader.value = ''
   connectivityTestResult.value = null
   modalState.errors.apiUrl = ''
+  modalState.errors.name = ''
   modalState.open = true
 }
 
@@ -2794,6 +2804,7 @@ const openEditModal = (card: AutomationCard) => {
   }
   connectivityTestResult.value = null
   modalState.errors.apiUrl = ''
+  modalState.errors.name = ''
   modalState.open = true
 }
 
@@ -2843,11 +2854,26 @@ const submitModal = async (): Promise<boolean> => {
     return false
   }
 
+  // 名称校验：非空；编辑模式下改名时不得与同 tab 其它供应商重名
+  modalState.errors.name = ''
+  if (!name) {
+    modalState.errors.name = t('components.main.form.errors.nameEmpty')
+    return false
+  }
+  if (editingCard.value && name !== editingCard.value.name) {
+    const duplicate = list.some(c => c.id !== editingCard.value!.id && c.name === name)
+    if (duplicate) {
+      modalState.errors.name = t('components.main.form.errors.nameDuplicate')
+      return false
+    }
+  }
+
   if (editingCard.value) {
     // 仅当 level 变化时才重新排序，避免破坏同级拖拽顺序
     const prevLevel = normalizeLevel(editingCard.value.level)
     const nextLevel = normalizeLevel(modalState.form.level)
     Object.assign(editingCard.value, {
+      name,
       apiUrl: apiUrl || editingCard.value.apiUrl,
       apiKey,
       officialSite,
