@@ -367,7 +367,7 @@ onUnmounted(() => {
       <button
         @click="savePollInterval"
         :disabled="savingInterval || pollIntervalInput < MIN_POLL_INTERVAL || pollIntervalInput > MAX_POLL_INTERVAL"
-        class="ml-auto px-4 py-1.5 text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        class="ml-auto px-4 py-1.5 text-sm font-medium bg-black hover:bg-gray-800 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
         {{ savingInterval ? t('common.saving') : t('common.save') }}
       </button>
@@ -463,7 +463,7 @@ onUnmounted(() => {
                   <button
                     v-else
                     @click="editConfig(platform, timeline)"
-                    class="bg-gray-800 hover:bg-gray-700 dark:bg-gray-700 dark:hover:bg-gray-600 border border-gray-600 dark:border-gray-500 text-white font-medium py-1.5 px-4 rounded transition-colors duration-200 flex items-center gap-2 text-sm"
+                    class="bg-black hover:bg-gray-800 dark:bg-black dark:hover:bg-gray-900 border border-gray-700 text-white font-medium py-1.5 px-4 rounded transition-colors duration-200 flex items-center gap-2 text-sm"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
@@ -589,7 +589,7 @@ onUnmounted(() => {
             {{ t('common.cancel') }}
           </button>
           <button
-            class="px-4 py-2 rounded-lg bg-[var(--mac-accent)] text-white hover:opacity-90 disabled:opacity-50"
+            class="px-4 py-2 rounded-lg bg-black text-white hover:bg-gray-800 disabled:opacity-50"
             :disabled="savingConfig"
             @click="saveConfig"
           >
