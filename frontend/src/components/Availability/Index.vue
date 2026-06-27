@@ -442,7 +442,7 @@ onUnmounted(() => {
                   <button
                     v-if="timeline.availabilityMonitorEnabled"
                     @click="checkSingle(platform, timeline.providerId)"
-                    class="px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors flex items-center gap-1 hover:bg-gray-100 dark:hover:bg-white/5 rounded-md"
+                    class="px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-200 hover:text-gray-900 dark:hover:text-white transition-colors flex items-center gap-1 hover:bg-gray-100 dark:hover:bg-white/5 rounded-md"
                   >
                     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -463,7 +463,7 @@ onUnmounted(() => {
                   <button
                     v-else
                     @click="editConfig(platform, timeline)"
-                    class="bg-gray-800 hover:bg-gray-700 dark:bg-gray-700 dark:hover:bg-gray-600 border border-gray-600 dark:border-gray-500 text-gray-300 hover:text-white font-medium py-1.5 px-4 rounded transition-colors duration-200 flex items-center gap-2 text-sm"
+                    class="bg-gray-800 hover:bg-gray-700 dark:bg-gray-700 dark:hover:bg-gray-600 border border-gray-600 dark:border-gray-500 text-white font-medium py-1.5 px-4 rounded transition-colors duration-200 flex items-center gap-2 text-sm"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
