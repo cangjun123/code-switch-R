@@ -80,6 +80,7 @@
     "providers": "Providers",
     "lastUpdate": "Last update",
     "nextRefresh": "Next refresh",
+    "autoMonitorOff": "Auto-check is off (enable it in Settings to run automatic polling)",
     "notMonitored": "Not monitored",
     "noProviders": "No providers yet. Please add provider configuration first.",
     "stats": {
