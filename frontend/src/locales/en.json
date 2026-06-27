@@ -138,7 +138,7 @@
   "auth": {
     "eyebrow": "Admin Access Control",
     "title": "Authenticate before entering",
-    "lead": "The 8080 admin UI now requires a username and password, and the Codex relay on 18100 only accepts managed keys created here.",
+    "lead": "The 8080 admin UI now requires a username and password, and the Codex relay only accepts managed keys created here.",
     "noteTitle": "Protected scope",
     "noteBody": "Before login, only initialization and login endpoints stay open. RPC traffic and event streams are blocked.",
     "statusChecking": "Checking admin session...",
@@ -183,7 +183,7 @@
       "success": "Signed in successfully"
     },
     "security": {
-      "description": "Manage the 8080 admin account and the Codex relay keys for 18100. Only keys created here can access the Codex API.",
+      "description": "Manage the 8080 admin account and the Codex relay keys. Only keys created here can access the Codex API.",
       "adminCardTitle": "Admin account",
       "adminCardDescription": "Current signed-in account: {username}. Leave the new username or password blank to keep the current value.",
       "update": "Update credentials",
@@ -195,7 +195,7 @@
       "logoutFailed": "Failed to sign out",
       "keepHint": "Leave blank to keep the current value",
       "keysCardTitle": "Codex API Keys",
-      "keysCardDescription": "The Codex relay on 18100 validates these keys and no longer accepts arbitrary secrets.",
+      "keysCardDescription": "Manage access keys used by the Codex API.",
       "createLabel": "New key name",
       "createPlaceholder": "For example: Local dev / CI / automation",
       "create": "Generate key",
@@ -212,8 +212,8 @@
       "loadKeysFailed": "Failed to load Codex key list",
       "loadingKeys": "Loading Codex keys...",
       "empty": "No Codex keys yet. Generate one to start using the relay.",
-      "oneTimeTitle": "The full key is shown only once",
-      "oneTimeDescription": "Copy and store it now. The list only shows a masked value afterwards."
+      "oneTimeTitle": "New full key",
+      "oneTimeDescription": "Copy it for Codex API access. The list shows a masked value."
     }
   },
   "prompts": {
@@ -382,15 +382,13 @@
         "github": "Open project GitHub",
         "theme": "Toggle theme",
         "settings": "Open settings",
-        "mcp": "Open MCP panel",
-        "skill": "Open skill catalog",
         "gemini": "Open Gemini CLI manager",
         "import": "Import cc-switch config",
         "duplicate": "Duplicate provider"
       },
       "importConfig": {
-        "tooltip": "Import {providers} providers · {servers} MCP servers",
-        "success": "Imported {providers} providers and {servers} MCP servers",
+        "tooltip": "Import {providers} providers",
+        "success": "Imported {providers} providers",
         "empty": "Everything from cc-switch is already in sync",
         "error": "Failed to import cc-switch config"
       },
@@ -469,8 +467,8 @@
           "apiEndpoint": "Override the platform default endpoint. Leave blank for default (Claude: /v1/messages for Anthropic, /v1/responses for OpenAI Compatible; Codex: /responses). For GLM models use /v1/chat/completions",
           "upstreamProtocol": "Specify the upstream API protocol. Auto detects from the endpoint; OpenAI Compatible converts Claude Messages requests to OpenAI Responses or Chat Completions",
           "openAIEndpointMode": "Used only for Codex/OpenAI-compatible provider selection. Auto infers from API Endpoint; with no fixed endpoint it defaults to supporting both /responses and /v1/chat/completions.",
-          "bridgeResponsesInstructions": "Used only for /responses. When enabled, if the client request has no top-level instructions, relay will first promote the first developer/system message into instructions; if nothing can be derived, it falls back to the default value \"You are a helpful assistant.\" for upstreams that require top-level instructions.",
-          "forceResponsesStoreFalse": "Used only for /responses. When enabled, relay will explicitly set top-level store=false for upstreams that require it; an incoming store=true will also be overridden.",
+          "bridgeResponsesInstructions": "Fill missing instructions, falling back to a default assistant prompt.",
+          "forceResponsesStoreFalse": "Force store=false before forwarding /responses requests.",
           "dropResponsesFields": "Used only for /responses. Enter top-level field names to remove before relay, separated by commas. Common values are max_output_tokens, temperature, and safety_identifier.",
           "dropImageFields": "Used only for GPT image requests. Enter top-level JSON field names or multipart field names to remove before relay, separated by commas. A common eto value is response_format.",
           "dropResponsesMaxOutputTokens": "Used only for /responses. When enabled, relay will remove top-level max_output_tokens for upstreams that reject this field.",
@@ -524,9 +522,12 @@
         "confirmDeleteTitle": "Remove vendor",
         "confirmDeleteMessage": "Are you sure you want to remove {name}? This action cannot be undone.",
         "errors": {
-          "invalidUrl": "Please enter a valid API URL"
+          "invalidUrl": "Please enter a valid API URL",
+          "nameEmpty": "Please enter a provider name",
+          "nameDuplicate": "This name is already used by another provider"
         },
-        "saveFailed": "Failed to save provider configuration"
+        "saveFailed": "Failed to save provider configuration",
+        "renameHint": "Renaming resets this provider's blacklist state"
       },
       "levelDesc": {
         "highest": "Highest Priority",
@@ -623,8 +624,10 @@
         "platform": "Platform",
         "provider": "Provider",
         "model": "Model",
+        "clientIp": "Client IP",
         "httpCode": "HTTP",
         "stream": "Stream",
+        "firstToken": "First token",
         "duration": "Duration",
         "cost": "Cost",
         "tokens": "Tokens"
@@ -636,6 +639,9 @@
         "cacheWrite": "Cache write",
         "cacheRead": "Cache read",
         "cost": "Cost"
+      },
+      "status": {
+        "processing": "Processing"
       },
       "streamOn": "Streaming",
       "streamOff": "Single response",
@@ -654,6 +660,8 @@
         "subtitle": "Inspect request_log size and remove expired rows.",
         "refresh": "Refresh maintenance",
         "cleanup": "Clean expired logs",
+        "expand": "Expand",
+        "collapse": "Collapse",
         "cleaning": "Cleaning...",
         "retentionDays": "Retention days",
         "save": "Save",
@@ -725,7 +733,17 @@
         "trayPanelCodex": "Codex",
         "autoStart": "Launch at login",
         "switchNotify": "Switch Notification",
-        "switchNotifyHint": "Send system notification when provider switches or gets blacklisted",
+        "switchNotifyHint": "Emit page events on provider switch or blacklist; add a Webhook URL for remote pushes",
+        "notificationWebhookUrl": "Webhook URL",
+        "notificationWebhookMethod": "Method",
+        "notificationWebhookHeaders": "Headers",
+        "notificationWebhookBody": "Body",
+        "saveNotificationWebhook": "Save notification settings",
+        "saveNotificationWebhookFailed": "Failed to save notification settings",
+        "testNotificationWebhook": "Send test notification",
+        "testingNotificationWebhook": "Sending...",
+        "testNotificationWebhookSuccess": "Test notification sent",
+        "testNotificationWebhookFailed": "Failed to send test notification",
         "roundRobin": "Same-Level Round Robin",
         "roundRobinHint": "When enabled, providers at the same Level take turns handling requests; when disabled, always starts from the first",
         "autoUpdate": "Automatic update",
@@ -748,6 +766,16 @@
         "save": "Save",
         "saving": "Saving..."
       },
+      "placeholder": {
+        "notificationWebhookUrl": "Example: http://127.0.0.1:8588",
+        "notificationWebhookHeaders": "JSON header object",
+        "notificationWebhookBody": "JSON body template"
+      },
+      "hint": {
+        "notificationWebhookUrl": "Leave empty to disable remote notifications without affecting request relay.",
+        "notificationWebhookHeaders": "Use a JSON object; single-quoted examples are tolerated.",
+        "notificationWebhookBody": "Supports title and content placeholders."
+      },
       "subLabel": {
         "sb_assistant_access": "Accessibility permission is required to operate clipboard contents",
         "sb_disk_access": "Full disk access is required to implement file preview"
@@ -764,11 +792,11 @@
         "loading": "Loading...",
         "configFound": "Config file found",
         "configNotFound": "Config file not found",
-        "pendingCount": "{providers} providers, {mcp} MCPs",
+        "pendingCount": "{providers} providers",
         "action": "Import action",
         "importBtn": "Import config",
         "importing": "Importing...",
-        "success": "Imported: {providers} providers, {mcp} MCP servers",
+        "success": "Imported: {providers} providers",
         "nothingToImport": "Nothing to import (all may have been imported)",
         "failed": "Import failed",
         "fileNotFound": "Config file not found, please check the path"

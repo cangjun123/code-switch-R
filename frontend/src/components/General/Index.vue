@@ -5,7 +5,6 @@ import { Call } from '@wailsio/runtime'
 import ListItem from '../Setting/ListRow.vue'
 import LanguageSwitcher from '../Setting/LanguageSwitcher.vue'
 import ThemeSetting from '../Setting/ThemeSetting.vue'
-import NetworkWslSettings from '../Setting/NetworkWslSettings.vue'
 import SecuritySettings from '../Setting/SecuritySettings.vue'
 import { fetchAppSettings, saveAppSettings, type AppSettings } from '../../services/appSettings'
 import { getBlacklistSettings, updateBlacklistSettings, getLevelBlacklistEnabled, setLevelBlacklistEnabled, getBlacklistEnabled, setBlacklistEnabled, type BlacklistSettings } from '../../services/settings'
@@ -32,6 +31,10 @@ const getCachedString = (key: string, defaultValue: string): string => {
   const cached = localStorage.getItem(`app-settings-${key}`)
   return cached !== null ? cached : defaultValue
 }
+const DEFAULT_NOTIFICATION_WEBHOOK_HEADERS = '{\n  "Content-Type": "application/json"\n}'
+const DEFAULT_NOTIFICATION_WEBHOOK_BODY = '{\n  "message": "{content}",\n  "title": "{title}"\n}'
+const notificationWebhookHeadersPlaceholder = DEFAULT_NOTIFICATION_WEBHOOK_HEADERS
+const notificationWebhookBodyPlaceholder = '{\n  "topic": "alex-starrail",\n  "message": "{content}",\n  "title": "{title}",\n  "priority": 4,\n  "tags": ["white_check_mark"]\n}'
 const heatmapEnabled = ref(getCachedValue('heatmap', true))
 const homeTitleVisible = ref(getCachedValue('homeTitle', true))
 const autoStartEnabled = ref(getCachedValue('autoStart', false))
@@ -39,6 +42,10 @@ const autoConnectivityTestEnabled = ref(getCachedValue('autoConnectivityTest', f
 const switchNotifyEnabled = ref(getCachedValue('switchNotify', true)) // 切换通知开关
 const roundRobinEnabled = ref(getCachedValue('roundRobin', false))    // 同 Level 轮询开关
 const autoUpdateEnabled = ref(getCachedValue('autoUpdate', true))     // 自动更新开关
+const notificationWebhookUrl = ref(getCachedString('notificationWebhookUrl', ''))
+const notificationWebhookMethod = ref(getCachedString('notificationWebhookMethod', 'POST'))
+const notificationWebhookHeaders = ref(getCachedString('notificationWebhookHeaders', DEFAULT_NOTIFICATION_WEBHOOK_HEADERS))
+const notificationWebhookBody = ref(getCachedString('notificationWebhookBody', DEFAULT_NOTIFICATION_WEBHOOK_BODY))
 const budgetTotal = ref(getCachedNumber('budgetTotal', 0))
 const budgetUsedAdjustment = ref(getCachedNumber('budgetUsedAdjustment', 0))
 const budgetForecastMethod = ref(getCachedString('budgetForecastMethod', 'cycle'))
@@ -59,6 +66,7 @@ const budgetShowCountdownCodex = ref(getCachedValue('budgetShowCountdownCodex', 
 const budgetShowForecastCodex = ref(getCachedValue('budgetShowForecastCodex', false))
 const settingsLoading = ref(true)
 const saveBusy = ref(false)
+const testingWebhookNotification = ref(false)
 
 // 拉黑配置相关状态
 const blacklistEnabled = ref(false)  // 拉黑功能总开关
@@ -84,6 +92,11 @@ const normalizeBudgetForecastMethod = (value: string) => {
     return trimmed
   }
   return 'cycle'
+}
+
+const normalizeNotificationWebhookMethod = (value: string) => {
+  const method = value?.trim().toUpperCase()
+  return ['POST', 'PUT', 'PATCH', 'GET'].includes(method) ? method : 'POST'
 }
 
 const loadAppSettings = async () => {
@@ -115,6 +128,10 @@ const loadAppSettings = async () => {
     switchNotifyEnabled.value = data?.enable_switch_notify ?? true
     roundRobinEnabled.value = data?.enable_round_robin ?? false
     autoUpdateEnabled.value = data?.auto_update ?? true
+    notificationWebhookUrl.value = data?.notification_webhook_url ?? ''
+    notificationWebhookMethod.value = normalizeNotificationWebhookMethod(data?.notification_webhook_method ?? 'POST')
+    notificationWebhookHeaders.value = data?.notification_webhook_headers || DEFAULT_NOTIFICATION_WEBHOOK_HEADERS
+    notificationWebhookBody.value = data?.notification_webhook_body || DEFAULT_NOTIFICATION_WEBHOOK_BODY
 
     // 缓存到 localStorage，下次打开时直接显示正确状态
     localStorage.setItem('app-settings-heatmap', String(heatmapEnabled.value))
@@ -142,6 +159,10 @@ const loadAppSettings = async () => {
     localStorage.setItem('app-settings-switchNotify', String(switchNotifyEnabled.value))
     localStorage.setItem('app-settings-roundRobin', String(roundRobinEnabled.value))
     localStorage.setItem('app-settings-autoUpdate', String(autoUpdateEnabled.value))
+    localStorage.setItem('app-settings-notificationWebhookUrl', notificationWebhookUrl.value)
+    localStorage.setItem('app-settings-notificationWebhookMethod', notificationWebhookMethod.value)
+    localStorage.setItem('app-settings-notificationWebhookHeaders', notificationWebhookHeaders.value)
+    localStorage.setItem('app-settings-notificationWebhookBody', notificationWebhookBody.value)
   } catch (error) {
     console.error('failed to load app settings', error)
     heatmapEnabled.value = true
@@ -168,13 +189,17 @@ const loadAppSettings = async () => {
     autoConnectivityTestEnabled.value = false
     switchNotifyEnabled.value = true
     roundRobinEnabled.value = false
+    notificationWebhookUrl.value = ''
+    notificationWebhookMethod.value = 'POST'
+    notificationWebhookHeaders.value = DEFAULT_NOTIFICATION_WEBHOOK_HEADERS
+    notificationWebhookBody.value = DEFAULT_NOTIFICATION_WEBHOOK_BODY
   } finally {
     settingsLoading.value = false
   }
 }
 
-const persistAppSettings = async () => {
-  if (settingsLoading.value || saveBusy.value) return
+const persistAppSettings = async (): Promise<boolean> => {
+  if (settingsLoading.value || saveBusy.value) return false
   saveBusy.value = true
   try {
     const normalizedBudgetTotal = Number.isFinite(budgetTotal.value) ? Math.max(0, budgetTotal.value) : 0
@@ -207,6 +232,8 @@ const persistAppSettings = async () => {
     budgetRefreshDayCodex.value = normalizedBudgetRefreshDayCodex
     const normalizedBudgetCycleModeCodex = budgetCycleModeCodex.value === 'weekly' ? 'weekly' : 'daily'
     budgetCycleModeCodex.value = normalizedBudgetCycleModeCodex
+    const normalizedNotificationWebhookMethod = normalizeNotificationWebhookMethod(notificationWebhookMethod.value)
+    notificationWebhookMethod.value = normalizedNotificationWebhookMethod
     const payload: AppSettings = {
       show_heatmap: heatmapEnabled.value,
       show_home_title: homeTitleVisible.value,
@@ -233,6 +260,10 @@ const persistAppSettings = async () => {
       enable_switch_notify: switchNotifyEnabled.value,
       enable_round_robin: roundRobinEnabled.value,
       auto_update: autoUpdateEnabled.value,
+      notification_webhook_url: notificationWebhookUrl.value.trim(),
+      notification_webhook_method: normalizedNotificationWebhookMethod,
+      notification_webhook_headers: notificationWebhookHeaders.value.trim(),
+      notification_webhook_body: notificationWebhookBody.value.trim(),
     }
     await saveAppSettings(payload)
 
@@ -268,12 +299,41 @@ const persistAppSettings = async () => {
     localStorage.setItem('app-settings-switchNotify', String(switchNotifyEnabled.value))
     localStorage.setItem('app-settings-roundRobin', String(roundRobinEnabled.value))
     localStorage.setItem('app-settings-autoUpdate', String(autoUpdateEnabled.value))
+    localStorage.setItem('app-settings-notificationWebhookUrl', notificationWebhookUrl.value.trim())
+    localStorage.setItem('app-settings-notificationWebhookMethod', normalizedNotificationWebhookMethod)
+    localStorage.setItem('app-settings-notificationWebhookHeaders', notificationWebhookHeaders.value.trim())
+    localStorage.setItem('app-settings-notificationWebhookBody', notificationWebhookBody.value.trim())
 
     window.dispatchEvent(new CustomEvent('app-settings-updated'))
+    return true
   } catch (error) {
     console.error('failed to save app settings', error)
+    return false
   } finally {
     saveBusy.value = false
+  }
+}
+
+const sendTestNotificationWebhook = async () => {
+  if (settingsLoading.value || saveBusy.value || testingWebhookNotification.value) return
+  testingWebhookNotification.value = true
+  try {
+    const saved = await persistAppSettings()
+    if (!saved) {
+      alert(t('components.general.label.saveNotificationWebhookFailed'))
+      return
+    }
+    await Call.ByName('codeswitch/services.NotificationService.TestWebhookNotification')
+    alert(t('components.general.label.testNotificationWebhookSuccess'))
+  } catch (error) {
+    console.error('failed to send test notification webhook', error)
+    alert(
+      t('components.general.label.testNotificationWebhookFailed') +
+        ': ' +
+        extractErrorMessage(error, t('components.general.label.testNotificationWebhookFailed'))
+    )
+  } finally {
+    testingWebhookNotification.value = false
   }
 }
 
@@ -383,11 +443,10 @@ const handleImport = async () => {
       alert(t('components.general.import.fileNotFound'))
       return
     }
-    const imported = result.imported_providers + result.imported_mcp
+    const imported = result.imported_providers
     if (imported > 0) {
       alert(t('components.general.import.success', {
         providers: result.imported_providers,
-        mcp: result.imported_mcp
       }))
     } else {
       alert(t('components.general.import.nothingToImport'))
@@ -444,17 +503,6 @@ onMounted(async () => {
               <span></span>
             </label>
           </ListItem>
-          <ListItem :label="$t('components.general.label.homeTitle')">
-            <label class="mac-switch">
-              <input
-                type="checkbox"
-                :disabled="settingsLoading || saveBusy"
-                v-model="homeTitleVisible"
-                @change="persistAppSettings"
-              />
-              <span></span>
-            </label>
-          </ListItem>
           <ListItem v-if="!isWebRuntime" :label="$t('components.general.label.autoStart')">
             <label class="mac-switch">
               <input
@@ -480,6 +528,95 @@ onMounted(async () => {
               <span class="hint-text">{{ $t('components.general.label.switchNotifyHint') }}</span>
             </div>
           </ListItem>
+          <div v-if="switchNotifyEnabled" class="notification-webhook-settings">
+            <div class="notification-field">
+              <label class="notification-label" for="notification-webhook-url">
+                {{ $t('components.general.label.notificationWebhookUrl') }}
+              </label>
+              <div class="notification-control">
+                <input
+                  id="notification-webhook-url"
+                  v-model="notificationWebhookUrl"
+                  type="url"
+                  class="mac-input notification-input"
+                  :placeholder="$t('components.general.placeholder.notificationWebhookUrl')"
+                  :disabled="settingsLoading || saveBusy"
+                  @blur="persistAppSettings"
+                />
+                <span class="field-hint">{{ $t('components.general.hint.notificationWebhookUrl') }}</span>
+              </div>
+            </div>
+            <div class="notification-field">
+              <label class="notification-label" for="notification-webhook-method">
+                {{ $t('components.general.label.notificationWebhookMethod') }}
+              </label>
+              <div class="notification-control">
+                <select
+                  id="notification-webhook-method"
+                  v-model="notificationWebhookMethod"
+                  class="mac-select notification-method-select"
+                  :disabled="settingsLoading || saveBusy"
+                  @change="persistAppSettings">
+                  <option value="POST">POST</option>
+                  <option value="PUT">PUT</option>
+                  <option value="PATCH">PATCH</option>
+                  <option value="GET">GET</option>
+                </select>
+              </div>
+            </div>
+            <div class="notification-field">
+              <label class="notification-label" for="notification-webhook-headers">
+                {{ $t('components.general.label.notificationWebhookHeaders') }}
+              </label>
+              <div class="notification-control">
+                <textarea
+                  id="notification-webhook-headers"
+                  v-model="notificationWebhookHeaders"
+                  class="mac-input notification-textarea"
+                  rows="2"
+                  spellcheck="false"
+                  :placeholder="notificationWebhookHeadersPlaceholder"
+                  :disabled="settingsLoading || saveBusy"
+                  @blur="persistAppSettings"
+                ></textarea>
+                <span class="field-hint">{{ $t('components.general.hint.notificationWebhookHeaders') }}</span>
+              </div>
+            </div>
+            <div class="notification-field">
+              <label class="notification-label" for="notification-webhook-body">
+                {{ $t('components.general.label.notificationWebhookBody') }}
+              </label>
+              <div class="notification-control">
+                <textarea
+                  id="notification-webhook-body"
+                  v-model="notificationWebhookBody"
+                  class="mac-input notification-textarea notification-body-textarea"
+                  rows="3"
+                  spellcheck="false"
+                  :placeholder="notificationWebhookBodyPlaceholder"
+                  :disabled="settingsLoading || saveBusy"
+                  @blur="persistAppSettings"
+                ></textarea>
+                <span class="field-hint">{{ $t('components.general.hint.notificationWebhookBody') }}</span>
+              </div>
+            </div>
+            <div class="notification-actions">
+              <button
+                type="button"
+                class="primary-btn"
+                :disabled="settingsLoading || saveBusy"
+                @click="persistAppSettings">
+                {{ saveBusy ? $t('components.general.label.saving') : $t('components.general.label.saveNotificationWebhook') }}
+              </button>
+              <button
+                type="button"
+                class="secondary-btn"
+                :disabled="settingsLoading || saveBusy || testingWebhookNotification"
+                @click="sendTestNotificationWebhook">
+                {{ testingWebhookNotification ? $t('components.general.label.testingNotificationWebhook') : $t('components.general.label.testNotificationWebhook') }}
+              </button>
+            </div>
+          </div>
           <ListItem :label="$t('components.general.label.roundRobin')">
             <div class="toggle-with-hint">
               <label class="mac-switch">
@@ -492,262 +629,6 @@ onMounted(async () => {
                 <span></span>
               </label>
               <span class="hint-text">{{ $t('components.general.label.roundRobinHint') }}</span>
-            </div>
-          </ListItem>
-        </div>
-      </section>
-
-      <section>
-        <h2 class="mac-section-title">{{ $t('components.general.title.trayPanel') }}</h2>
-        <div class="mac-panel">
-          <p class="panel-title">{{ $t('components.general.label.trayPanelClaude') }}</p>
-          <ListItem :label="$t('components.general.label.budgetTotal')">
-            <div class="toggle-with-hint">
-              <div class="budget-input">
-                <input
-                  type="number"
-                  inputmode="decimal"
-                  min="0"
-                  step="0.01"
-                  :disabled="settingsLoading || saveBusy"
-                  v-model.number="budgetTotal"
-                  @change="persistAppSettings"
-                  class="mac-input budget-input-field"
-                />
-                <span class="budget-unit">USD</span>
-              </div>
-              <span class="hint-text">{{ $t('components.general.label.budgetTotalHint') }}</span>
-            </div>
-          </ListItem>
-          <ListItem :label="$t('components.general.label.budgetUsedAdjustment')">
-            <div class="toggle-with-hint">
-              <div class="budget-input">
-                <input
-                  type="number"
-                  inputmode="decimal"
-                  step="0.01"
-                  :disabled="settingsLoading || saveBusy"
-                  v-model.number="budgetUsedAdjustment"
-                  @change="persistAppSettings"
-                  class="mac-input budget-input-field"
-                />
-                <span class="budget-unit">USD</span>
-              </div>
-              <span class="hint-text">{{ $t('components.general.label.budgetUsedAdjustmentHint') }}</span>
-            </div>
-          </ListItem>
-          <ListItem :label="$t('components.general.label.budgetCycle')">
-            <div class="toggle-with-hint">
-              <label class="mac-switch">
-                <input
-                  type="checkbox"
-                  :disabled="settingsLoading || saveBusy"
-                  v-model="budgetCycleEnabled"
-                  @change="persistAppSettings"
-                />
-                <span></span>
-              </label>
-              <span class="hint-text">{{ $t('components.general.label.budgetCycleHint') }}</span>
-            </div>
-          </ListItem>
-          <ListItem :label="$t('components.general.label.budgetCycleMode')">
-            <select
-              v-model="budgetCycleMode"
-              :disabled="settingsLoading || saveBusy || !budgetCycleEnabled"
-              class="mac-select budget-select"
-              @change="persistAppSettings">
-              <option value="daily">{{ $t('components.general.label.budgetCycleModeDaily') }}</option>
-              <option value="weekly">{{ $t('components.general.label.budgetCycleModeWeekly') }}</option>
-            </select>
-          </ListItem>
-          <ListItem
-            v-if="budgetCycleMode === 'weekly'"
-            :label="$t('components.general.label.budgetRefreshDay')">
-            <select
-              v-model.number="budgetRefreshDay"
-              :disabled="settingsLoading || saveBusy || !budgetCycleEnabled"
-              class="mac-select budget-select"
-              @change="persistAppSettings">
-              <option :value="1">{{ $t('components.general.label.weekdayMon') }}</option>
-              <option :value="2">{{ $t('components.general.label.weekdayTue') }}</option>
-              <option :value="3">{{ $t('components.general.label.weekdayWed') }}</option>
-              <option :value="4">{{ $t('components.general.label.weekdayThu') }}</option>
-              <option :value="5">{{ $t('components.general.label.weekdayFri') }}</option>
-              <option :value="6">{{ $t('components.general.label.weekdaySat') }}</option>
-              <option :value="0">{{ $t('components.general.label.weekdaySun') }}</option>
-            </select>
-          </ListItem>
-          <ListItem :label="$t('components.general.label.budgetRefreshTime')">
-            <input
-              type="time"
-              :disabled="settingsLoading || saveBusy || !budgetCycleEnabled"
-              v-model="budgetRefreshTime"
-              @change="persistAppSettings"
-              class="mac-input budget-time-input"
-            />
-          </ListItem>
-          <ListItem :label="$t('components.general.label.budgetShowCountdown')">
-            <label class="mac-switch">
-              <input
-                type="checkbox"
-                :disabled="settingsLoading || saveBusy"
-                v-model="budgetShowCountdown"
-                @change="persistAppSettings"
-              />
-              <span></span>
-            </label>
-          </ListItem>
-          <ListItem :label="$t('components.general.label.budgetShowForecast')">
-            <label class="mac-switch">
-              <input
-                type="checkbox"
-                :disabled="settingsLoading || saveBusy"
-                v-model="budgetShowForecast"
-                @change="persistAppSettings"
-              />
-              <span></span>
-            </label>
-          </ListItem>
-          <ListItem :label="$t('components.general.label.budgetForecastMethod')">
-            <div class="toggle-with-hint">
-              <select
-                v-model="budgetForecastMethod"
-                :disabled="settingsLoading || saveBusy || !budgetShowForecast"
-                class="mac-select budget-select"
-                @change="persistAppSettings">
-                <option value="cycle">{{ $t('components.general.label.budgetForecastMethodCycle') }}</option>
-                <option value="10m">{{ $t('components.general.label.budgetForecastMethod10m') }}</option>
-                <option value="1h">{{ $t('components.general.label.budgetForecastMethod1h') }}</option>
-                <option value="yesterday">{{ $t('components.general.label.budgetForecastMethodYesterday') }}</option>
-                <option value="last24h">{{ $t('components.general.label.budgetForecastMethod24h') }}</option>
-              </select>
-              <span class="hint-text">{{ $t('components.general.label.budgetForecastMethodHint') }}</span>
-            </div>
-          </ListItem>
-        </div>
-        <div class="mac-panel">
-          <p class="panel-title">{{ $t('components.general.label.trayPanelCodex') }}</p>
-          <ListItem :label="$t('components.general.label.budgetTotal')">
-            <div class="toggle-with-hint">
-              <div class="budget-input">
-                <input
-                  type="number"
-                  inputmode="decimal"
-                  min="0"
-                  step="0.01"
-                  :disabled="settingsLoading || saveBusy"
-                  v-model.number="budgetTotalCodex"
-                  @change="persistAppSettings"
-                  class="mac-input budget-input-field"
-                />
-                <span class="budget-unit">USD</span>
-              </div>
-              <span class="hint-text">{{ $t('components.general.label.budgetTotalHint') }}</span>
-            </div>
-          </ListItem>
-          <ListItem :label="$t('components.general.label.budgetUsedAdjustment')">
-            <div class="toggle-with-hint">
-              <div class="budget-input">
-                <input
-                  type="number"
-                  inputmode="decimal"
-                  step="0.01"
-                  :disabled="settingsLoading || saveBusy"
-                  v-model.number="budgetUsedAdjustmentCodex"
-                  @change="persistAppSettings"
-                  class="mac-input budget-input-field"
-                />
-                <span class="budget-unit">USD</span>
-              </div>
-              <span class="hint-text">{{ $t('components.general.label.budgetUsedAdjustmentHint') }}</span>
-            </div>
-          </ListItem>
-          <ListItem :label="$t('components.general.label.budgetCycle')">
-            <div class="toggle-with-hint">
-              <label class="mac-switch">
-                <input
-                  type="checkbox"
-                  :disabled="settingsLoading || saveBusy"
-                  v-model="budgetCycleEnabledCodex"
-                  @change="persistAppSettings"
-                />
-                <span></span>
-              </label>
-              <span class="hint-text">{{ $t('components.general.label.budgetCycleHint') }}</span>
-            </div>
-          </ListItem>
-          <ListItem :label="$t('components.general.label.budgetCycleMode')">
-            <select
-              v-model="budgetCycleModeCodex"
-              :disabled="settingsLoading || saveBusy || !budgetCycleEnabledCodex"
-              class="mac-select budget-select"
-              @change="persistAppSettings">
-              <option value="daily">{{ $t('components.general.label.budgetCycleModeDaily') }}</option>
-              <option value="weekly">{{ $t('components.general.label.budgetCycleModeWeekly') }}</option>
-            </select>
-          </ListItem>
-          <ListItem
-            v-if="budgetCycleModeCodex === 'weekly'"
-            :label="$t('components.general.label.budgetRefreshDay')">
-            <select
-              v-model.number="budgetRefreshDayCodex"
-              :disabled="settingsLoading || saveBusy || !budgetCycleEnabledCodex"
-              class="mac-select budget-select"
-              @change="persistAppSettings">
-              <option :value="1">{{ $t('components.general.label.weekdayMon') }}</option>
-              <option :value="2">{{ $t('components.general.label.weekdayTue') }}</option>
-              <option :value="3">{{ $t('components.general.label.weekdayWed') }}</option>
-              <option :value="4">{{ $t('components.general.label.weekdayThu') }}</option>
-              <option :value="5">{{ $t('components.general.label.weekdayFri') }}</option>
-              <option :value="6">{{ $t('components.general.label.weekdaySat') }}</option>
-              <option :value="0">{{ $t('components.general.label.weekdaySun') }}</option>
-            </select>
-          </ListItem>
-          <ListItem :label="$t('components.general.label.budgetRefreshTime')">
-            <input
-              type="time"
-              :disabled="settingsLoading || saveBusy || !budgetCycleEnabledCodex"
-              v-model="budgetRefreshTimeCodex"
-              @change="persistAppSettings"
-              class="mac-input budget-time-input"
-            />
-          </ListItem>
-          <ListItem :label="$t('components.general.label.budgetShowCountdown')">
-            <label class="mac-switch">
-              <input
-                type="checkbox"
-                :disabled="settingsLoading || saveBusy"
-                v-model="budgetShowCountdownCodex"
-                @change="persistAppSettings"
-              />
-              <span></span>
-            </label>
-          </ListItem>
-          <ListItem :label="$t('components.general.label.budgetShowForecast')">
-            <label class="mac-switch">
-              <input
-                type="checkbox"
-                :disabled="settingsLoading || saveBusy"
-                v-model="budgetShowForecastCodex"
-                @change="persistAppSettings"
-              />
-              <span></span>
-            </label>
-          </ListItem>
-          <ListItem :label="$t('components.general.label.budgetForecastMethod')">
-            <div class="toggle-with-hint">
-              <select
-                v-model="budgetForecastMethodCodex"
-                :disabled="settingsLoading || saveBusy || !budgetShowForecastCodex"
-                class="mac-select budget-select"
-                @change="persistAppSettings">
-                <option value="cycle">{{ $t('components.general.label.budgetForecastMethodCycle') }}</option>
-                <option value="10m">{{ $t('components.general.label.budgetForecastMethod10m') }}</option>
-                <option value="1h">{{ $t('components.general.label.budgetForecastMethod1h') }}</option>
-                <option value="yesterday">{{ $t('components.general.label.budgetForecastMethodYesterday') }}</option>
-                <option value="last24h">{{ $t('components.general.label.budgetForecastMethod24h') }}</option>
-              </select>
-              <span class="hint-text">{{ $t('components.general.label.budgetForecastMethodHint') }}</span>
             </div>
           </ListItem>
         </div>
@@ -772,9 +653,6 @@ onMounted(async () => {
           </ListItem>
         </div>
       </section>
-
-      <!-- Network & WSL Settings -->
-      <NetworkWslSettings />
 
       <SecuritySettings />
 
@@ -864,10 +742,9 @@ onMounted(async () => {
             </span>
             <span class="info-text" v-else-if="importStatus?.config_exists">
               {{ $t('components.general.import.configFound') }}
-              <span v-if="importStatus.pending_provider_count > 0 || importStatus.pending_mcp_count > 0">
+              <span v-if="importStatus.pending_provider_count > 0">
                 ({{ $t('components.general.import.pendingCount', {
                   providers: importStatus.pending_provider_count,
-                  mcp: importStatus.pending_mcp_count
                 }) }})
               </span>
             </span>
@@ -946,7 +823,7 @@ onMounted(async () => {
   line-height: 1.4;
   max-width: 320px;
   text-align: right;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 :global(.dark) .hint-text {
@@ -985,11 +862,92 @@ onMounted(async () => {
   color: var(--mac-text-warning, #e67e22);
 }
 
+.notification-webhook-settings {
+  border-top: 1px solid var(--mac-divider);
+  display: grid;
+  gap: 12px;
+  padding: 14px 18px 16px;
+}
+
+.notification-field {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.notification-label {
+  color: var(--mac-text);
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 30px;
+}
+
+.notification-control {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.notification-input,
+.notification-textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.notification-textarea {
+  line-height: 1.45;
+  min-height: 58px;
+  resize: vertical;
+}
+
+.notification-body-textarea {
+  min-height: 86px;
+}
+
+.notification-method-select {
+  width: 140px;
+}
+
+.field-hint {
+  color: var(--mac-text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.notification-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 :global(.dark) .info-text.warning {
   color: #f39c12;
 }
 
 :global(.dark) .mac-input {
   background: var(--mac-surface-strong);
+}
+
+@media (max-width: 720px) {
+  .notification-field {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .notification-label {
+    line-height: 1.3;
+  }
+
+  .toggle-with-hint {
+    align-items: flex-start;
+  }
+
+  .hint-text {
+    text-align: left;
+  }
 }
 </style>

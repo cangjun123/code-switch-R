@@ -24,37 +24,38 @@ func (a *AppService) SetTrayWindowHeight(_ int) {}
 func (a *AppService) OpenSecondWindow() {}
 
 type appRuntime struct {
-	adminAddr          string
-	staticDir          string
-	eventHub           *services.EventHub
-	appService         *AppService
-	providerService    *services.ProviderService
-	settingsService    *services.SettingsService
-	blacklistService   *services.BlacklistService
-	claudeSettings     *services.ClaudeSettingsService
-	codexSettings      *services.CodexSettingsService
-	cliConfigService   *services.CliConfigService
-	logService         *services.LogService
-	appSettings        *services.AppSettingsService
-	adminAuth          *services.AdminAuthService
-	adminSecurity      *adminSecurity
-	codexRelayKeys     *services.CodexRelayKeyService
-	mcpService         *services.MCPService
-	skillService       *services.SkillService
-	promptService      *services.PromptService
-	envCheckService    *services.EnvCheckService
-	importService      *services.ImportService
-	deeplinkService    *services.DeepLinkService
-	speedTestService   *services.SpeedTestService
-	connectivityTest   *services.ConnectivityTestService
-	healthCheckService *services.HealthCheckService
-	versionService     *VersionService
-	updateService      *services.UpdateService
-	geminiService      *services.GeminiService
-	consoleService     *services.ConsoleService
-	customCliService   *services.CustomCliService
-	networkService     *services.NetworkService
-	providerRelay      *services.ProviderRelayService
+	adminAddr           string
+	staticDir           string
+	eventHub            *services.EventHub
+	appService          *AppService
+	providerService     *services.ProviderService
+	settingsService     *services.SettingsService
+	blacklistService    *services.BlacklistService
+	claudeSettings      *services.ClaudeSettingsService
+	codexSettings       *services.CodexSettingsService
+	cliConfigService    *services.CliConfigService
+	logService          *services.LogService
+	appSettings         *services.AppSettingsService
+	adminAuth           *services.AdminAuthService
+	adminSecurity       *adminSecurity
+	codexRelayKeys      *services.CodexRelayKeyService
+	mcpService          *services.MCPService
+	skillService        *services.SkillService
+	promptService       *services.PromptService
+	envCheckService     *services.EnvCheckService
+	importService       *services.ImportService
+	deeplinkService     *services.DeepLinkService
+	speedTestService    *services.SpeedTestService
+	connectivityTest    *services.ConnectivityTestService
+	healthCheckService  *services.HealthCheckService
+	versionService      *VersionService
+	updateService       *services.UpdateService
+	geminiService       *services.GeminiService
+	notificationService *services.NotificationService
+	consoleService      *services.ConsoleService
+	customCliService    *services.CustomCliService
+	networkService      *services.NetworkService
+	providerRelay       *services.ProviderRelayService
 
 	blacklistStopChan           chan struct{}
 	requestLogRetentionStopChan chan struct{}
@@ -88,6 +89,7 @@ func newAppRuntime() (*appRuntime, error) {
 	notificationService := services.NewNotificationService(appSettings)
 	notificationService.SetEventEmitter(eventHub)
 	blacklistService := services.NewBlacklistService(settingsService, notificationService)
+	providerService.SetBlacklistService(blacklistService)
 	geminiService := services.NewGeminiService(relayAddr)
 	providerRelay := services.NewProviderRelayService(providerService, geminiService, codexRelayKeys, blacklistService, notificationService, appSettings, relayAddr)
 	claudeSettings := services.NewClaudeSettingsService(providerRelay.Addr(), codexRelayKeys)
@@ -194,6 +196,7 @@ func newAppRuntime() (*appRuntime, error) {
 		versionService:              versionService,
 		updateService:               updateService,
 		geminiService:               geminiService,
+		notificationService:         notificationService,
 		consoleService:              consoleService,
 		customCliService:            customCliService,
 		networkService:              networkService,
@@ -283,6 +286,7 @@ func (rt *appRuntime) registerServices(registry *rpcRegistry) {
 	registry.Register("codeswitch/services.HealthCheckService", rt.healthCheckService)
 	registry.Register("codeswitch/services.UpdateService", rt.updateService)
 	registry.Register("codeswitch/services.GeminiService", rt.geminiService)
+	registry.Register("codeswitch/services.NotificationService", rt.notificationService)
 	registry.Register("codeswitch/services.ConsoleService", rt.consoleService)
 	registry.Register("codeswitch/services.CustomCliService", rt.customCliService)
 	registry.Register("codeswitch/services.NetworkService", rt.networkService)

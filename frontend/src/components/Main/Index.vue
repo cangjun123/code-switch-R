@@ -3,22 +3,6 @@
     <div class="global-actions">
       <p class="global-eyebrow">{{ t('components.main.hero.eyebrow') }}</p>
       <button
-        class="ghost-icon github-icon"
-        :data-tooltip="getGithubTooltip()"
-        @click="handleGithubClick"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path
-            d="M9 19c-4.5 1.5-4.5-2.5-6-3m12 5v-3.87a3.37 3.37 0 00-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0018 3.77 5.07 5.07 0 0017.91 1S16.73.65 14 2.48a13.38 13.38 0 00-5 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 005 3.77a5.44 5.44 0 00-1.5 3.76c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 009 18.13V22"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
-      </button>
-      <button
         class="ghost-icon"
         :data-tooltip="t('components.main.controls.theme')"
         @click="toggleTheme"
@@ -118,13 +102,6 @@
           </button>
         </div>
       </div>
-      <section class="contrib-hero">
-        <h1 v-if="showHomeTitle">{{ t('components.main.hero.title') }}</h1>
-        <!-- <p class="lead">
-          {{ t('components.main.hero.lead') }}
-        </p> -->
-      </section>
-
       <section
         v-if="showHeatmap"
         ref="heatmapContainerRef"
@@ -554,14 +531,22 @@
     >
       <form class="vendor-form" @submit.prevent="submitModal">
                 <label class="form-field">
-                  <span>{{ t('components.main.form.labels.name') }}</span>
+                  <span class="label-row">
+                    {{ t('components.main.form.labels.name') }}
+                    <span v-if="modalState.errors.name" class="field-error">
+                      {{ modalState.errors.name }}
+                    </span>
+                  </span>
                   <BaseInput
                     v-model="modalState.form.name"
                     type="text"
                     :placeholder="t('components.main.form.placeholders.name')"
+                    :disabled="!!modalState.editingId && modalState.tabId === 'gemini'"
                     required
-                    :disabled="Boolean(modalState.editingId)"
                   />
+                  <span v-if="modalState.editingId && modalState.tabId !== 'gemini'" class="field-hint">
+                    {{ t('components.main.form.renameHint') }}
+                  </span>
                 </label>
 
                 <label class="form-field">
@@ -622,7 +607,10 @@
                           <path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
                         </svg>
                       </ListboxButton>
-                      <ListboxOptions v-if="open" class="level-select-options">
+                      <ListboxOptions
+                        v-if="open"
+                        :class="['level-select-options', { dark: resolvedTheme === 'dark' }]"
+                      >
                         <ListboxOption
                           v-for="option in upstreamProtocolOptions"
                           :key="option.value"
@@ -652,7 +640,10 @@
                           <path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
                         </svg>
                       </ListboxButton>
-                      <ListboxOptions v-if="open" class="level-select-options">
+                      <ListboxOptions
+                        v-if="open"
+                        :class="['level-select-options', { dark: resolvedTheme === 'dark' }]"
+                      >
                         <ListboxOption
                           v-for="option in openAIEndpointModeOptions"
                           :key="option.value"
@@ -731,7 +722,10 @@
                           <path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
                         </svg>
                       </ListboxButton>
-                      <ListboxOptions v-if="open" class="level-select-options">
+                      <ListboxOptions
+                        v-if="open"
+                        :class="['level-select-options', { dark: resolvedTheme === 'dark' }]"
+                      >
                         <ListboxOption
                           v-for="option in authTypeOptions"
                           :key="option.value"
@@ -810,7 +804,10 @@
                           <path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
                         </svg>
                       </ListboxButton>
-                      <ListboxOptions v-if="open" class="level-select-options">
+                      <ListboxOptions
+                        v-if="open"
+                        :class="['level-select-options', { dark: resolvedTheme === 'dark' }]"
+                      >
                         <ListboxOption
                           v-for="lvl in 10"
                           :key="lvl"
@@ -1117,7 +1114,6 @@ import { GetProviders as GetGeminiProviders, UpdateProvider as UpdateGeminiProvi
 import { fetchProxyStatus, enableProxy, disableProxy } from '../../services/claudeSettings'
 import { fetchGeminiProxyStatus, enableGeminiProxy, disableGeminiProxy } from '../../services/geminiSettings'
 import { fetchProviderDailyStats, type ProviderDailyStat } from '../../services/logs'
-import { fetchCurrentVersion } from '../../services/version'
 import { fetchAppSettings, type AppSettings } from '../../services/appSettings'
 import { getCurrentTheme, setTheme, type ThemeMode } from '../../utils/ThemeManager'
 import { useRouter } from 'vue-router'
@@ -1163,8 +1159,6 @@ const resolvedTheme = computed(() => {
   return themeMode.value
 })
 const themeIcon = computed(() => (resolvedTheme.value === 'dark' ? 'moon' : 'sun'))
-const releasePageUrl = 'https://github.com/Rogers-F/code-switch-R/releases'
-const releaseApiUrl = 'https://api.github.com/repos/Rogers-F/code-switch-R/releases/latest'
 
 const heatmapContainerRef = ref<HTMLElement | null>(null)
 // 使用自适应热力图 composable
@@ -1275,9 +1269,6 @@ const providerStatsLoaded = reactive<Record<ProviderTab, boolean>>({
 })
 let providerStatsTimer: number | undefined
 const showHeatmap = ref(true)
-const showHomeTitle = ref(true)
-const mcpIcon = lobeIcons['mcp'] ?? ''
-const appVersion = ref('')
 const importStatus = ref<ConfigImportStatus | null>(null)
 const importBusy = ref(false)
 const showFirstRunPrompt = ref(false)
@@ -1347,7 +1338,7 @@ let highlightTimer: number | undefined
 const showImportButton = computed(() => {
   const status = importStatus.value
   if (!status) return false
-  return status.config_exists && (status.pending_providers || status.pending_mcp)
+  return status.config_exists && status.pending_providers
 })
 
 const importButtonTooltip = computed(() => {
@@ -1360,7 +1351,6 @@ const importButtonTooltip = computed(() => {
   }
   return t('components.main.importConfig.tooltip', {
     providers: status.pending_provider_count,
-    servers: status.pending_mcp_count,
   })
 })
 
@@ -1535,22 +1525,11 @@ const loadAppSettings = async () => {
   try {
     const data: AppSettings = await fetchAppSettings()
     showHeatmap.value = data?.show_heatmap ?? true
-    showHomeTitle.value = data?.show_home_title ?? true
   } catch (error) {
     console.error('failed to load app settings', error)
     showHeatmap.value = true
-    showHomeTitle.value = true
     // 加载应用设置失败时提示用户
     showToast(t('components.main.errors.loadAppSettingsFailed'), 'warning')
-  }
-}
-
-const loadAppVersion = async () => {
-  try {
-    const version = await fetchCurrentVersion()
-    appVersion.value = version || ''
-  } catch (error) {
-    console.error('failed to load app version', error)
   }
 }
 
@@ -1559,21 +1538,6 @@ const handleAppSettingsUpdated = () => {
 }
 
 const normalizeProviderKey = (value: string) => value?.trim().toLowerCase() ?? ''
-
-const normalizeVersion = (value: string) => value.replace(/^v/i, '').trim()
-
-const compareVersions = (current: string, remote: string) => {
-  const curParts = normalizeVersion(current).split('.').map((part) => parseInt(part, 10) || 0)
-  const remoteParts = normalizeVersion(remote).split('.').map((part) => parseInt(part, 10) || 0)
-  const maxLen = Math.max(curParts.length, remoteParts.length)
-  for (let i = 0; i < maxLen; i++) {
-    const cur = curParts[i] ?? 0
-    const rem = remoteParts[i] ?? 0
-    if (cur === rem) continue
-    return cur < rem ? -1 : 1
-  }
-  return 0
-}
 
 // 本地 GeminiProvider 类型定义（避免依赖 CI 生成的 bindings）
 interface GeminiProvider {
@@ -2326,7 +2290,6 @@ onMounted(async () => {
   await Promise.all(providerTabIds.map((tab) => refreshDirectAppliedStatus(tab)))
   await Promise.all(providerTabIds.map((tab) => loadProviderStats(tab)))
   await loadAppSettings()
-  await loadAppVersion()
   await refreshImportStatus()
   await checkFirstRun()  // 检查是否首次使用
   startProviderStatsTimer()
@@ -2528,14 +2491,6 @@ const goToLogs = () => {
   router.push('/logs')
 }
 
-const goToMcp = () => {
-  router.push('/mcp')
-}
-
-const goToSkill = () => {
-  router.push('/skill')
-}
-
 const goToSettings = () => {
   router.push('/settings')
 }
@@ -2544,17 +2499,6 @@ const toggleTheme = () => {
   const next = resolvedTheme.value === 'dark' ? 'light' : 'dark'
   themeMode.value = next
   setTheme(next)
-}
-
-const handleGithubClick = () => {
-  Browser.OpenURL(releasePageUrl).catch(() => {
-    console.error('failed to open github')
-  })
-}
-
-// 获取 GitHub 图标的 tooltip
-const getGithubTooltip = () => {
-  return t('components.main.controls.github')
 }
 
 const syncDefaultTestEndpoint = (
@@ -2757,6 +2701,7 @@ const modalState = reactive({
   form: defaultFormValues(),
   errors: {
     apiUrl: '',
+    name: '',
   },
 })
 
@@ -2798,6 +2743,7 @@ const openCreateModal = () => {
   customAuthHeader.value = ''
   connectivityTestResult.value = null
   modalState.errors.apiUrl = ''
+  modalState.errors.name = ''
   modalState.open = true
 }
 
@@ -2858,6 +2804,7 @@ const openEditModal = (card: AutomationCard) => {
   }
   connectivityTestResult.value = null
   modalState.errors.apiUrl = ''
+  modalState.errors.name = ''
   modalState.open = true
 }
 
@@ -2907,11 +2854,26 @@ const submitModal = async (): Promise<boolean> => {
     return false
   }
 
+  // 名称校验：非空；编辑模式下改名时不得与同 tab 其它供应商重名
+  modalState.errors.name = ''
+  if (!name) {
+    modalState.errors.name = t('components.main.form.errors.nameEmpty')
+    return false
+  }
+  if (editingCard.value && name !== editingCard.value.name) {
+    const duplicate = list.some(c => c.id !== editingCard.value!.id && c.name === name)
+    if (duplicate) {
+      modalState.errors.name = t('components.main.form.errors.nameDuplicate')
+      return false
+    }
+  }
+
   if (editingCard.value) {
     // 仅当 level 变化时才重新排序，避免破坏同级拖拽顺序
     const prevLevel = normalizeLevel(editingCard.value.level)
     const nextLevel = normalizeLevel(modalState.form.level)
     Object.assign(editingCard.value, {
+      name,
       apiUrl: apiUrl || editingCard.value.apiUrl,
       apiKey,
       officialSite,
@@ -3188,15 +3150,13 @@ const handleImportClick = async () => {
     const result = await importFromCcSwitch()
     importStatus.value = result?.status ?? null
     const importedProviders = result?.imported_providers ?? 0
-    const importedMCP = result?.imported_mcp ?? 0
     if (importedProviders > 0) {
       await loadProvidersFromDisk()
     }
-    if (importedProviders > 0 || importedMCP > 0) {
+    if (importedProviders > 0) {
       showToast(
         t('components.main.importConfig.success', {
           providers: importedProviders,
-          servers: importedMCP,
         })
       )
     } else if (result?.status?.config_exists) {
@@ -3717,6 +3677,17 @@ const confirmDeleteCliTool = async () => {
   background: var(--color-bg-tertiary);
 }
 
+:global(.dark) .level-select-button {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: var(--mac-text);
+}
+
+:global(.dark) .level-select-button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
 .level-select-button:focus {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
@@ -3741,17 +3712,21 @@ const confirmDeleteCliTool = async () => {
   right: 0;
   max-height: 280px;
   overflow-y: auto;
-  background: var(--mac-surface);
+  background: rgba(255, 255, 255, 0.98);
   border: 1px solid var(--mac-border);
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
   z-index: 50;
   padding: 4px;
+  color: var(--mac-text);
 }
 
-:global(.dark) .level-select-options {
-  background: var(--mac-surface);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+:global(.dark) .level-select-options,
+.level-select-options.dark {
+  background: #242731;
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.42);
+  color: #f5f5f7;
 }
 
 .level-option {
@@ -3769,10 +3744,22 @@ const confirmDeleteCliTool = async () => {
   background: var(--mac-surface-strong);
 }
 
+:global(.dark) .level-select-options .level-option:hover,
+:global(.dark) .level-select-options .level-option.active,
+.level-select-options.dark .level-option:hover,
+.level-select-options.dark .level-option.active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .level-option.selected {
   background: rgba(10, 132, 255, 0.12); /* fallback for old WebKit */
   background: color-mix(in srgb, var(--mac-accent) 12%, transparent);
   font-weight: 500;
+}
+
+:global(.dark) .level-select-options .level-option.selected,
+.level-select-options.dark .level-option.selected {
+  background: rgba(10, 132, 255, 0.24);
 }
 
 .level-option .level-name {
@@ -3781,8 +3768,20 @@ const confirmDeleteCliTool = async () => {
   color: var(--mac-text);
 }
 
+:global(.dark) .level-select-options .level-name,
+:global(.dark) .level-select-options .level-desc,
+.level-select-options.dark .level-name,
+.level-select-options.dark .level-desc {
+  color: #f5f5f7;
+}
+
 .level-option.selected .level-name {
   color: var(--mac-accent);
+}
+
+:global(.dark) .level-select-options .level-option.selected .level-name,
+.level-select-options.dark .level-option.selected .level-name {
+  color: #65aaff;
 }
 
 /* 黑名单横幅 */
@@ -4466,6 +4465,13 @@ const confirmDeleteCliTool = async () => {
   outline-offset: 2px;
 }
 
+.tool-select option,
+.config-format-select option,
+.target-file-select option {
+  background: var(--mac-surface);
+  color: var(--mac-text);
+}
+
 .proxy-fields-row {
   display: flex;
   gap: 8px;
@@ -4500,6 +4506,13 @@ const confirmDeleteCliTool = async () => {
 :global(.dark) .config-format-select:hover,
 :global(.dark) .target-file-select:hover {
   border-color: rgba(255, 255, 255, 0.2);
+}
+
+:global(.dark) .tool-select option,
+:global(.dark) .config-format-select option,
+:global(.dark) .target-file-select option {
+  background: #242731;
+  color: #f5f5f7;
 }
 
 /* 直连应用按钮 */

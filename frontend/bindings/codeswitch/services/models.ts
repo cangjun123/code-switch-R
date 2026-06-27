@@ -43,6 +43,10 @@ export class AppSettings {
      * 同 Level 轮询负载均衡开关（默认关闭）
      */
     "enable_round_robin": boolean;
+    "notification_webhook_url": string;
+    "notification_webhook_method": string;
+    "notification_webhook_headers": string;
+    "notification_webhook_body": string;
 
     /** Creates a new AppSettings instance. */
     constructor($$source: Partial<AppSettings> = {}) {
@@ -120,6 +124,18 @@ export class AppSettings {
         }
         if (!("enable_round_robin" in $$source)) {
             this["enable_round_robin"] = false;
+        }
+        if (!("notification_webhook_url" in $$source)) {
+            this["notification_webhook_url"] = "";
+        }
+        if (!("notification_webhook_method" in $$source)) {
+            this["notification_webhook_method"] = "";
+        }
+        if (!("notification_webhook_headers" in $$source)) {
+            this["notification_webhook_headers"] = "";
+        }
+        if (!("notification_webhook_body" in $$source)) {
+            this["notification_webhook_body"] = "";
         }
 
         Object.assign(this, $$source);
@@ -2075,6 +2091,11 @@ export class Provider {
     "dropImageFields"?: string[];
 
     /**
+     * CLI 配置 - 供应商编辑弹窗中关联的 CLI 可编辑配置
+     */
+    "cliConfig"?: { [_ in string]?: any };
+
+    /**
      * [已废弃] Responses max_output_tokens 兼容开关
      * 已迁移到 dropResponsesFields。
      */
@@ -2141,6 +2162,7 @@ export class Provider {
         const $$createField10_0 = $$createType20;
         const $$createField11_0 = $$createType4;
         const $$createField15_0 = $$createType22;
+        const $$createField23_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("supportedModels" in $$parsedSource) {
             $$parsedSource["supportedModels"] = $$createField10_0($$parsedSource["supportedModels"]);
@@ -2150,6 +2172,9 @@ export class Provider {
         }
         if ("availabilityConfig" in $$parsedSource) {
             $$parsedSource["availabilityConfig"] = $$createField15_0($$parsedSource["availabilityConfig"]);
+        }
+        if ("cliConfig" in $$parsedSource) {
+            $$parsedSource["cliConfig"] = $$createField23_0($$parsedSource["cliConfig"]);
         }
         return new Provider($$parsedSource as Partial<Provider>);
     }
@@ -2355,6 +2380,8 @@ export class ReqeustLog {
     "reasoning_tokens": number;
     "is_stream": boolean;
     "duration_sec": number;
+    "first_token_duration_sec": number;
+    "client_ip": string;
     "created_at": string;
     "input_cost": number;
     "output_cost": number;
@@ -2403,6 +2430,12 @@ export class ReqeustLog {
         }
         if (!("duration_sec" in $$source)) {
             this["duration_sec"] = 0;
+        }
+        if (!("first_token_duration_sec" in $$source)) {
+            this["first_token_duration_sec"] = 0;
+        }
+        if (!("client_ip" in $$source)) {
+            this["client_ip"] = "";
         }
         if (!("created_at" in $$source)) {
             this["created_at"] = "";

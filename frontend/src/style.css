@@ -191,6 +191,18 @@ html.dark .mac-sidebar-item:hover {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--mac-accent) 25%, transparent);
 }
 
+.mac-select option,
+.form-field select option {
+  background: var(--mac-surface);
+  color: var(--mac-text);
+}
+
+html.dark .mac-select option,
+html.dark .form-field select option {
+  background: #242731;
+  color: #f5f5f7;
+}
+
 .mac-switch {
   width: 44px;
   height: 24px;
@@ -941,6 +953,23 @@ html.dark .mac-sidebar-item:hover {
   color: #94a3b8;
 }
 
+.logs-table td.http-processing {
+  color: #38bdf8;
+}
+
+.processing-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 6px;
+  background: rgba(56, 189, 248, 0.18);
+  color: #0369a1;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .token-cell {
   font-size: 0.82rem;
   line-height: 1.5;
@@ -1021,6 +1050,12 @@ html.dark .mac-sidebar-item:hover {
 
 .logs-table tbody tr:nth-child(even) {
   background-color: transparent;
+}
+
+.logs-table tbody tr.processing-row,
+.logs-table tbody tr.processing-row:nth-child(odd),
+.logs-table tbody tr.processing-row:nth-child(even) {
+  background-color: rgba(56, 189, 248, 0.08);
 }
 
 .logs-table th {

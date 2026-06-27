@@ -77,6 +77,35 @@ func isClientAbortError(ctx context.Context, err error) bool {
 	return false
 }
 
+func clientIPFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+
+	remoteAddr := strings.TrimSpace(r.RemoteAddr)
+	if remoteAddr == "" {
+		return ""
+	}
+
+	host := remoteAddr
+	if parsedHost, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = parsedHost
+	}
+
+	host = strings.Trim(host, "[]")
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	return host
+}
+
+func markFirstTokenDuration(requestLog *ReqeustLog, start time.Time) {
+	if requestLog == nil || requestLog.FirstTokenDurationSec > 0 {
+		return
+	}
+	requestLog.FirstTokenDurationSec = time.Since(start).Seconds()
+}
+
 func NewProviderRelayService(providerService *ProviderService, geminiService *GeminiService, codexRelayKeys *CodexRelayKeyService, blacklistService *BlacklistService, notificationService *NotificationService, appSettings *AppSettingsService, addr string) *ProviderRelayService {
 	if addr == "" {
 		addr = DefaultRelayBindAddr
@@ -1023,10 +1052,14 @@ func (prs *ProviderRelayService) forwardRequest(
 		Provider: provider.Name,
 		Model:    model,
 		IsStream: isStream,
+		ClientIP: clientIPFromRequest(c.Request),
 	}
 	start := time.Now()
+	activeRequestID := defaultActiveRequestTracker.Start(requestLog, start)
+	requestLog.ActiveRequestID = activeRequestID
 	defer func() {
 		requestLog.DurationSec = time.Since(start).Seconds()
+		defer defaultActiveRequestTracker.Finish(activeRequestID)
 		if requestLog.SkipLog {
 			return
 		}
@@ -1045,8 +1078,8 @@ func (prs *ProviderRelayService) forwardRequest(
 			INSERT INTO request_log (
 				platform, model, provider, http_code,
 				input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-				reasoning_tokens, is_stream, duration_sec
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			requestLog.Platform,
 			requestLog.Model,
@@ -1059,6 +1092,8 @@ func (prs *ProviderRelayService) forwardRequest(
 			requestLog.ReasoningTokens,
 			boolToInt(requestLog.IsStream),
 			requestLog.DurationSec,
+			requestLog.FirstTokenDurationSec,
+			requestLog.ClientIP,
 		)
 
 		if err != nil {
@@ -1156,9 +1191,9 @@ func (prs *ProviderRelayService) forwardRequest(
 			copyErr = writeTransformedJSONResponse(c.Writer, resp, requestLog)
 		} else if sseConverter != nil && isStream {
 			// 使用协议转换 Hook
-			_, copyErr = writeStreamingResponse(c.Writer, resp, protocolConvertHook(sseConverter, kind, requestLog))
+			_, copyErr = writeStreamingResponse(c.Writer, resp, requestLog, start, protocolConvertHook(sseConverter, kind, requestLog))
 		} else if isStreamResponse(resp, isStream) {
-			_, copyErr = writeStreamingResponse(c.Writer, resp, ReqeustLogHook(c, kind, requestLog))
+			_, copyErr = writeStreamingResponse(c.Writer, resp, requestLog, start, ReqeustLogHook(c, kind, requestLog))
 		} else {
 			_, copyErr = resp.ToHttpResponseWriter(c.Writer, ReqeustLogHook(c, kind, requestLog))
 		}
@@ -1179,9 +1214,9 @@ func (prs *ProviderRelayService) forwardRequest(
 			copyErr = writeTransformedJSONResponse(c.Writer, resp, requestLog)
 		} else if sseConverter != nil && isStream {
 			// 使用协议转换 Hook
-			_, copyErr = writeStreamingResponse(c.Writer, resp, protocolConvertHook(sseConverter, kind, requestLog))
+			_, copyErr = writeStreamingResponse(c.Writer, resp, requestLog, start, protocolConvertHook(sseConverter, kind, requestLog))
 		} else if isStreamResponse(resp, isStream) {
-			_, copyErr = writeStreamingResponse(c.Writer, resp, ReqeustLogHook(c, kind, requestLog))
+			_, copyErr = writeStreamingResponse(c.Writer, resp, requestLog, start, ReqeustLogHook(c, kind, requestLog))
 		} else {
 			_, copyErr = resp.ToHttpResponseWriter(c.Writer, ReqeustLogHook(c, kind, requestLog))
 		}
@@ -1213,7 +1248,7 @@ func isStreamResponse(resp *xrequest.Response, requestedStream bool) bool {
 	return strings.Contains(strings.ToLower(resp.RawResponse.Header.Get("Content-Type")), "text/event-stream")
 }
 
-func writeStreamingResponse(w http.ResponseWriter, resp *xrequest.Response, hooks ...xrequest.ResponseHook) (int64, error) {
+func writeStreamingResponse(w http.ResponseWriter, resp *xrequest.Response, requestLog *ReqeustLog, start time.Time, hooks ...xrequest.ResponseHook) (int64, error) {
 	if resp == nil || resp.RawResponse == nil {
 		return 0, fmt.Errorf("empty upstream response")
 	}
@@ -1243,7 +1278,7 @@ func writeStreamingResponse(w http.ResponseWriter, resp *xrequest.Response, hook
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
-			n, writeErr := writeStreamingLine(w, line, hooks...)
+			n, writeErr := writeStreamingLine(w, line, requestLog, start, hooks...)
 			totalBytes += n
 			if writeErr != nil {
 				return totalBytes, writeErr
@@ -1259,7 +1294,7 @@ func writeStreamingResponse(w http.ResponseWriter, resp *xrequest.Response, hook
 	}
 }
 
-func writeStreamingLine(w http.ResponseWriter, line []byte, hooks ...xrequest.ResponseHook) (int64, error) {
+func writeStreamingLine(w http.ResponseWriter, line []byte, requestLog *ReqeustLog, start time.Time, hooks ...xrequest.ResponseHook) (int64, error) {
 	originalLine := make([]byte, len(line))
 	copy(originalLine, line)
 
@@ -1273,6 +1308,9 @@ func writeStreamingLine(w http.ResponseWriter, line []byte, hooks ...xrequest.Re
 		}
 		if !flush {
 			return 0, nil
+		}
+		if len(bytes.TrimSpace(processedLine)) > 0 {
+			markFirstTokenDuration(requestLog, start)
 		}
 		if bytes.HasSuffix(originalLine, []byte("\n")) {
 			processedLine = append(processedLine, '\n')
@@ -1468,6 +1506,8 @@ func ensureRequestLogTableWithDB(db *sql.DB) error {
 		reasoning_tokens INTEGER,
 		is_stream INTEGER DEFAULT 0,
 		duration_sec REAL DEFAULT 0,
+		first_token_duration_sec REAL DEFAULT 0,
+		client_ip TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`
 
@@ -1491,6 +1531,8 @@ func ensureRequestLogTableWithDB(db *sql.DB) error {
 		{name: "created_at", definition: "DATETIME DEFAULT CURRENT_TIMESTAMP"},
 		{name: "is_stream", definition: "INTEGER DEFAULT 0"},
 		{name: "duration_sec", definition: "REAL DEFAULT 0"},
+		{name: "first_token_duration_sec", definition: "REAL DEFAULT 0"},
+		{name: "client_ip", definition: "TEXT"},
 	}
 	for _, column := range requiredColumns {
 		if err := ensureRequestLogColumn(db, column.name, column.definition); err != nil {
@@ -1569,29 +1611,33 @@ func parseEventPayload(payload string, parser func(string, *ReqeustLog), usage *
 }
 
 type ReqeustLog struct {
-	ID                int64   `json:"id"`
-	Platform          string  `json:"platform"` // claude、codex 或 gemini
-	Model             string  `json:"model"`
-	Provider          string  `json:"provider"` // provider name
-	HttpCode          int     `json:"http_code"`
-	InputTokens       int     `json:"input_tokens"`
-	OutputTokens      int     `json:"output_tokens"`
-	CacheCreateTokens int     `json:"cache_create_tokens"`
-	CacheReadTokens   int     `json:"cache_read_tokens"`
-	ReasoningTokens   int     `json:"reasoning_tokens"`
-	IsStream          bool    `json:"is_stream"`
-	DurationSec       float64 `json:"duration_sec"`
-	CreatedAt         string  `json:"created_at"`
-	InputCost         float64 `json:"input_cost"`
-	OutputCost        float64 `json:"output_cost"`
-	ReasoningCost     float64 `json:"reasoning_cost"`
-	CacheCreateCost   float64 `json:"cache_create_cost"`
-	CacheReadCost     float64 `json:"cache_read_cost"`
-	Ephemeral5mCost   float64 `json:"ephemeral_5m_cost"`
-	Ephemeral1hCost   float64 `json:"ephemeral_1h_cost"`
-	TotalCost         float64 `json:"total_cost"`
-	HasPricing        bool    `json:"has_pricing"`
-	SkipLog           bool    `json:"-"`
+	ID                    int64   `json:"id"`
+	Platform              string  `json:"platform"` // claude、codex 或 gemini
+	Model                 string  `json:"model"`
+	Provider              string  `json:"provider"` // provider name
+	HttpCode              int     `json:"http_code"`
+	InputTokens           int     `json:"input_tokens"`
+	OutputTokens          int     `json:"output_tokens"`
+	CacheCreateTokens     int     `json:"cache_create_tokens"`
+	CacheReadTokens       int     `json:"cache_read_tokens"`
+	ReasoningTokens       int     `json:"reasoning_tokens"`
+	IsStream              bool    `json:"is_stream"`
+	DurationSec           float64 `json:"duration_sec"`
+	FirstTokenDurationSec float64 `json:"first_token_duration_sec"`
+	ClientIP              string  `json:"client_ip"`
+	CreatedAt             string  `json:"created_at"`
+	InputCost             float64 `json:"input_cost"`
+	OutputCost            float64 `json:"output_cost"`
+	ReasoningCost         float64 `json:"reasoning_cost"`
+	CacheCreateCost       float64 `json:"cache_create_cost"`
+	CacheReadCost         float64 `json:"cache_read_cost"`
+	Ephemeral5mCost       float64 `json:"ephemeral_5m_cost"`
+	Ephemeral1hCost       float64 `json:"ephemeral_1h_cost"`
+	TotalCost             float64 `json:"total_cost"`
+	HasPricing            bool    `json:"has_pricing"`
+	Status                string  `json:"status,omitempty"`
+	ActiveRequestID       int64   `json:"-"`
+	SkipLog               bool    `json:"-"`
 }
 
 // claude code usage parser
@@ -1663,7 +1709,7 @@ func mergeGeminiUsageMetadata(usage gjson.Result, reqLog *ReqeustLog) {
 // streamGeminiResponseWithHook 流式传输 Gemini 响应并通过 Hook 提取 token 用量
 // 【修复】维护跨 chunk 缓冲，确保完整 SSE 事件解析
 // Gemini SSE 格式: "data: {json}\n\n" 或 "data: [DONE]\n\n"
-func streamGeminiResponseWithHook(body io.Reader, writer io.Writer, requestLog *ReqeustLog) error {
+func streamGeminiResponseWithHook(body io.Reader, writer io.Writer, requestLog *ReqeustLog, start time.Time) error {
 	buf := make([]byte, 8192)   // 增大缓冲区减少系统调用
 	var lineBuf strings.Builder // 跨 chunk 行缓冲
 
@@ -1671,6 +1717,7 @@ func streamGeminiResponseWithHook(body io.Reader, writer io.Writer, requestLog *
 		n, err := body.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
+			markFirstTokenDuration(requestLog, start)
 			// 写入客户端（优先保证数据传输）
 			if _, writeErr := writer.Write(chunk); writeErr != nil {
 				return writeErr
@@ -1852,12 +1899,16 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 			IsStream:     isStream,
 			InputTokens:  0,
 			OutputTokens: 0,
+			ClientIP:     clientIPFromRequest(c.Request),
 		}
 		start := time.Now()
+		activeRequestID := defaultActiveRequestTracker.Start(requestLog, start)
+		requestLog.ActiveRequestID = activeRequestID
 
 		// 保存日志的 defer
 		defer func() {
 			requestLog.DurationSec = time.Since(start).Seconds()
+			defer defaultActiveRequestTracker.Finish(activeRequestID)
 			if GlobalDBQueueLogs == nil {
 				return
 			}
@@ -1867,13 +1918,13 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 				INSERT INTO request_log (
 					platform, model, provider, http_code,
 					input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-					reasoning_tokens, is_stream, duration_sec
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`,
 				requestLog.Platform, requestLog.Model, requestLog.Provider, requestLog.HttpCode,
 				requestLog.InputTokens, requestLog.OutputTokens, requestLog.CacheCreateTokens,
 				requestLog.CacheReadTokens, requestLog.ReasoningTokens,
-				boolToInt(requestLog.IsStream), requestLog.DurationSec,
+				boolToInt(requestLog.IsStream), requestLog.DurationSec, requestLog.FirstTokenDurationSec, requestLog.ClientIP,
 			)
 		}()
 
@@ -1922,6 +1973,7 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 					// 预填日志
 					requestLog.Provider = provider.Name
 					requestLog.Model = provider.Model
+					defaultActiveRequestTracker.Update(requestLog.ActiveRequestID, requestLog)
 
 					// 同 Provider 内重试循环
 					for retryCount := 0; retryCount < maxRetryPerProvider; retryCount++ {
@@ -1936,7 +1988,7 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 						fmt.Printf("[Gemini] [拉黑模式] Provider: %s (Level %d) | 重试 %d/%d\n",
 							provider.Name, level, retryCount+1, maxRetryPerProvider)
 
-						ok, errMsg, responseWritten := prs.forwardGeminiRequest(c, &provider, endpoint, bodyBytes, isStream, requestLog)
+						ok, errMsg, responseWritten := prs.forwardGeminiRequest(c, &provider, endpoint, bodyBytes, isStream, requestLog, start)
 						if ok {
 							fmt.Printf("[Gemini] ✓ 成功: %s | 重试 %d 次\n", provider.Name, retryCount+1)
 							_ = prs.blacklistService.RecordSuccess("gemini", provider.Name)
@@ -2017,8 +2069,9 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 				// 预填日志，失败也能落库
 				requestLog.Provider = provider.Name
 				requestLog.Model = provider.Model
+				defaultActiveRequestTracker.Update(requestLog.ActiveRequestID, requestLog)
 
-				ok, errMsg, responseWritten := prs.forwardGeminiRequest(c, &provider, endpoint, bodyBytes, isStream, requestLog)
+				ok, errMsg, responseWritten := prs.forwardGeminiRequest(c, &provider, endpoint, bodyBytes, isStream, requestLog, start)
 				if ok {
 					_ = prs.blacklistService.RecordSuccess("gemini", provider.Name)
 					// 记录最后使用的供应商
@@ -2090,6 +2143,7 @@ func (prs *ProviderRelayService) forwardGeminiRequest(
 	bodyBytes []byte,
 	isStream bool,
 	requestLog *ReqeustLog,
+	requestStart time.Time,
 ) (success bool, errMsg string, responseWritten bool) {
 	providerStart := time.Now()
 
@@ -2106,6 +2160,7 @@ func (prs *ProviderRelayService) forwardGeminiRequest(
 	} else {
 		requestLog.Model = provider.Model
 	}
+	defaultActiveRequestTracker.Update(requestLog.ActiveRequestID, requestLog)
 
 	// 创建 HTTP 请求
 	req, err := http.NewRequest("POST", targetURL, bytes.NewReader(bodyBytes))
@@ -2159,7 +2214,7 @@ func (prs *ProviderRelayService) forwardGeminiRequest(
 		c.Status(resp.StatusCode)
 		c.Writer.Flush()
 		// 【重要】从 Flush() 开始，响应头已写入客户端，任何失败都不能重试
-		copyErr := streamGeminiResponseWithHook(resp.Body, c.Writer, requestLog)
+		copyErr := streamGeminiResponseWithHook(resp.Body, c.Writer, requestLog, requestStart)
 		if copyErr != nil {
 			fmt.Printf("[Gemini]   ⚠️ 流式传输中断: %s | 错误: %v\n", provider.Name, copyErr)
 			// 流式传输中断：已写入部分响应，客户端会收到不完整数据

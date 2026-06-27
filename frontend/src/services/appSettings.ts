@@ -26,6 +26,10 @@ export type AppSettings = {
   auto_connectivity_test: boolean
   enable_switch_notify: boolean // 供应商切换通知开关
   enable_round_robin: boolean   // 同 Level 轮询负载均衡开关
+  notification_webhook_url: string
+  notification_webhook_method: string
+  notification_webhook_headers: string
+  notification_webhook_body: string
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -54,6 +58,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   auto_connectivity_test: false,
   enable_switch_notify: true,  // 默认开启
   enable_round_robin: false,   // 默认关闭轮询
+  notification_webhook_url: '',
+  notification_webhook_method: 'POST',
+  notification_webhook_headers: '{\n  "Content-Type": "application/json"\n}',
+  notification_webhook_body: '{\n  "message": "{content}",\n  "title": "{title}"\n}',
 }
 
 export const fetchAppSettings = async (): Promise<AppSettings> => {

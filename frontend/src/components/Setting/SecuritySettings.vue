@@ -209,6 +209,7 @@ onMounted(async () => {
             :placeholder="t('auth.placeholders.currentPassword')"
             :disabled="credentialsBusy"
           />
+          <small class="security-field-placeholder" aria-hidden="true">&nbsp;</small>
         </label>
 
         <label class="security-field">
@@ -381,6 +382,11 @@ onMounted(async () => {
   gap: 8px;
 }
 
+.security-field .base-input {
+  height: 42px;
+  box-sizing: border-box;
+}
+
 .security-field span {
   font-size: 0.9rem;
   font-weight: 600;
@@ -389,6 +395,12 @@ onMounted(async () => {
 .security-field small {
   color: var(--mac-text-secondary);
   font-size: 0.76rem;
+  min-height: 16px;
+  line-height: 1.35;
+}
+
+.security-field-placeholder {
+  visibility: hidden;
 }
 
 .security-actions,
@@ -402,6 +414,10 @@ onMounted(async () => {
 
 .security-actions {
   justify-content: flex-end;
+}
+
+.security-create-row {
+  align-items: flex-end;
 }
 
 .security-field-grow {

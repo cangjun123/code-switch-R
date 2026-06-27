@@ -192,9 +192,11 @@ func TestWriteStreamingResponseFlushesFirstLineImmediately(t *testing.T) {
 	})
 
 	recorder := newStreamingRecorder()
+	requestLog := &ReqeustLog{}
+	start := time.Now()
 	done := make(chan error, 1)
 	go func() {
-		_, err := writeStreamingResponse(recorder, resp)
+		_, err := writeStreamingResponse(recorder, resp, requestLog, start)
 		done <- err
 	}()
 
@@ -210,6 +212,9 @@ func TestWriteStreamingResponseFlushesFirstLineImmediately(t *testing.T) {
 
 	if got := recorder.BodyString(); !strings.Contains(got, "message_start") {
 		t.Fatalf("expected first line in response body, got %q", got)
+	}
+	if requestLog.FirstTokenDurationSec <= 0 {
+		t.Fatalf("expected first token duration to be recorded, got %f", requestLog.FirstTokenDurationSec)
 	}
 
 	if recorder.header.Get("X-Accel-Buffering") != "no" {

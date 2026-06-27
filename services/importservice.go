@@ -163,16 +163,6 @@ func (is *ImportService) ImportFromPath(path string) (ConfigImportResult, error)
 	}
 	result.ImportedProviders = addedProviders
 
-	pendingServers, err := is.pendingMCPCandidates(cfg)
-	if err != nil {
-		return result, err
-	}
-	addedServers, err := is.importMCPServers(pendingServers)
-	if err != nil {
-		return result, err
-	}
-	result.ImportedMCP = addedServers
-
 	status, err := is.evaluateStatus(cfg)
 	if err != nil {
 		return result, err
@@ -201,12 +191,6 @@ func (is *ImportService) evaluateStatus(cfg *ccSwitchConfig) (ConfigImportStatus
 	status.PendingProviders = providerCount > 0
 	status.PendingProviderCount = providerCount
 
-	pendingServers, err := is.pendingMCPCandidates(cfg)
-	if err != nil {
-		return status, err
-	}
-	status.PendingMCPCount = len(pendingServers)
-	status.PendingMCP = status.PendingMCPCount > 0
 	return status, nil
 }
 
@@ -472,7 +456,7 @@ func ccSwitchConfigPath() (string, error) {
 	}
 	// 优先检查 SQLite 数据库（新版 cc-switch），然后是 JSON 配置文件
 	candidates := []string{
-		filepath.Join(home, ".cc-switch", "cc-switch.db"),       // 新版 SQLite
+		filepath.Join(home, ".cc-switch", "cc-switch.db"),         // 新版 SQLite
 		filepath.Join(home, ".cc-switch", "config.json.migrated"), // 旧版迁移后的 JSON
 		filepath.Join(home, ".cc-switch", "config.json"),          // 旧版 JSON
 	}

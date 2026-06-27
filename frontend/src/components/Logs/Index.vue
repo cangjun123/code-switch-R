@@ -32,17 +32,21 @@
       <Line :data="chartData" :options="chartOptions" />
     </section>
 
-    <section class="maintenance-panel">
+    <section class="maintenance-panel" :class="{ collapsed: maintenanceCollapsed }">
       <div class="maintenance-header">
         <div>
           <h2>{{ t('components.logs.maintenance.title') }}</h2>
           <p>{{ t('components.logs.maintenance.subtitle') }}</p>
         </div>
         <div class="maintenance-actions">
-          <BaseButton variant="outline" size="sm" :disabled="maintenanceLoading" @click="loadMaintenanceInfo">
+          <BaseButton variant="outline" size="sm" @click="maintenanceCollapsed = !maintenanceCollapsed">
+            {{ maintenanceCollapsed ? t('components.logs.maintenance.expand') : t('components.logs.maintenance.collapse') }}
+          </BaseButton>
+          <BaseButton v-if="!maintenanceCollapsed" variant="outline" size="sm" :disabled="maintenanceLoading" @click="loadMaintenanceInfo">
             {{ t('components.logs.maintenance.refresh') }}
           </BaseButton>
           <BaseButton
+            v-if="!maintenanceCollapsed"
             variant="danger"
             size="sm"
             :disabled="maintenanceLoading || cleanupBusy || !maintenanceInfo || maintenanceInfo.expired_rows <= 0"
@@ -53,7 +57,7 @@
         </div>
       </div>
 
-      <div class="maintenance-body">
+      <div v-show="!maintenanceCollapsed" class="maintenance-body">
         <label class="retention-control">
           <span>{{ t('components.logs.maintenance.retentionDays') }}</span>
           <input
@@ -119,48 +123,53 @@
             <th class="col-platform">{{ t('components.logs.table.platform') }}</th>
             <th class="col-provider">{{ t('components.logs.table.provider') }}</th>
             <th class="col-model">{{ t('components.logs.table.model') }}</th>
+            <th class="col-client-ip">{{ t('components.logs.table.clientIp') }}</th>
             <th class="col-http">{{ t('components.logs.table.httpCode') }}</th>
             <th class="col-stream">{{ t('components.logs.table.stream') }}</th>
+            <th class="col-first-token">{{ t('components.logs.table.firstToken') }}</th>
             <th class="col-duration">{{ t('components.logs.table.duration') }}</th>
-            <th class="col-cost">{{ t('components.logs.table.cost') }}</th>
             <th class="col-tokens">{{ t('components.logs.table.tokens') }}</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="item in pagedLogs" :key="item.id">
+          <tr v-for="item in pagedLogs" :key="item.id" :class="{ 'processing-row': isProcessingLog(item) }">
             <td>{{ formatTime(item.created_at) }}</td>
             <td>{{ item.platform || '—' }}</td>
             <td>{{ item.provider || '—' }}</td>
             <td>{{ item.model || '—' }}</td>
-            <td :class="['code', httpCodeClass(item.http_code)]">{{ item.http_code }}</td>
+            <td class="client-ip-cell">{{ item.client_ip || '—' }}</td>
+            <td :class="['code', httpCodeClassForLog(item)]">
+              <span v-if="isProcessingLog(item)" class="processing-tag">{{ t('components.logs.status.processing') }}</span>
+              <span v-else>{{ item.http_code || '—' }}</span>
+            </td>
             <td><span :class="['stream-tag', item.is_stream ? 'on' : 'off']">{{ formatStream(item.is_stream) }}</span></td>
+            <td><span :class="['duration-tag', durationColorForLog(item, item.first_token_duration_sec)]">{{ formatFirstTokenDuration(item) }}</span></td>
             <td><span :class="['duration-tag', durationColor(item.duration_sec)]">{{ formatDuration(item.duration_sec) }}</span></td>
-            <td class="cost-cell">{{ formatCurrency(item.total_cost) }}</td>
             <td class="token-cell">
               <div>
                 <span class="token-label">{{ t('components.logs.tokenLabels.input') }}</span>
-                <span class="token-value">{{ formatTokenNumber(item.input_tokens) }}</span>
+                <span class="token-value">{{ formatLogTokenNumber(item, item.input_tokens) }}</span>
               </div>
               <div>
                 <span class="token-label">{{ t('components.logs.tokenLabels.output') }}</span>
-                <span class="token-value">{{ formatTokenNumber(item.output_tokens) }}</span>
+                <span class="token-value">{{ formatLogTokenNumber(item, item.output_tokens) }}</span>
               </div>
               <div>
                 <span class="token-label">{{ t('components.logs.tokenLabels.reasoning') }}</span>
-                <span class="token-value">{{ formatTokenNumber(item.reasoning_tokens) }}</span>
+                <span class="token-value">{{ formatLogTokenNumber(item, item.reasoning_tokens) }}</span>
               </div>
               <div>
                 <span class="token-label">{{ t('components.logs.tokenLabels.cacheWrite') }}</span>
-                <span class="token-value">{{ formatTokenNumber(item.cache_create_tokens) }}</span>
+                <span class="token-value">{{ formatLogTokenNumber(item, item.cache_create_tokens) }}</span>
               </div>
               <div>
                 <span class="token-label">{{ t('components.logs.tokenLabels.cacheRead') }}</span>
-                <span class="token-value">{{ formatTokenNumber(item.cache_read_tokens) }}</span>
+                <span class="token-value">{{ formatLogTokenNumber(item, item.cache_read_tokens) }}</span>
               </div>
             </td>
           </tr>
           <tr v-if="!pagedLogs.length && !loading">
-            <td colspan="9" class="empty">{{ t('components.logs.empty') }}</td>
+            <td colspan="10" class="empty">{{ t('components.logs.empty') }}</td>
           </tr>
         </tbody>
       </table>
@@ -275,6 +284,7 @@ const cleanupBusy = ref(false)
 const saveRetentionBusy = ref(false)
 const retentionDaysInput = ref(30)
 const maintenanceMessage = ref('')
+const maintenanceCollapsed = ref(true)
 
 // 金额明细弹窗状态
 const costDetailModal = reactive<{
@@ -428,8 +438,23 @@ const cleanupExpiredLogs = async () => {
 
 const parseLogDate = (value?: string) => {
   if (!value) return null
+  const localMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/)
+  if (localMatch) {
+    const [, year, month, day, hour, minute, second] = localMatch
+    const parsed = new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second),
+    )
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed
+    }
+  }
   const normalize = value.replace(' ', 'T')
-  const attempts = [value, `${normalize}`, `${normalize}Z`]
+  const attempts = [`${normalize}`, `${normalize}Z`, value]
   for (const candidate of attempts) {
     const parsed = new Date(candidate)
     if (!Number.isNaN(parsed.getTime())) {
@@ -693,6 +718,13 @@ const formatDuration = (value?: number) => {
   return `${value.toFixed(2)}s`
 }
 
+const isProcessingLog = (item: RequestLog) => item.status === 'processing'
+
+const formatFirstTokenDuration = (item: RequestLog) => {
+  if (isProcessingLog(item)) return '—'
+  return formatDuration(item.first_token_duration_sec)
+}
+
 const httpCodeClass = (code: number) => {
   if (code >= 500) return 'http-server-error'
   if (code >= 400) return 'http-client-error'
@@ -701,11 +733,21 @@ const httpCodeClass = (code: number) => {
   return 'http-info'
 }
 
+const httpCodeClassForLog = (item: RequestLog) => {
+  if (isProcessingLog(item)) return 'http-processing'
+  return httpCodeClass(item.http_code)
+}
+
 const durationColor = (value?: number) => {
   if (!value || Number.isNaN(value)) return 'neutral'
   if (value < 2) return 'fast'
   if (value < 5) return 'medium'
   return 'slow'
+}
+
+const durationColorForLog = (item: RequestLog, value?: number) => {
+  if (isProcessingLog(item)) return 'neutral'
+  return durationColor(value)
 }
 
 const formatNumber = (value?: number) => {
@@ -744,6 +786,11 @@ const formatTokenNumber = (value?: number) => {
   }
 
   return value.toLocaleString()
+}
+
+const formatLogTokenNumber = (item: RequestLog, value?: number) => {
+  if (isProcessingLog(item)) return '—'
+  return formatTokenNumber(value)
 }
 
 /**
@@ -869,6 +916,10 @@ onUnmounted(() => {
   gap: 1rem;
   align-items: flex-start;
   margin-bottom: 0.85rem;
+}
+
+.maintenance-panel.collapsed .maintenance-header {
+  margin-bottom: 0;
 }
 
 .maintenance-header h2 {
@@ -1173,12 +1224,19 @@ html.dark .token-detail-item__name {
 }
 
 /* 金额列 */
-.col-cost {
-  width: 80px;
+.col-client-ip {
+  width: 130px;
 }
-.cost-cell {
-  color: #f97316;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
+.client-ip-cell {
+  color: #475569;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+html.dark .client-ip-cell {
+  color: #cbd5e1;
+}
+.col-first-token {
+  width: 90px;
 }
 </style>

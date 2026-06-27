@@ -75,8 +75,6 @@ interface NavItem {
 const navItems: NavItem[] = [
   { path: '/', icon: 'home', labelKey: 'sidebar.home' },
   { path: '/prompts', icon: 'file-text', labelKey: 'sidebar.prompts', isNew: true },
-  { path: '/mcp', icon: 'plug', labelKey: 'sidebar.mcp' },
-  { path: '/skill', icon: 'tool', labelKey: 'sidebar.skill' },
   { path: '/availability', icon: 'activity', labelKey: 'sidebar.availability', isNew: true },
   { path: '/speedtest', icon: 'zap', labelKey: 'sidebar.speedtest', isNew: true },
   { path: '/env', icon: 'search', labelKey: 'sidebar.env', isNew: true },

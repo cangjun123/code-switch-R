@@ -1,5 +1,13 @@
 import { Call } from '@wailsio/runtime'
 
+const browserTimeZone = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+  } catch {
+    return ''
+  }
+}
+
 export type LogPlatform = 'claude' | 'codex' | 'gemini' | 'gpt-image'
 
 export type RequestLog = {
@@ -15,6 +23,8 @@ export type RequestLog = {
   reasoning_tokens: number
   is_stream?: boolean | number
   duration_sec?: number
+  first_token_duration_sec?: number
+  client_ip?: string
   created_at: string
   total_cost?: number
   input_cost?: number
@@ -24,6 +34,7 @@ export type RequestLog = {
   ephemeral_5m_cost?: number
   ephemeral_1h_cost?: number
   has_pricing?: boolean
+  status?: 'processing' | 'completed' | string
 }
 
 type RequestLogQuery = {
@@ -36,7 +47,7 @@ export const fetchRequestLogs = async (query: RequestLogQuery = {}): Promise<Req
   const platform = query.platform ?? ''
   const provider = query.provider ?? ''
   const limit = query.limit ?? 100
-  return Call.ByName('codeswitch/services.LogService.ListRequestLogs', platform, provider, limit)
+  return Call.ByName('codeswitch/services.LogService.ListRequestLogs', platform, provider, limit, browserTimeZone())
 }
 
 export const fetchLogProviders = async (platform: LogPlatform | '' = ''): Promise<string[]> => {
@@ -70,11 +81,11 @@ export type LogStats = {
 }
 
 export const fetchLogStats = async (platform: LogPlatform | '' = ''): Promise<LogStats> => {
-  return Call.ByName('codeswitch/services.LogService.StatsSince', platform)
+  return Call.ByName('codeswitch/services.LogService.StatsSince', platform, browserTimeZone())
 }
 
 export const fetchCostSince = async (start: string, platform: LogPlatform | '' = ''): Promise<number> => {
-  return Call.ByName('codeswitch/services.LogService.CostSince', start, platform)
+  return Call.ByName('codeswitch/services.LogService.CostSince', start, platform, browserTimeZone())
 }
 
 export type ProviderDailyStat = {
@@ -94,7 +105,7 @@ export type ProviderDailyStat = {
 export const fetchProviderDailyStats = async (
   platform: LogPlatform | '' = '',
 ): Promise<ProviderDailyStat[]> => {
-  return Call.ByName('codeswitch/services.LogService.ProviderDailyStats', platform)
+  return Call.ByName('codeswitch/services.LogService.ProviderDailyStats', platform, browserTimeZone())
 }
 
 export type HeatmapStat = {
@@ -108,7 +119,7 @@ export type HeatmapStat = {
 
 export const fetchHeatmapStats = async (days: number): Promise<HeatmapStat[]> => {
   const range = Number.isFinite(days) && days > 0 ? Math.floor(days) : 30
-  return Call.ByName('codeswitch/services.LogService.HeatmapStats', range)
+  return Call.ByName('codeswitch/services.LogService.HeatmapStats', range, browserTimeZone())
 }
 
 export type RequestLogMaintenanceInfo = {

@@ -193,10 +193,7 @@ export function useUpdateStore() {
 
     isInitialized.value = true
 
-    // 延迟 1 秒后自动检查更新
-    setTimeout(() => {
-      doCheckUpdate()
-    }, 1000)
+    // 更新检查保留为手动能力，不再启动时自动访问 GitHub。
   }
 
   /**

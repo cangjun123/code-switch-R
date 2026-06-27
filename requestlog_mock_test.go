@@ -66,7 +66,11 @@ func TestStatsSinceUsesLocalDayForUTCTimestamps(t *testing.T) {
 		t.Fatalf("clear request_log: %v", err)
 	}
 
-	localNow := time.Now().In(time.Local)
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	localNow := time.Now().In(loc)
 	localCreatedAt := startOfDay(localNow).Add(2 * time.Hour)
 	utcStored := localCreatedAt.UTC().Format(timeLayout)
 
@@ -94,7 +98,7 @@ func TestStatsSinceUsesLocalDayForUTCTimestamps(t *testing.T) {
 	}
 
 	logService := services.NewLogService()
-	stats, err := logService.StatsSince("codex")
+	stats, err := logService.StatsSince("codex", "Asia/Shanghai")
 	if err != nil {
 		t.Fatalf("StatsSince(codex): %v", err)
 	}
@@ -105,7 +109,7 @@ func TestStatsSinceUsesLocalDayForUTCTimestamps(t *testing.T) {
 		t.Fatalf("unexpected token totals: input=%d output=%d", stats.InputTokens, stats.OutputTokens)
 	}
 
-	providerStats, err := logService.ProviderDailyStats("codex")
+	providerStats, err := logService.ProviderDailyStats("codex", "Asia/Shanghai")
 	if err != nil {
 		t.Fatalf("ProviderDailyStats(codex): %v", err)
 	}
@@ -116,7 +120,7 @@ func TestStatsSinceUsesLocalDayForUTCTimestamps(t *testing.T) {
 		t.Fatalf("unexpected provider stats: %+v", providerStats[0])
 	}
 
-	logs, err := logService.ListRequestLogs("codex", "utc-provider", 10)
+	logs, err := logService.ListRequestLogs("codex", "utc-provider", 10, "Asia/Shanghai")
 	if err != nil {
 		t.Fatalf("ListRequestLogs: %v", err)
 	}

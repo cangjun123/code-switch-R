@@ -57,10 +57,13 @@ const labelForCell = (date: Date) => {
 const normalizeStatKey = (value?: string | null) => {
 	const trimmed = value?.trim()
 	if (!trimmed) return null
-	const match = trimmed.match(/^(\d{2})-(\d{2}) (\d{2})$/)
-	if (!match) {
-		return null
+	const fullMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2})/)
+	if (fullMatch) {
+		const [, year, monthStr, dayStr, hourStr] = fullMatch
+		return `${year}-${monthStr}-${dayStr} ${hourStr}`
 	}
+	const match = trimmed.match(/^(\d{2})-(\d{2}) (\d{2})$/)
+	if (!match) return null
 	const [, monthStr, dayStr, hourStr] = match
 	const now = new Date()
 	const year = now.getFullYear()

@@ -138,7 +138,7 @@
   "auth": {
     "eyebrow": "管理端访问控制",
     "title": "先验证管理员身份",
-    "lead": "8080 管理界面现在需要账号密码，18100 上的 Codex relay 也只接受后台生成的专用 key。",
+    "lead": "8080 管理界面现在需要账号密码，Codex relay 也只接受后台生成的专用 key。",
     "noteTitle": "当前保护范围",
     "noteBody": "未登录时只能访问初始化 / 登录接口，业务 RPC 与事件流都会被拦住。",
     "statusChecking": "正在检查管理员会话...",
@@ -183,7 +183,7 @@
       "success": "登录成功"
     },
     "security": {
-      "description": "管理 8080 后台账号与 18100 的 Codex relay key。只有这里生成的 key 才能访问 Codex API。",
+      "description": "管理 8080 后台账号与 Codex relay key。只有这里生成的 key 才能访问 Codex API。",
       "adminCardTitle": "管理员账号",
       "adminCardDescription": "当前登录账号：{username}。新账号或新密码留空时表示保持不变。",
       "update": "更新账号密码",
@@ -195,7 +195,7 @@
       "logoutFailed": "退出登录失败",
       "keepHint": "留空则保持不变",
       "keysCardTitle": "Codex API Keys",
-      "keysCardDescription": "18100 上的 Codex 服务会校验这些 key，不再接受任意伪造的密钥。",
+      "keysCardDescription": "管理 Codex API 使用的访问 key。",
       "createLabel": "新 key 名称",
       "createPlaceholder": "例如：本地开发 / CI / 自动化脚本",
       "create": "生成 key",
@@ -212,8 +212,8 @@
       "loadKeysFailed": "读取 Codex key 列表失败",
       "loadingKeys": "正在加载 Codex key 列表...",
       "empty": "当前还没有可用的 Codex key，可以先生成一个。",
-      "oneTimeTitle": "完整 key 只显示这一次",
-      "oneTimeDescription": "请立即复制并妥善保存，列表里只会显示脱敏后的值。"
+      "oneTimeTitle": "新生成的完整 key",
+      "oneTimeDescription": "可以复制后用于 Codex API 访问；列表里会显示脱敏后的值。"
     }
   },
   "prompts": {
@@ -383,16 +383,14 @@
         "github": "打开 GitHub",
         "theme": "切换主题",
         "settings": "打开设置",
-        "mcp": "打开 MCP 面板",
-        "skill": "打开 Skill 列表",
         "gemini": "打开 Gemini CLI 管理",
         "import": "导入 cc-switch 配置",
         "duplicate": "复制供应商"
       },
       "importConfig": {
-        "tooltip": "导入 {providers} 个供应商 · {servers} 个 MCP 服务器",
-        "success": "已导入 {providers} 个供应商与 {servers} 个 MCP 服务器",
-        "empty": "cc-switch 中的供应商与 MCP 均已同步",
+        "tooltip": "导入 {providers} 个供应商",
+        "success": "已导入 {providers} 个供应商",
+        "empty": "cc-switch 中的供应商均已同步",
         "error": "导入 cc-switch 配置失败"
       },
       "firstRun": {
@@ -470,8 +468,8 @@
           "apiEndpoint": "覆盖平台默认端点。留空使用默认（Claude: Anthropic 为 /v1/messages，OpenAI Compatible 为 /v1/responses；Codex: /responses）。GLM 模型请使用 /v1/chat/completions",
           "upstreamProtocol": "指定上游 API 的协议类型。选择 auto 时根据端点自动检测；选择 OpenAI Compatible 时会把 Claude Messages 请求转换到 OpenAI Responses 或 Chat Completions",
           "openAIEndpointMode": "仅用于 Codex/OpenAI 兼容请求的 provider 选择。auto 会根据 API Endpoint 推断；留空且未固定端点时默认同时支持 /responses 和 /v1/chat/completions。",
-          "bridgeResponsesInstructions": "仅用于 /responses。启用后，当客户端请求缺少顶层 instructions 时，会优先从首个 developer/system message 自动补齐；如果没有可提取内容，则回退为默认值 \"You are a helpful assistant.\"，用于兼容要求顶层 instructions 的上游。",
-          "forceResponsesStoreFalse": "仅用于 /responses。启用后，会显式把顶层 store 设为 false，用于兼容要求 store=false 的上游；如果客户端原本传了 true，也会被覆盖。",
+          "bridgeResponsesInstructions": "缺少 instructions 时自动补齐，必要时使用默认助手提示词。",
+          "forceResponsesStoreFalse": "转发 /responses 前强制设置 store=false。",
           "dropResponsesFields": "仅用于 /responses。填写需要在转发前删除的顶层字段名，使用逗号分隔。常见值有 max_output_tokens、temperature、safety_identifier。",
           "dropImageFields": "仅用于 GPT 生图请求。填写需要在转发前删除的顶层 JSON 字段名或 multipart field，使用逗号分隔。`eto` 常见值是 response_format。",
           "dropResponsesMaxOutputTokens": "仅用于 /responses。启用后，会移除顶层 max_output_tokens，用于兼容不支持该字段的上游。",
@@ -525,9 +523,12 @@
         "confirmDeleteTitle": "删除供应商",
         "confirmDeleteMessage": "确认删除 {name} 吗？操作不可撤销",
         "errors": {
-          "invalidUrl": "请输入合法的 API 地址"
+          "invalidUrl": "请输入合法的 API 地址",
+          "nameEmpty": "请输入供应商名称",
+          "nameDuplicate": "该名称已被其它供应商占用"
         },
-        "saveFailed": "保存供应商配置失败"
+        "saveFailed": "保存供应商配置失败",
+        "renameHint": "修改名称会重置该供应商的黑名单状态"
       },
       "levelDesc": {
         "highest": "最高优先级",
@@ -624,8 +625,10 @@
         "platform": "平台",
         "provider": "供应商",
         "model": "模型",
+        "clientIp": "客户端 IP",
         "httpCode": "HTTP",
         "stream": "传输",
+        "firstToken": "首 token",
         "duration": "耗时",
         "cost": "金额",
         "tokens": "Token 汇总"
@@ -637,6 +640,9 @@
         "cacheWrite": "缓存写入",
         "cacheRead": "缓存读取",
         "cost": "金额"
+      },
+      "status": {
+        "processing": "处理中"
       },
       "streamOn": "流式",
       "streamOff": "非流",
@@ -655,6 +661,8 @@
         "subtitle": "查看 request_log 规模并清理过期日志。",
         "refresh": "刷新维护信息",
         "cleanup": "清理过期日志",
+        "expand": "展开",
+        "collapse": "收起",
         "cleaning": "清理中...",
         "retentionDays": "保留天数",
         "save": "保存",
@@ -724,7 +732,17 @@
         "trayPanelCodex": "Codex",
         "autoStart": "开机自启动",
         "switchNotify": "切换通知",
-        "switchNotifyHint": "供应商切换或拉黑时发送系统通知",
+        "switchNotifyHint": "供应商切换或拉黑时发送页面事件；填写 Webhook 后额外推送",
+        "notificationWebhookUrl": "Webhook URL",
+        "notificationWebhookMethod": "请求方法",
+        "notificationWebhookHeaders": "请求头",
+        "notificationWebhookBody": "请求体",
+        "saveNotificationWebhook": "保存通知配置",
+        "saveNotificationWebhookFailed": "保存通知配置失败",
+        "testNotificationWebhook": "发送测试通知",
+        "testingNotificationWebhook": "发送中...",
+        "testNotificationWebhookSuccess": "测试通知已发送",
+        "testNotificationWebhookFailed": "测试通知发送失败",
         "roundRobin": "同 Level 轮询",
         "roundRobinHint": "启用后同 Level 的供应商轮流处理请求，关闭则始终从第一个开始",
         "autoUpdate": "自动更新",
@@ -749,6 +767,16 @@
         "save": "保存",
         "saving": "保存中..."
       },
+      "placeholder": {
+        "notificationWebhookUrl": "例如：http://127.0.0.1:8588",
+        "notificationWebhookHeaders": "JSON 请求头对象",
+        "notificationWebhookBody": "JSON 请求体模板"
+      },
+      "hint": {
+        "notificationWebhookUrl": "留空时不发送远程通知，转发请求不受影响。",
+        "notificationWebhookHeaders": "填写 JSON 对象，也兼容单引号示例。",
+        "notificationWebhookBody": "支持 title 和 content 占位符。"
+      },
       "subLabel": {
         "sb_assistant_access": "需要无障碍访问权限来操作剪切板内容",
         "sb_disk_access": "需要完全磁盘访问权限来实现文件预览"
@@ -765,11 +793,11 @@
         "loading": "加载中...",
         "configFound": "已找到配置文件",
         "configNotFound": "未找到配置文件",
-        "pendingCount": "{providers} 个供应商，{mcp} 个 MCP",
+        "pendingCount": "{providers} 个供应商",
         "action": "导入操作",
         "importBtn": "导入配置",
         "importing": "导入中...",
-        "success": "导入成功：{providers} 个供应商，{mcp} 个 MCP 服务器",
+        "success": "导入成功：{providers} 个供应商",
         "nothingToImport": "没有需要导入的配置（可能已全部导入）",
         "failed": "导入失败",
         "fileNotFound": "配置文件不存在，请检查路径是否正确"

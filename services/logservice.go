@@ -28,8 +28,9 @@ type LogService struct {
 	pricing *modelpricing.Service
 }
 
-func (ls *LogService) CostSince(start string, platform string) (float64, error) {
-	startTime, err := parseTimeInput(start)
+func (ls *LogService) CostSince(start string, platform string, timeZone string) (float64, error) {
+	loc := resolveLogLocation(timeZone)
+	startTime, err := parseTimeInput(start, loc)
 	if err != nil {
 		return 0, err
 	}
@@ -46,9 +47,9 @@ func (ls *LogService) CostSince(start string, platform string) (float64, error) 
 			COALESCE(SUM(cache_create_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0)
 		FROM request_log
-		WHERE datetime(created_at, 'localtime') >= ?
+		WHERE datetime(created_at) >= ?
 	`
-	args := []any{startTime.Format(timeLayout)}
+	args := []any{formatSQLiteUTC(startTime)}
 	if platform != "" {
 		query += " AND platform = ?"
 		args = append(args, platform)
@@ -84,13 +85,15 @@ func NewLogService() *LogService {
 	return &LogService{pricing: svc}
 }
 
-func (ls *LogService) ListRequestLogs(platform string, provider string, limit int) ([]ReqeustLog, error) {
+func (ls *LogService) ListRequestLogs(platform string, provider string, limit int, timeZone string) ([]ReqeustLog, error) {
+	loc := resolveLogLocation(timeZone)
 	if limit <= 0 {
 		limit = 100
 	}
 	if limit > 1000 {
 		limit = 1000
 	}
+	activeLogs := defaultActiveRequestTracker.List(platform, provider, loc)
 	model := xdb.New("request_log")
 	options := []xdb.Option{
 		xdb.OrderByDesc("id"),
@@ -109,28 +112,40 @@ func (ls *LogService) ListRequestLogs(platform string, provider string, limit in
 	logs := make([]ReqeustLog, 0, len(records))
 	for _, record := range records {
 		createdAt := record.GetString("created_at")
-		if parsed, ok := parseCreatedAt(record); ok {
+		if parsed, ok := parseCreatedAt(record, loc); ok {
 			createdAt = parsed.Format(timeLayout)
 		}
 		logEntry := ReqeustLog{
-			ID:                record.GetInt64("id"),
-			Platform:          record.GetString("platform"),
-			Model:             record.GetString("model"),
-			Provider:          record.GetString("provider"),
-			HttpCode:          record.GetInt("http_code"),
-			InputTokens:       record.GetInt("input_tokens"),
-			OutputTokens:      record.GetInt("output_tokens"),
-			CacheCreateTokens: record.GetInt("cache_create_tokens"),
-			CacheReadTokens:   record.GetInt("cache_read_tokens"),
-			ReasoningTokens:   record.GetInt("reasoning_tokens"),
-			CreatedAt:         createdAt,
-			IsStream:          record.GetBool("is_stream"),
-			DurationSec:       record.GetFloat64("duration_sec"),
+			ID:                    record.GetInt64("id"),
+			Platform:              record.GetString("platform"),
+			Model:                 record.GetString("model"),
+			Provider:              record.GetString("provider"),
+			HttpCode:              record.GetInt("http_code"),
+			InputTokens:           record.GetInt("input_tokens"),
+			OutputTokens:          record.GetInt("output_tokens"),
+			CacheCreateTokens:     record.GetInt("cache_create_tokens"),
+			CacheReadTokens:       record.GetInt("cache_read_tokens"),
+			ReasoningTokens:       record.GetInt("reasoning_tokens"),
+			CreatedAt:             createdAt,
+			IsStream:              record.GetBool("is_stream"),
+			DurationSec:           record.GetFloat64("duration_sec"),
+			FirstTokenDurationSec: record.GetFloat64("first_token_duration_sec"),
+			ClientIP:              record.GetString("client_ip"),
+			Status:                requestLogStatusCompleted,
 		}
 		ls.decorateCost(&logEntry)
 		logs = append(logs, logEntry)
 	}
-	return logs, nil
+	if len(activeLogs) == 0 {
+		return logs, nil
+	}
+	merged := make([]ReqeustLog, 0, len(activeLogs)+len(logs))
+	merged = append(merged, activeLogs...)
+	merged = append(merged, logs...)
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
 }
 
 func (ls *LogService) ListProviders(platform string) ([]string, error) {
@@ -157,7 +172,8 @@ func (ls *LogService) ListProviders(platform string) ([]string, error) {
 	return providers, nil
 }
 
-func (ls *LogService) HeatmapStats(days int) ([]HeatmapStat, error) {
+func (ls *LogService) HeatmapStats(days int, timeZone string) ([]HeatmapStat, error) {
+	loc := resolveLogLocation(timeZone)
 	if days <= 0 {
 		days = 30
 	}
@@ -165,10 +181,11 @@ func (ls *LogService) HeatmapStats(days int) ([]HeatmapStat, error) {
 	if totalHours <= 0 {
 		totalHours = 24
 	}
-	rangeStart := startOfHour(time.Now())
+	rangeStart := startOfHour(time.Now().In(loc))
 	if totalHours > 1 {
 		rangeStart = rangeStart.Add(-time.Duration(totalHours-1) * time.Hour)
 	}
+	rangeEnd := startOfHour(time.Now().In(loc)).Add(time.Hour)
 	db, err := xdb.DB("default")
 	if err != nil {
 		return nil, err
@@ -176,9 +193,9 @@ func (ls *LogService) HeatmapStats(days int) ([]HeatmapStat, error) {
 	rows, err := db.Query(`
 		SELECT
 			COALESCE(
-				strftime('%Y-%m-%d %H:00:00', datetime(created_at, 'localtime')),
-				substr(datetime(created_at, 'localtime'), 1, 13) || ':00:00'
-			) AS hour_bucket,
+				strftime('%Y-%m-%d %H:00:00', datetime(created_at)),
+				substr(datetime(created_at), 1, 13) || ':00:00'
+			) AS hour_bucket_utc,
 			COALESCE(model, ''),
 			COUNT(*),
 			COALESCE(SUM(input_tokens), 0),
@@ -187,10 +204,10 @@ func (ls *LogService) HeatmapStats(days int) ([]HeatmapStat, error) {
 			COALESCE(SUM(cache_create_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0)
 		FROM request_log
-		WHERE datetime(created_at, 'localtime') >= ?
-		GROUP BY hour_bucket, COALESCE(model, '')
-		ORDER BY hour_bucket ASC
-	`, rangeStart.Format(timeLayout))
+		WHERE datetime(created_at) >= ? AND datetime(created_at) < ?
+		GROUP BY hour_bucket_utc, COALESCE(model, '')
+		ORDER BY hour_bucket_utc ASC
+	`, formatSQLiteUTC(rangeStart), formatSQLiteUTC(rangeEnd))
 	if err != nil {
 		if errors.Is(err, xdb.ErrNotFound) || isNoSuchTableErr(err) {
 			return []HeatmapStat{}, nil
@@ -208,18 +225,18 @@ func (ls *LogService) HeatmapStats(days int) ([]HeatmapStat, error) {
 		if err := rows.Scan(&hourBucket, &modelName, &totalRequests, &input, &output, &reasoning, &cacheCreate, &cacheRead); err != nil {
 			return nil, err
 		}
-		createdAt, err := parseLogTime(hourBucket)
+		createdAt, err := parseStoredLogTime(hourBucket)
 		if err != nil {
 			continue
 		}
 		if createdAt.IsZero() {
 			continue
 		}
-		hourStart := startOfHour(createdAt)
+		hourStart := startOfHour(createdAt.In(loc))
 		hourKey := hourStart.Unix()
 		bucket := hourBuckets[hourKey]
 		if bucket == nil {
-			bucket = &HeatmapStat{Day: hourStart.Format("01-02 15")}
+			bucket = &HeatmapStat{Day: hourStart.Format(timeLayout)}
 			hourBuckets[hourKey] = bucket
 		}
 		bucket.TotalRequests += totalRequests
@@ -256,13 +273,14 @@ func (ls *LogService) HeatmapStats(days int) ([]HeatmapStat, error) {
 	return stats, nil
 }
 
-func (ls *LogService) StatsSince(platform string) (LogStats, error) {
+func (ls *LogService) StatsSince(platform string, timeZone string) (LogStats, error) {
 	const seriesHours = 24
+	loc := resolveLogLocation(timeZone)
 
 	stats := LogStats{
 		Series: make([]LogStatsSeries, 0, seriesHours),
 	}
-	now := time.Now()
+	now := time.Now().In(loc)
 	seriesStart := startOfDay(now)
 	seriesEnd := seriesStart.Add(seriesHours * time.Hour)
 	db, err := xdb.DB("default")
@@ -272,9 +290,9 @@ func (ls *LogService) StatsSince(platform string) (LogStats, error) {
 	query := `
 		SELECT
 			COALESCE(
-				strftime('%Y-%m-%d %H:00:00', datetime(created_at, 'localtime')),
-				substr(datetime(created_at, 'localtime'), 1, 13) || ':00:00'
-			) AS hour_bucket,
+				strftime('%Y-%m-%d %H:00:00', datetime(created_at)),
+				substr(datetime(created_at), 1, 13) || ':00:00'
+			) AS hour_bucket_utc,
 			COALESCE(model, ''),
 			COUNT(*),
 			COALESCE(SUM(input_tokens), 0),
@@ -283,14 +301,14 @@ func (ls *LogService) StatsSince(platform string) (LogStats, error) {
 			COALESCE(SUM(cache_create_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0)
 		FROM request_log
-		WHERE datetime(created_at, 'localtime') >= ? AND datetime(created_at, 'localtime') < ?
+		WHERE datetime(created_at) >= ? AND datetime(created_at) < ?
 	`
-	args := []any{seriesStart.Format(timeLayout), seriesEnd.Format(timeLayout)}
+	args := []any{formatSQLiteUTC(seriesStart), formatSQLiteUTC(seriesEnd)}
 	if platform != "" {
 		query += " AND platform = ?"
 		args = append(args, platform)
 	}
-	query += " GROUP BY hour_bucket, COALESCE(model, '') ORDER BY hour_bucket ASC"
+	query += " GROUP BY hour_bucket_utc, COALESCE(model, '') ORDER BY hour_bucket_utc ASC"
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -317,7 +335,8 @@ func (ls *LogService) StatsSince(platform string) (LogStats, error) {
 		if err := rows.Scan(&hourBucket, &modelName, &totalRequests, &input, &output, &reasoning, &cacheCreate, &cacheRead); err != nil {
 			return stats, err
 		}
-		createdAt, err := parseLogTime(hourBucket)
+		createdAtUTC, err := parseStoredLogTime(hourBucket)
+		createdAt := createdAtUTC.In(loc)
 		if err != nil || createdAt.Before(seriesStart) || !createdAt.Before(seriesEnd) {
 			continue
 		}
@@ -377,8 +396,9 @@ func (ls *LogService) StatsSince(platform string) (LogStats, error) {
 	return stats, nil
 }
 
-func (ls *LogService) ProviderDailyStats(platform string) ([]ProviderDailyStat, error) {
-	start := startOfDay(time.Now())
+func (ls *LogService) ProviderDailyStats(platform string, timeZone string) ([]ProviderDailyStat, error) {
+	loc := resolveLogLocation(timeZone)
+	start := startOfDay(time.Now().In(loc))
 	end := start.Add(24 * time.Hour)
 	db, err := xdb.DB("default")
 	if err != nil {
@@ -397,9 +417,9 @@ func (ls *LogService) ProviderDailyStats(platform string) ([]ProviderDailyStat, 
 			COALESCE(SUM(cache_create_tokens), 0),
 			COALESCE(SUM(cache_read_tokens), 0)
 		FROM request_log
-		WHERE datetime(created_at, 'localtime') >= ? AND datetime(created_at, 'localtime') < ?
+		WHERE datetime(created_at) >= ? AND datetime(created_at) < ?
 	`
-	args := []any{start.Format(timeLayout), end.Format(timeLayout)}
+	args := []any{formatSQLiteUTC(start), formatSQLiteUTC(end)}
 	if platform != "" {
 		query += " AND platform = ?"
 		args = append(args, platform)
@@ -589,41 +609,38 @@ func (ls *LogService) calculateCost(model string, usage modelpricing.UsageSnapsh
 	return ls.pricing.CalculateCost(model, usage)
 }
 
-func parseCreatedAt(record xdb.Record) (time.Time, bool) {
+func resolveLogLocation(timeZone string) *time.Location {
+	timeZone = strings.TrimSpace(timeZone)
+	if timeZone != "" {
+		if loc, err := time.LoadLocation(timeZone); err == nil {
+			return loc
+		}
+	}
+	return time.Local
+}
+
+func formatSQLiteUTC(t time.Time) string {
+	return t.UTC().Format(timeLayout)
+}
+
+func parseCreatedAt(record xdb.Record, loc *time.Location) (time.Time, bool) {
+	if loc == nil {
+		loc = time.Local
+	}
 	if t := record.GetTime("created_at"); t != nil {
-		return t.In(time.Local), true
+		return t.In(loc), true
 	}
 	raw := strings.TrimSpace(record.GetString("created_at"))
 	if raw == "" {
 		return time.Time{}, false
 	}
 
-	layouts := []string{
-		timeLayout,
-		time.RFC3339,
-		"2006-01-02T15:04:05",
-		"2006-01-02 15:04:05 -0700",
-		"2006-01-02 15:04:05 -0700 MST",
-		"2006-01-02 15:04:05 MST",
-		"2006-01-02T15:04:05-0700",
-	}
-	for _, layout := range layouts {
-		if parsed, err := time.Parse(layout, raw); err == nil {
-			return parsed.In(time.Local), true
-		}
-		if parsed, err := time.ParseInLocation(layout, raw, time.Local); err == nil {
-			return parsed.In(time.Local), true
-		}
-	}
-
-	if normalized := strings.Replace(raw, " ", "T", 1); normalized != raw {
-		if parsed, err := time.Parse(time.RFC3339, normalized); err == nil {
-			return parsed.In(time.Local), true
-		}
+	if parsed, err := parseStoredLogTime(raw); err == nil {
+		return parsed.In(loc), true
 	}
 
 	if len(raw) >= len("2006-01-02") {
-		if parsed, err := time.ParseInLocation("2006-01-02", raw[:10], time.Local); err == nil {
+		if parsed, err := time.ParseInLocation("2006-01-02", raw[:10], loc); err == nil {
 			return parsed, false
 		}
 	}
@@ -631,38 +648,50 @@ func parseCreatedAt(record xdb.Record) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func parseTimeInput(value string) (time.Time, error) {
+func parseTimeInput(value string, loc *time.Location) (time.Time, error) {
+	if loc == nil {
+		loc = time.Local
+	}
 	raw := strings.TrimSpace(value)
 	if raw == "" {
-		return startOfDay(time.Now()), nil
+		return startOfDay(time.Now().In(loc)), nil
 	}
-	layouts := []string{
-		time.RFC3339,
+
+	localLayouts := []string{
 		timeLayout,
 		"2006-01-02T15:04:05",
+	}
+	for _, layout := range localLayouts {
+		if parsed, err := time.ParseInLocation(layout, raw, loc); err == nil {
+			return parsed, nil
+		}
+	}
+
+	zoneLayouts := []string{
+		time.RFC3339,
 		"2006-01-02 15:04:05 -0700",
 		"2006-01-02 15:04:05 -0700 MST",
 		"2006-01-02 15:04:05 MST",
 		"2006-01-02T15:04:05-0700",
 	}
-	for _, layout := range layouts {
+	for _, layout := range zoneLayouts {
 		if parsed, err := time.Parse(layout, raw); err == nil {
-			return parsed.In(time.Local), nil
-		}
-		if parsed, err := time.ParseInLocation(layout, raw, time.Local); err == nil {
-			return parsed.In(time.Local), nil
+			return parsed.In(loc), nil
 		}
 	}
+
 	if normalized := strings.Replace(raw, " ", "T", 1); normalized != raw {
 		if parsed, err := time.Parse(time.RFC3339, normalized); err == nil {
-			return parsed.In(time.Local), nil
+			return parsed.In(loc), nil
 		}
 	}
+
 	if len(raw) >= len("2006-01-02") {
-		if parsed, err := time.ParseInLocation("2006-01-02", raw[:10], time.Local); err == nil {
+		if parsed, err := time.ParseInLocation("2006-01-02", raw[:10], loc); err == nil {
 			return parsed, nil
 		}
 	}
+
 	return time.Time{}, fmt.Errorf("invalid time format: %s", raw)
 }
 
@@ -708,26 +737,31 @@ func scanUsageAggregate(rows *sql.Rows) (string, modelpricing.UsageSnapshot, err
 	}, nil
 }
 
-func parseLogTime(value string) (time.Time, error) {
+func parseStoredLogTime(value string) (time.Time, error) {
 	raw := strings.TrimSpace(value)
 	if raw == "" {
 		return time.Time{}, fmt.Errorf("empty time")
 	}
-	layouts := []string{
+	utcLayouts := []string{
 		timeLayout,
-		time.RFC3339,
 		"2006-01-02T15:04:05",
+	}
+	for _, layout := range utcLayouts {
+		if parsed, err := time.ParseInLocation(layout, raw, time.UTC); err == nil {
+			return parsed, nil
+		}
+	}
+
+	zoneLayouts := []string{
+		time.RFC3339,
 		"2006-01-02 15:04:05 -0700",
 		"2006-01-02 15:04:05 -0700 MST",
 		"2006-01-02 15:04:05 MST",
 		"2006-01-02T15:04:05-0700",
 	}
-	for _, layout := range layouts {
+	for _, layout := range zoneLayouts {
 		if parsed, err := time.Parse(layout, raw); err == nil {
-			return parsed.In(time.Local), nil
-		}
-		if parsed, err := time.ParseInLocation(layout, raw, time.Local); err == nil {
-			return parsed.In(time.Local), nil
+			return parsed, nil
 		}
 	}
 	return time.Time{}, fmt.Errorf("invalid time format: %s", raw)

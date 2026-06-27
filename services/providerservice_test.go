@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"sort"
 	"testing"
+
+	"github.com/daodao97/xgo/xdb"
 )
 
 // ==================== 通配符匹配测试 ====================
@@ -966,6 +968,215 @@ func TestProviderLevelJSON(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestProviderCLIConfigJSON(t *testing.T) {
+	provider := Provider{
+		ID:     1,
+		Name:   "Test",
+		APIURL: "https://api.example.com",
+		CLIConfig: map[string]interface{}{
+			"wire_api": "chat",
+			"env": map[string]interface{}{
+				"DEBUG": "1",
+			},
+		},
+	}
+
+	data, err := json.Marshal(provider)
+	if err != nil {
+		t.Fatalf("JSON 序列化失败: %v", err)
+	}
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("JSON 反序列化失败: %v", err)
+	}
+
+	cliConfig, ok := decoded["cliConfig"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("期望 cliConfig 被序列化为对象，实际 JSON: %s", string(data))
+	}
+	if cliConfig["wire_api"] != "chat" {
+		t.Fatalf("期望 cliConfig.wire_api = chat，实际: %v", cliConfig["wire_api"])
+	}
+}
+
+func TestProviderServicePreservesCLIConfig(t *testing.T) {
+	testHome := t.TempDir()
+	t.Setenv("HOME", testHome)
+	t.Setenv("USERPROFILE", testHome)
+
+	service := NewProviderService()
+	original := Provider{
+		ID:      1,
+		Name:    "Provider With CLI Config",
+		APIURL:  "https://api.example.com",
+		APIKey:  "sk-test",
+		Enabled: true,
+		CLIConfig: map[string]interface{}{
+			"wire_api":    "chat",
+			"customField": "customValue",
+		},
+	}
+
+	if err := service.SaveProviders("custom:cli-config-test", []Provider{original}); err != nil {
+		t.Fatalf("SaveProviders 失败: %v", err)
+	}
+
+	loaded, err := service.LoadProviders("custom:cli-config-test")
+	if err != nil {
+		t.Fatalf("LoadProviders 失败: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("期望加载 1 个 provider，实际: %d", len(loaded))
+	}
+
+	cliConfig := loaded[0].CLIConfig
+	if cliConfig == nil {
+		t.Fatalf("期望 cliConfig 被保留，实际为空")
+	}
+	if cliConfig["wire_api"] != "chat" {
+		t.Fatalf("期望 cliConfig.wire_api = chat，实际: %v", cliConfig["wire_api"])
+	}
+	if cliConfig["customField"] != "customValue" {
+		t.Fatalf("期望 cliConfig.customField = customValue，实际: %v", cliConfig["customField"])
+	}
+}
+
+// TestProviderServiceRenameProvider 验证改名守卫已从"禁止改名"改为
+// "允许改名 + 重名/空名校验"。blacklistService 为 nil 时改名仍放行（仅跳过黑名单清理）。
+func TestProviderServiceRenameProvider(t *testing.T) {
+	testHome := t.TempDir()
+	t.Setenv("HOME", testHome)
+	t.Setenv("USERPROFILE", testHome)
+
+	service := NewProviderService()
+	const kind = "custom:rename-test"
+
+	// 初始：两个 provider
+	if err := service.SaveProviders(kind, []Provider{
+		{ID: 1, Name: "OldName", APIURL: "https://api.example.com", APIKey: "sk-test", Enabled: true},
+		{ID: 2, Name: "Other", APIURL: "https://api.example.com", APIKey: "sk-test", Enabled: true},
+	}); err != nil {
+		t.Fatalf("首次保存失败: %v", err)
+	}
+
+	// 改名应成功
+	if err := service.SaveProviders(kind, []Provider{
+		{ID: 1, Name: "NewName", APIURL: "https://api.example.com", APIKey: "sk-test", Enabled: true},
+		{ID: 2, Name: "Other", APIURL: "https://api.example.com", APIKey: "sk-test", Enabled: true},
+	}); err != nil {
+		t.Fatalf("改名保存失败: %v", err)
+	}
+	loaded, err := service.LoadProviders(kind)
+	if err != nil {
+		t.Fatalf("LoadProviders 失败: %v", err)
+	}
+	foundNew := false
+	for _, p := range loaded {
+		if p.Name == "NewName" {
+			foundNew = true
+		}
+	}
+	if !foundNew {
+		t.Fatalf("期望改名后存在 NewName，实际: %+v", loaded)
+	}
+
+	// 改名为已存在的 name 应被拒绝
+	if err := service.SaveProviders(kind, []Provider{
+		{ID: 1, Name: "Other", APIURL: "https://api.example.com", APIKey: "sk-test", Enabled: true},
+		{ID: 2, Name: "Other", APIURL: "https://api.example.com", APIKey: "sk-test", Enabled: true},
+	}); err == nil {
+		t.Fatalf("改名为已存在的 name 应返回错误，实际成功")
+	}
+
+	// 改名为空（仅空白）应被拒绝
+	if err := service.SaveProviders(kind, []Provider{
+		{ID: 1, Name: "   ", APIURL: "https://api.example.com", APIKey: "sk-test", Enabled: true},
+		{ID: 2, Name: "Other", APIURL: "https://api.example.com", APIKey: "sk-test", Enabled: true},
+	}); err == nil {
+		t.Fatalf("改名为空应返回错误，实际成功")
+	}
+}
+
+// TestProviderServiceReuseHistoricalNameClearsStaleBlacklist 验证复用历史 name 时
+// 该 name 的历史黑名单残留会被清除——否则新建/改名为历史 name 的供应商会继承历史拉黑
+// 状态（甚至被 IsBlacklisted 立即判定拉黑而无法路由）。
+func TestProviderServiceReuseHistoricalNameClearsStaleBlacklist(t *testing.T) {
+	setupRelayTestEnv(t)
+	if GlobalDBQueue == nil {
+		if err := InitGlobalDBQueue(); err != nil {
+			t.Fatalf("初始化测试写入队列失败: %v", err)
+		}
+	}
+
+	service := NewProviderService()
+	service.SetBlacklistService(NewBlacklistService(NewSettingsService(), nil))
+
+	db, err := xdb.DB("default")
+	if err != nil {
+		t.Fatalf("获取数据库连接失败: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM provider_blacklist`); err != nil {
+		t.Fatalf("清理黑名单表失败: %v", err)
+	}
+
+	countRow := func(name string) int {
+		t.Helper()
+		var c int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM provider_blacklist WHERE platform='claude' AND provider_name=?`, name).Scan(&c); err != nil {
+			t.Fatalf("查询黑名单记录失败: %v", err)
+		}
+		return c
+	}
+	// 埋一条历史 name 的脏黑名单行（未过期的 L3 拉黑，会阻塞复用该 name 的供应商）
+	seedStale := func(name string) {
+		if _, err := db.Exec(`INSERT INTO provider_blacklist (platform, provider_name, failure_count, blacklist_level, blacklisted_until) VALUES ('claude', ?, 5, 3, datetime('now', '+1 hour'))`, name); err != nil {
+			t.Fatalf("插入脏黑名单记录失败: %v", err)
+		}
+	}
+
+	// 准备：先存在一个 "Other" provider（不会触及 Recycled）
+	if err := service.SaveProviders("claude", []Provider{
+		{ID: 888, Name: "Other", APIURL: "https://x", APIKey: "k", Enabled: true},
+	}); err != nil {
+		t.Fatalf("预置 Other 失败: %v", err)
+	}
+
+	// 场景1：新建 provider 复用历史名 Recycled
+	seedStale("Recycled")
+	if countRow("Recycled") != 1 {
+		t.Fatalf("预置脏行失败")
+	}
+	if err := service.SaveProviders("claude", []Provider{
+		{ID: 888, Name: "Other", APIURL: "https://x", APIKey: "k", Enabled: true},
+		{ID: 777, Name: "Recycled", APIURL: "https://x", APIKey: "k", Enabled: true},
+	}); err != nil {
+		t.Fatalf("新建复用历史名保存失败: %v", err)
+	}
+	if c := countRow("Recycled"); c != 0 {
+		t.Fatalf("新建复用历史名后，脏黑名单行应被清除，实际 count=%d", c)
+	}
+
+	// 场景2：删掉 777，再把 888 从 Other 改名为历史名 Recycled
+	if err := service.SaveProviders("claude", []Provider{
+		{ID: 888, Name: "Other", APIURL: "https://x", APIKey: "k", Enabled: true},
+	}); err != nil {
+		t.Fatalf("删除 777 失败: %v", err)
+	}
+	seedStale("Recycled")
+	if countRow("Recycled") != 1 {
+		t.Fatalf("预置脏行失败")
+	}
+	if err := service.SaveProviders("claude", []Provider{
+		{ID: 888, Name: "Recycled", APIURL: "https://x", APIKey: "k", Enabled: true},
+	}); err != nil {
+		t.Fatalf("改名为历史名失败: %v", err)
+	}
+	if c := countRow("Recycled"); c != 0 {
+		t.Fatalf("改名为历史名后，脏黑名单行应被清除，实际 count=%d", c)
 	}
 }
 
