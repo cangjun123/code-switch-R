@@ -104,15 +104,20 @@
     "field": {
       "testModel": "测试模型",
       "testEndpoint": "测试端点",
-      "timeout": "超时时间（毫秒）"
+      "timeout": "超时时间（毫秒）",
+      "maxTokens": "探测 max_tokens",
+      "stream": "流式探测"
     },
     "placeholder": {
       "testModel": "留空使用平台默认模型",
       "testEndpoint": "留空使用平台默认端点",
-      "timeout": "默认 15000"
+      "timeout": "默认 15000",
+      "maxTokens": "留空或 0 使用默认 1"
     },
     "hint": {
-      "timeout": "单位毫秒，留空或 0 将使用默认 15000"
+      "timeout": "单位毫秒，留空或 0 将使用默认 15000",
+      "maxTokens": "探测请求的 max_tokens，留空或 0 使用默认 1（图片供应商忽略此项）",
+      "stream": "开启后探测请求带 stream:true，仅作用于探活请求，不影响真实转发"
     },
     "default": "默认",
     "currentModel": "当前模型",

@@ -104,15 +104,20 @@
     "field": {
       "testModel": "Test Model",
       "testEndpoint": "Test Endpoint",
-      "timeout": "Timeout (ms)"
+      "timeout": "Timeout (ms)",
+      "maxTokens": "Probe max_tokens",
+      "stream": "Stream probe"
     },
     "placeholder": {
       "testModel": "Leave blank to use platform default model",
       "testEndpoint": "Leave blank to use platform default endpoint",
-      "timeout": "Default 15000"
+      "timeout": "Default 15000",
+      "maxTokens": "Blank or 0 for default 1"
     },
     "hint": {
-      "timeout": "Milliseconds; blank or 0 will use default 15000"
+      "timeout": "Milliseconds; blank or 0 will use default 15000",
+      "maxTokens": "max_tokens for probe request; blank or 0 uses default 1 (ignored for image providers)",
+      "stream": "When on, probe request includes stream:true. Probe-only; does not affect real forwarding"
     },
     "default": "default",
     "currentModel": "Current Model",

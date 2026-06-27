@@ -45,6 +45,8 @@ export interface AvailabilityConfig {
   testModel?: string
   testEndpoint?: string
   timeout?: number
+  maxTokens?: number // 探测 max_tokens；0/未设=平台默认(1)，gpt-image 忽略
+  stream?: boolean // 探测是否流式，仅作用于探活请求
 }
 
 const SERVICE_PATH = 'codeswitch/services.HealthCheckService'
@@ -129,6 +131,20 @@ export async function saveAvailabilityConfig(
   config: AvailabilityConfig
 ): Promise<void> {
   return Call.ByName(`${SERVICE_PATH}.SaveAvailabilityConfig`, platform, providerId, config)
+}
+
+/**
+ * 设置全局检测间隔（秒）并立即重启轮询使其生效
+ */
+export async function setPollIntervalSeconds(seconds: number): Promise<void> {
+  return Call.ByName(`${SERVICE_PATH}.SetPollIntervalSeconds`, seconds)
+}
+
+/**
+ * 读取当前生效的检测间隔（秒）
+ */
+export async function getPollIntervalSeconds(): Promise<number> {
+  return Call.ByName(`${SERVICE_PATH}.GetPollIntervalSeconds`)
 }
 
 /**

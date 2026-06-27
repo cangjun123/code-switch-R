@@ -8,6 +8,8 @@ import {
   setAvailabilityMonitorEnabled,
   isPollingRunning,
   saveAvailabilityConfig,
+  setPollIntervalSeconds,
+  getPollIntervalSeconds,
   ProviderTimeline,
   HealthStatus,
   formatStatus,
@@ -24,6 +26,13 @@ const pollingRunning = ref(false)
 const lastUpdated = ref<Date | null>(null)
 const nextRefreshIn = ref(0)
 
+// 检测间隔设置
+const pollIntervalInput = ref(60) // 用户输入（秒）
+const pollIntervalCurrent = ref(60) // 后端实际生效值（秒）
+const savingInterval = ref(false)
+const MIN_POLL_INTERVAL = 30
+const MAX_POLL_INTERVAL = 3600
+
 // 配置编辑弹窗状态
 const showConfigModal = ref(false)
 const savingConfig = ref(false)
@@ -32,6 +41,8 @@ const configForm = ref({
   testModel: '',
   testEndpoint: '',
   timeout: 15000,
+  maxTokens: 0,
+  stream: false,
 })
 
 // 刷新定时器
@@ -156,16 +167,15 @@ function formatLastUpdated(): string {
   return lastUpdated.value.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-// 启动刷新定时器
+// 启动刷新定时器（间隔跟随后端实际检测间隔）
 function startRefreshTimer() {
-  // 每 60 秒刷新一次
-  const refreshInterval = 60000
-  nextRefreshIn.value = 60
+  const refreshIntervalMs = pollIntervalCurrent.value * 1000
+  nextRefreshIn.value = pollIntervalCurrent.value
 
   refreshTimer = setInterval(() => {
     loadData()
-    nextRefreshIn.value = 60
-  }, refreshInterval)
+    nextRefreshIn.value = pollIntervalCurrent.value
+  }, refreshIntervalMs)
 
   countdownTimer = setInterval(() => {
     if (nextRefreshIn.value > 0) {
@@ -194,6 +204,8 @@ function editConfig(platform: string, timeline: ProviderTimeline) {
     testModel: cfg.testModel || '',
     testEndpoint: cfg.testEndpoint || '',
     timeout: cfg.timeout || 15000,
+    maxTokens: cfg.maxTokens || 0,
+    stream: !!cfg.stream,
   }
   showConfigModal.value = true
 }
@@ -213,6 +225,8 @@ async function saveConfig() {
       testModel: configForm.value.testModel,
       testEndpoint: configForm.value.testEndpoint,
       timeout: Number(configForm.value.timeout) || 15000,
+      maxTokens: Number(configForm.value.maxTokens) || 0,
+      stream: !!configForm.value.stream,
     })
     showConfigModal.value = false
     await loadData()
@@ -220,6 +234,38 @@ async function saveConfig() {
     console.error('Failed to save availability config:', error)
   } finally {
     savingConfig.value = false
+  }
+}
+
+// 保存检测间隔
+async function savePollInterval() {
+  const seconds = Number(pollIntervalInput.value) || 60
+  if (seconds < MIN_POLL_INTERVAL || seconds > MAX_POLL_INTERVAL) {
+    return
+  }
+  savingInterval.value = true
+  try {
+    await setPollIntervalSeconds(seconds)
+    await loadPollInterval()
+    await loadData()
+    // 间隔已变，重启前端刷新定时器
+    stopTimers()
+    startRefreshTimer()
+  } catch (error) {
+    console.error('Failed to save poll interval:', error)
+  } finally {
+    savingInterval.value = false
+  }
+}
+
+// 读取后端实际生效的检测间隔
+async function loadPollInterval() {
+  try {
+    const seconds = await getPollIntervalSeconds()
+    pollIntervalCurrent.value = seconds || 60
+    pollIntervalInput.value = seconds || 60
+  } catch (error) {
+    console.error('Failed to load poll interval:', error)
   }
 }
 
@@ -233,6 +279,7 @@ function displayConfigValue(value: string | number | undefined, label: string) {
 
 onMounted(async () => {
   await loadData()
+  await loadPollInterval()
   startRefreshTimer()
 
   // 监听主页面的 Provider 更新事件
@@ -303,6 +350,28 @@ onUnmounted(() => {
       <span>{{ t('availability.nextRefresh') }}: {{ nextRefreshIn }}s</span>
     </div>
 
+    <!-- 检测间隔设置 -->
+    <div class="flex items-center gap-3 mb-4 p-3 rounded-xl border border-[var(--mac-border)] bg-[var(--mac-surface)]">
+      <label class="text-sm font-medium text-[var(--mac-text)] whitespace-nowrap">
+        {{ t('availability.settings.pollInterval') }}
+      </label>
+      <input
+        v-model.number="pollIntervalInput"
+        type="number"
+        :min="MIN_POLL_INTERVAL"
+        :max="MAX_POLL_INTERVAL"
+        class="w-28 rounded-lg border border-[var(--mac-border)] bg-[var(--mac-surface-strong)] px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--mac-accent)]"
+      />
+      <span class="text-xs text-[var(--mac-text-secondary)]">{{ t('availability.settings.pollIntervalHint') }}</span>
+      <button
+        @click="savePollInterval"
+        :disabled="savingInterval || pollIntervalInput < MIN_POLL_INTERVAL || pollIntervalInput > MAX_POLL_INTERVAL"
+        class="ml-auto px-4 py-1.5 text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+      >
+        {{ savingInterval ? t('common.saving') : t('common.save') }}
+      </button>
+    </div>
+
     <!-- 加载状态 -->
     <div v-if="loading" class="flex items-center justify-center py-12">
       <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--mac-accent)]"></div>
@@ -344,6 +413,16 @@ onUnmounted(() => {
                     {{ formatStatus(timeline.latest.status) }}
                   </span>
                   <span v-else class="text-gray-400">{{ t('availability.notMonitored') }}</span>
+
+                  <!-- 故障详情（具体错误信息） -->
+                  <span
+                    v-if="timeline.availabilityMonitorEnabled && timeline.latest && timeline.latest.errorMessage
+                      && (timeline.latest.status === HealthStatus.FAILED || timeline.latest.status === HealthStatus.DEGRADED || timeline.latest.status === HealthStatus.VALIDATION_ERROR)"
+                    class="text-xs text-red-500 dark:text-red-400 truncate max-w-[280px]"
+                    :title="timeline.latest.errorMessage"
+                  >
+                    {{ timeline.latest.errorMessage }}
+                  </span>
                 </div>
 
                 <!-- 右侧：延迟 + 可用率 + 按钮 -->
@@ -471,6 +550,33 @@ onUnmounted(() => {
               :placeholder="t('availability.placeholder.timeout')"
             />
             <p class="mt-1 text-xs text-[var(--mac-text-secondary)]">{{ t('availability.hint.timeout') }}</p>
+          </div>
+
+          <div>
+            <label class="block text-sm font-medium text-[var(--mac-text)] mb-1">{{ t('availability.field.maxTokens') }}</label>
+            <input
+              v-model.number="configForm.maxTokens"
+              type="number"
+              min="0"
+              class="w-full rounded-lg border border-[var(--mac-border)] bg-[var(--mac-surface-strong)] px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[var(--mac-accent)]"
+              :placeholder="t('availability.placeholder.maxTokens')"
+            />
+            <p class="mt-1 text-xs text-[var(--mac-text-secondary)]">{{ t('availability.hint.maxTokens') }}</p>
+          </div>
+
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="block text-sm font-medium text-[var(--mac-text)]">{{ t('availability.field.stream') }}</label>
+              <p class="mt-1 text-xs text-[var(--mac-text-secondary)]">{{ t('availability.hint.stream') }}</p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                v-model="configForm.stream"
+                class="sr-only peer"
+              />
+              <div class="w-11 h-6 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[var(--mac-accent)]"></div>
+            </label>
           </div>
         </div>
 
