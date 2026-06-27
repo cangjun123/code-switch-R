@@ -10,6 +10,7 @@ import {
   saveAvailabilityConfig,
   setPollIntervalSeconds,
   getPollIntervalSeconds,
+  getNextPollIn,
   ProviderTimeline,
   HealthStatus,
   formatStatus,
@@ -180,19 +181,33 @@ function formatLastUpdated(): string {
   return lastUpdated.value.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-// 启动刷新定时器（间隔跟随后端实际检测间隔）
-function startRefreshTimer() {
-  const refreshIntervalMs = pollIntervalCurrent.value * 1000
-  nextRefreshIn.value = pollIntervalCurrent.value
+// 从后端取真实剩余秒数并同步到倒计时显示
+async function syncNextRefreshFromBackend() {
+  try {
+    const remaining = await getNextPollIn()
+    if (typeof remaining === 'number' && remaining >= 0) {
+      nextRefreshIn.value = remaining
+    }
+  } catch {
+    // 取不到则保持当前值
+  }
+}
 
-  refreshTimer = setInterval(() => {
-    loadData()
+// 启动刷新定时器（与后端真实节奏对齐：倒计时归零时刷新并重新校准）
+async function startRefreshTimer() {
+  await syncNextRefreshFromBackend()
+  if (nextRefreshIn.value <= 0) {
     nextRefreshIn.value = pollIntervalCurrent.value
-  }, refreshIntervalMs)
+  }
 
-  countdownTimer = setInterval(() => {
+  countdownTimer = setInterval(async () => {
     if (nextRefreshIn.value > 0) {
       nextRefreshIn.value--
+    }
+    // 倒计时归零：刷新数据并从后端重新取剩余值校准
+    if (nextRefreshIn.value <= 0) {
+      await loadData()
+      await syncNextRefreshFromBackend()
     }
   }, 1000)
 }

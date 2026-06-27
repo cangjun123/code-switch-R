@@ -148,6 +148,13 @@ export async function getPollIntervalSeconds(): Promise<number> {
 }
 
 /**
+ * 读取距离下一次后台巡检的剩余秒数（与后端真实节奏对齐）
+ */
+export async function getNextPollIn(): Promise<number> {
+  return Call.ByName(`${SERVICE_PATH}.GetNextPollIn`)
+}
+
+/**
  * 清理过期的历史记录
  */
 export async function cleanupOldRecords(daysToKeep: number = 7): Promise<number> {

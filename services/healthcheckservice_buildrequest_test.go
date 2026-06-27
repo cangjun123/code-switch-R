@@ -3,6 +3,7 @@ package services
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // 解析 buildTestRequest 的返回体为 map，便于断言字段
@@ -120,5 +121,34 @@ func TestClampPollIntervalSeconds(t *testing.T) {
 				t.Fatalf("clampPollIntervalSeconds(%d) = %d, want %d", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestGetNextPollIn 验证剩余秒数计算：未运行/未首探返回间隔；已运行按 elapsed 推算；超时不为负
+func TestGetNextPollIn(t *testing.T) {
+	// 未运行：返回默认间隔
+	hcs := &HealthCheckService{}
+	if got := hcs.GetNextPollIn(); got != DefaultPollIntervalSeconds {
+		t.Fatalf("未运行时期望返回默认间隔 %d, 实际 %d", DefaultPollIntervalSeconds, got)
+	}
+
+	// 运行中但未首次巡检（lastPollAt 零值）：返回默认间隔
+	hcs.running = true
+	hcs.pollInterval = time.Duration(DefaultPollIntervalSeconds) * time.Second
+	if got := hcs.GetNextPollIn(); got != DefaultPollIntervalSeconds {
+		t.Fatalf("未首次巡检时期望默认间隔 %d, 实际 %d", DefaultPollIntervalSeconds, got)
+	}
+
+	// 运行中、上次巡检在 10 秒前：剩余 ≈ 间隔-10（允许 1 秒误差）
+	hcs.lastPollAt = time.Now().Add(-10 * time.Second)
+	got := hcs.GetNextPollIn()
+	if got < DefaultPollIntervalSeconds-11 || got > DefaultPollIntervalSeconds-10 {
+		t.Fatalf("已运行10秒后期望剩余约 %d, 实际 %d", DefaultPollIntervalSeconds-10, got)
+	}
+
+	// 超时：剩余不为负
+	hcs.lastPollAt = time.Now().Add(-2 * time.Hour)
+	if got := hcs.GetNextPollIn(); got != 0 {
+		t.Fatalf("超时后期望剩余 0, 实际 %d", got)
 	}
 }
