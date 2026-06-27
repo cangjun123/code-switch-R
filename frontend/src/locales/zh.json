@@ -80,6 +80,7 @@
     "providers": "供应商",
     "lastUpdate": "最后更新",
     "nextRefresh": "下次刷新",
+    "autoMonitorOff": "自动检测未开启（在设置中开启后才会自动巡检）",
     "notMonitored": "未监控",
     "noProviders": "暂无供应商，请先添加供应商配置",
     "stats": {

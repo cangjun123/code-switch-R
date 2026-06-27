@@ -377,7 +377,8 @@ onUnmounted(() => {
     <!-- 刷新状态 -->
     <div class="flex items-center justify-between text-sm text-[var(--mac-text-secondary)] mb-4">
       <span>{{ t('availability.lastUpdate') }}: {{ formatLastUpdated() }}</span>
-      <span>{{ t('availability.nextRefresh') }}: {{ nextRefreshIn }}s</span>
+      <span v-if="pollingRunning">{{ t('availability.nextRefresh') }}: {{ nextRefreshIn }}s</span>
+      <span v-else class="text-yellow-600 dark:text-yellow-400">{{ t('availability.autoMonitorOff') }}</span>
     </div>
 
     <!-- 检测间隔设置 -->
