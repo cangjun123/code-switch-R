@@ -38,6 +38,8 @@ const (
 	DefaultFailureThreshold       = 2     // 默认拉黑阈值（连续失败次数）
 	MaxConcurrentChecks           = 5     // 最大并发检测数
 	MaxHistoryPerProvider         = 60    // 每个 Provider 最多保留历史数
+	MinPollIntervalSeconds        = 30    // 最小检测间隔（秒），防止高频探活打爆上游
+	MaxPollIntervalSeconds        = 3600  // 最大检测间隔（秒），超过则失去监控意义
 )
 
 // HealthCheckResult 健康检查结果
@@ -748,7 +750,21 @@ func (hcs *HealthCheckService) getEffectiveTimeout(provider *Provider) int {
 func (hcs *HealthCheckService) buildTestRequest(provider *Provider, platform, endpoint, model string) []byte {
 	endpoint = strings.ToLower(endpoint)
 
+	// 探测参数（来自可用性高级配置）：max_tokens 覆盖、stream 开关
+	var maxTokens int
+	var stream bool
+	if provider.AvailabilityConfig != nil {
+		maxTokens = provider.AvailabilityConfig.MaxTokens
+		stream = provider.AvailabilityConfig.Stream
+	}
+	// 平台默认探测 token 数（文本类=1，最小成本探活）
+	effectiveMaxTokens := 1
+	if maxTokens > 0 {
+		effectiveMaxTokens = maxTokens
+	}
+
 	if platform == "gpt-image" || strings.Contains(endpoint, "/images/generations") {
+		// 图片 API 无 max_tokens 字段，即使配置了也忽略；不适用 stream
 		reqBody := map[string]interface{}{
 			"model":  model,
 			"prompt": "health check",
@@ -763,10 +779,13 @@ func (hcs *HealthCheckService) buildTestRequest(provider *Provider, platform, en
 	if platform == "claude" && strings.Contains(endpoint, "/messages") {
 		reqBody := map[string]interface{}{
 			"model":      model,
-			"max_tokens": 1,
+			"max_tokens": effectiveMaxTokens,
 			"messages": []map[string]string{
 				{"role": "user", "content": "hi"},
 			},
+		}
+		if stream {
+			reqBody["stream"] = true
 		}
 		data, _ := json.Marshal(reqBody)
 		return data
@@ -788,10 +807,13 @@ func (hcs *HealthCheckService) buildTestRequest(provider *Provider, platform, en
 			reqBody["instructions"] = defaultResponsesInstructions
 		}
 		if !provider.ShouldDropResponsesField(responsesDropFieldMaxOutputTokens) {
-			reqBody["max_output_tokens"] = 1
+			reqBody["max_output_tokens"] = effectiveMaxTokens
 		}
 		if provider.ForceResponsesStoreFalse {
 			reqBody["store"] = false
+		}
+		if stream {
+			reqBody["stream"] = true
 		}
 		data, _ := json.Marshal(reqBody)
 		return data
@@ -800,10 +822,13 @@ func (hcs *HealthCheckService) buildTestRequest(provider *Provider, platform, en
 	// OpenAI/Codex 格式
 	reqBody := map[string]interface{}{
 		"model":      model,
-		"max_tokens": 1,
+		"max_tokens": effectiveMaxTokens,
 		"messages": []map[string]string{
 			{"role": "user", "content": "hi"},
 		},
+	}
+	if stream {
+		reqBody["stream"] = true
 	}
 	data, _ := json.Marshal(reqBody)
 	return data
@@ -946,13 +971,14 @@ func (hcs *HealthCheckService) StartBackgroundPolling() {
 		return
 	}
 
-	// 获取配置的轮询间隔
+	// 获取配置的轮询间隔（带范围保护，防止高频探活打爆上游）
 	pollIntervalSeconds := DefaultPollIntervalSeconds
 	if hcs.settingsService != nil {
 		if interval := hcs.settingsService.GetIntSetting("availability_poll_interval_seconds"); interval > 0 {
 			pollIntervalSeconds = interval
 		}
 	}
+	pollIntervalSeconds = clampPollIntervalSeconds(pollIntervalSeconds)
 	hcs.pollInterval = time.Duration(pollIntervalSeconds) * time.Second
 
 	hcs.stopChan = make(chan struct{})
@@ -982,6 +1008,44 @@ func (hcs *HealthCheckService) StartBackgroundPolling() {
 	}()
 
 	log.Printf("[HealthCheck] 后台巡检已启动（间隔: %v）", hcs.pollInterval)
+}
+
+// clampPollIntervalSeconds 把检测间隔限制在 [Min, Max] 范围内，越界回退到默认值。
+func clampPollIntervalSeconds(seconds int) int {
+	if seconds < MinPollIntervalSeconds || seconds > MaxPollIntervalSeconds {
+		return DefaultPollIntervalSeconds
+	}
+	return seconds
+}
+
+// SetPollIntervalSeconds 设置检测间隔（秒）并立即重启轮询使其生效。
+// 写入前做范围保护；若轮询正在运行则 Stop+Start，新间隔即时生效。
+func (hcs *HealthCheckService) SetPollIntervalSeconds(seconds int) error {
+	if hcs.settingsService == nil {
+		return fmt.Errorf("设置服务未初始化")
+	}
+	clamped := clampPollIntervalSeconds(seconds)
+	if err := hcs.settingsService.SetIntSetting("availability_poll_interval_seconds", clamped); err != nil {
+		return fmt.Errorf("保存检测间隔失败: %w", err)
+	}
+
+	// 重启轮询使新间隔即时生效（仅在运行中时）
+	if hcs.IsPollingRunning() {
+		hcs.StopBackgroundPolling()
+		hcs.StartBackgroundPolling()
+	}
+	log.Printf("[HealthCheck] 检测间隔已更新为 %ds（已重启轮询）", clamped)
+	return nil
+}
+
+// GetPollIntervalSeconds 读取当前生效的检测间隔（秒），供前端展示。
+func (hcs *HealthCheckService) GetPollIntervalSeconds() int {
+	if hcs.settingsService != nil {
+		if interval := hcs.settingsService.GetIntSetting("availability_poll_interval_seconds"); interval > 0 {
+			return clampPollIntervalSeconds(interval)
+		}
+	}
+	return DefaultPollIntervalSeconds
 }
 
 // StopBackgroundPolling 停止后台巡检

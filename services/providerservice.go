@@ -16,6 +16,8 @@ type AvailabilityConfig struct {
 	TestModel    string `json:"testModel,omitempty"`    // 覆盖默认测试模型
 	TestEndpoint string `json:"testEndpoint,omitempty"` // 覆盖默认测试端点
 	Timeout      int    `json:"timeout,omitempty"`      // 覆盖默认超时（毫秒）
+	MaxTokens    int    `json:"maxTokens,omitempty"`    // 覆盖探测请求 max_tokens；0=平台默认（文本类=1），gpt-image 忽略此字段
+	Stream       bool   `json:"stream,omitempty"`      // 探测请求是否流式（仅作用于探活请求，不影响真实转发）
 }
 
 type Provider struct {
