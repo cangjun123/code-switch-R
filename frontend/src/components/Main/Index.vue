@@ -161,7 +161,8 @@
             type="button"
             @click="onTabChange(idx)"
           >
-            {{ tab.label }}
+            <span class="tab-label-full">{{ tab.label }}</span>
+            <span class="tab-label-short">{{ tab.short }}</span>
           </button>
         </div>
         <div class="section-controls">
@@ -1558,11 +1559,11 @@ interface GeminiProvider {
 }
 
 const tabs = [
-  { id: 'claude', label: 'Claude Code' },
-  { id: 'codex', label: 'Codex' },
-  { id: 'gpt-image', label: 'GPT生图' },
-  { id: 'gemini', label: 'Gemini' },
-  { id: 'others', label: '其他' },
+  { id: 'claude', label: 'Claude Code', short: 'Claude' },
+  { id: 'codex', label: 'Codex', short: 'Codex' },
+  { id: 'gpt-image', label: 'GPT生图', short: '生图' },
+  { id: 'gemini', label: 'Gemini', short: 'Gemini' },
+  { id: 'others', label: '其他', short: '其他' },
 ] as const
 type ProviderTab = (typeof tabs)[number]['id']
 const providerTabIds = tabs.map((tab) => tab.id) as ProviderTab[]
