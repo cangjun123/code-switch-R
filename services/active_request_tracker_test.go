@@ -75,9 +75,10 @@ func TestListRequestLogsPrependsActiveRequests(t *testing.T) {
 		INSERT INTO request_log (
 			platform, model, provider, http_code,
 			input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-			reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, "claude", "claude-sonnet", "completed-provider", 200, 10, 20, 0, 0, 0, 1, 2.5, 0.4, "127.0.0.1"); err != nil {
+			reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
+			is_degraded, resend_count
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "claude", "claude-sonnet", "completed-provider", 200, 10, 20, 0, 0, 0, 1, 2.5, 0.4, "127.0.0.1", 0, 0); err != nil {
 		t.Fatalf("insert request_log: %v", err)
 	}
 

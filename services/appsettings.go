@@ -47,6 +47,11 @@ type AppSettings struct {
 	NotificationWebhookMethod  string  `json:"notification_webhook_method"`
 	NotificationWebhookHeaders string  `json:"notification_webhook_headers"`
 	NotificationWebhookBody    string  `json:"notification_webhook_body"`
+
+	// Codex 降智检测：reasoning_tokens 恰好等于阈值时判定为降智，同 provider 自动重发
+	CodexDegradationResendEnabled   bool  `json:"codex_degradation_resend_enabled"`
+	CodexDegradationMaxResend       int   `json:"codex_degradation_max_resend"`
+	CodexDegradationReasoningTokens []int `json:"codex_degradation_reasoning_tokens"`
 }
 
 type persistedAppSettings struct {
@@ -203,6 +208,10 @@ func (as *AppSettingsService) defaultSettings() AppSettings {
 		NotificationWebhookMethod:  defaultNotificationWebhookMethod,
 		NotificationWebhookHeaders: defaultNotificationWebhookHeaders,
 		NotificationWebhookBody:    defaultNotificationWebhookBody,
+
+		CodexDegradationResendEnabled:   false,
+		CodexDegradationMaxResend:       3,
+		CodexDegradationReasoningTokens: []int{516},
 	}
 }
 

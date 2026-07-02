@@ -697,7 +697,8 @@
         "security": "Security",
         "blacklist": "Blacklist Settings",
         "dataImport": "Data Import",
-        "connectivity": "Connectivity Test"
+        "connectivity": "Connectivity Test",
+        "codexDegradation": "Codex Degradation Detection"
       },
       "label": {
         "assistant_access": "Accessibility permissions",
@@ -753,6 +754,12 @@
         "testNotificationWebhookFailed": "Failed to send test notification",
         "roundRobin": "Same-Level Round Robin",
         "roundRobinHint": "When enabled, providers at the same Level take turns handling requests; when disabled, always starts from the first",
+        "codexDegradation": "Codex degradation resend",
+        "codexDegradationHint": "When reasoning_tokens in a Codex response exactly hits the threshold, treat it as degraded and resend to the same provider. Streaming responses are fully buffered before returning, so the client waits for the whole response.",
+        "codexDegradationMaxResend": "Max resend attempts",
+        "codexDegradationMaxResendHint": "Extra resend attempts after a degraded response before giving up (1-9).",
+        "codexDegradationThreshold": "Degradation token values",
+        "codexDegradationThresholdHint": "Treat the response as degraded when reasoning_tokens exactly equals any of these values. Separate multiple values with commas (e.g. 516,1030). Leave empty to disable.",
         "autoUpdate": "Automatic update",
         "autoConnectivityTest": "Auto Availability Monitoring",
         "autoConnectivityTestHint": "Automatically check availability of monitored providers every minute",

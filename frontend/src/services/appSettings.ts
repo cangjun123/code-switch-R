@@ -30,6 +30,9 @@ export type AppSettings = {
   notification_webhook_method: string
   notification_webhook_headers: string
   notification_webhook_body: string
+  codex_degradation_resend_enabled: boolean
+  codex_degradation_max_resend: number
+  codex_degradation_reasoning_tokens: number[]
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -62,6 +65,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   notification_webhook_method: 'POST',
   notification_webhook_headers: '{\n  "Content-Type": "application/json"\n}',
   notification_webhook_body: '{\n  "message": "{content}",\n  "title": "{title}"\n}',
+  codex_degradation_resend_enabled: false,
+  codex_degradation_max_resend: 3,
+  codex_degradation_reasoning_tokens: [516],
 }
 
 export const fetchAppSettings = async (): Promise<AppSettings> => {
