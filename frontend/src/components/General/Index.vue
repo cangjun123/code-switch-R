@@ -42,6 +42,9 @@ const autoConnectivityTestEnabled = ref(getCachedValue('autoConnectivityTest', f
 const switchNotifyEnabled = ref(getCachedValue('switchNotify', true)) // 切换通知开关
 const roundRobinEnabled = ref(getCachedValue('roundRobin', false))    // 同 Level 轮询开关
 const autoUpdateEnabled = ref(getCachedValue('autoUpdate', true))     // 自动更新开关
+const codexDegradationEnabled = ref(getCachedValue('codexDegradation', false))           // Codex 降智检测开关
+const codexDegradationMaxResend = ref(getCachedNumber('codexDegradationMaxResend', 3))   // 最多重发次数
+const codexDegradationTokensInput = ref(getCachedString('codexDegradationTokens', '516')) // 降智特征值（逗号分隔）
 const notificationWebhookUrl = ref(getCachedString('notificationWebhookUrl', ''))
 const notificationWebhookMethod = ref(getCachedString('notificationWebhookMethod', 'POST'))
 const notificationWebhookHeaders = ref(getCachedString('notificationWebhookHeaders', DEFAULT_NOTIFICATION_WEBHOOK_HEADERS))
@@ -127,6 +130,9 @@ const loadAppSettings = async () => {
     autoConnectivityTestEnabled.value = data?.auto_connectivity_test ?? false
     switchNotifyEnabled.value = data?.enable_switch_notify ?? true
     roundRobinEnabled.value = data?.enable_round_robin ?? false
+    codexDegradationEnabled.value = data?.codex_degradation_resend_enabled ?? false
+    codexDegradationMaxResend.value = Number(data?.codex_degradation_max_resend ?? 3)
+    codexDegradationTokensInput.value = (data?.codex_degradation_reasoning_tokens ?? [516]).join(',')
     autoUpdateEnabled.value = data?.auto_update ?? true
     notificationWebhookUrl.value = data?.notification_webhook_url ?? ''
     notificationWebhookMethod.value = normalizeNotificationWebhookMethod(data?.notification_webhook_method ?? 'POST')
@@ -158,6 +164,9 @@ const loadAppSettings = async () => {
     localStorage.setItem('app-settings-autoConnectivityTest', String(autoConnectivityTestEnabled.value))
     localStorage.setItem('app-settings-switchNotify', String(switchNotifyEnabled.value))
     localStorage.setItem('app-settings-roundRobin', String(roundRobinEnabled.value))
+    localStorage.setItem('app-settings-codexDegradation', String(codexDegradationEnabled.value))
+    localStorage.setItem('app-settings-codexDegradationMaxResend', String(codexDegradationMaxResend.value))
+    localStorage.setItem('app-settings-codexDegradationTokens', codexDegradationTokensInput.value)
     localStorage.setItem('app-settings-autoUpdate', String(autoUpdateEnabled.value))
     localStorage.setItem('app-settings-notificationWebhookUrl', notificationWebhookUrl.value)
     localStorage.setItem('app-settings-notificationWebhookMethod', notificationWebhookMethod.value)
@@ -189,6 +198,9 @@ const loadAppSettings = async () => {
     autoConnectivityTestEnabled.value = false
     switchNotifyEnabled.value = true
     roundRobinEnabled.value = false
+    codexDegradationEnabled.value = false
+    codexDegradationMaxResend.value = 3
+    codexDegradationTokensInput.value = '516'
     notificationWebhookUrl.value = ''
     notificationWebhookMethod.value = 'POST'
     notificationWebhookHeaders.value = DEFAULT_NOTIFICATION_WEBHOOK_HEADERS
@@ -234,6 +246,19 @@ const persistAppSettings = async (): Promise<boolean> => {
     budgetCycleModeCodex.value = normalizedBudgetCycleModeCodex
     const normalizedNotificationWebhookMethod = normalizeNotificationWebhookMethod(notificationWebhookMethod.value)
     notificationWebhookMethod.value = normalizedNotificationWebhookMethod
+    const normalizedCodexDegradationMaxResend = Number.isFinite(codexDegradationMaxResend.value)
+      ? Math.min(Math.max(Math.floor(codexDegradationMaxResend.value), 1), 9)
+      : 3
+    codexDegradationMaxResend.value = normalizedCodexDegradationMaxResend
+    const normalizedCodexDegradationTokens = Array.from(
+      new Set(
+        codexDegradationTokensInput.value
+          .split(',')
+          .map((s) => parseInt(s.trim(), 10))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      )
+    )
+    codexDegradationTokensInput.value = normalizedCodexDegradationTokens.join(',')
     const payload: AppSettings = {
       show_heatmap: heatmapEnabled.value,
       show_home_title: homeTitleVisible.value,
@@ -259,6 +284,9 @@ const persistAppSettings = async (): Promise<boolean> => {
       auto_connectivity_test: autoConnectivityTestEnabled.value,
       enable_switch_notify: switchNotifyEnabled.value,
       enable_round_robin: roundRobinEnabled.value,
+      codex_degradation_resend_enabled: codexDegradationEnabled.value,
+      codex_degradation_max_resend: normalizedCodexDegradationMaxResend,
+      codex_degradation_reasoning_tokens: normalizedCodexDegradationTokens,
       auto_update: autoUpdateEnabled.value,
       notification_webhook_url: notificationWebhookUrl.value.trim(),
       notification_webhook_method: normalizedNotificationWebhookMethod,
@@ -298,6 +326,9 @@ const persistAppSettings = async (): Promise<boolean> => {
     localStorage.setItem('app-settings-autoConnectivityTest', String(autoConnectivityTestEnabled.value))
     localStorage.setItem('app-settings-switchNotify', String(switchNotifyEnabled.value))
     localStorage.setItem('app-settings-roundRobin', String(roundRobinEnabled.value))
+    localStorage.setItem('app-settings-codexDegradation', String(codexDegradationEnabled.value))
+    localStorage.setItem('app-settings-codexDegradationMaxResend', String(codexDegradationMaxResend.value))
+    localStorage.setItem('app-settings-codexDegradationTokens', codexDegradationTokensInput.value)
     localStorage.setItem('app-settings-autoUpdate', String(autoUpdateEnabled.value))
     localStorage.setItem('app-settings-notificationWebhookUrl', notificationWebhookUrl.value.trim())
     localStorage.setItem('app-settings-notificationWebhookMethod', normalizedNotificationWebhookMethod)
@@ -629,6 +660,52 @@ onMounted(async () => {
                 <span></span>
               </label>
               <span class="hint-text">{{ $t('components.general.label.roundRobinHint') }}</span>
+            </div>
+          </ListItem>
+        </div>
+      </section>
+
+      <section>
+        <h2 class="mac-section-title">{{ $t('components.general.title.codexDegradation') }}</h2>
+        <div class="mac-panel">
+          <ListItem :label="$t('components.general.label.codexDegradation')">
+            <div class="toggle-with-hint">
+              <label class="mac-switch">
+                <input
+                  type="checkbox"
+                  :disabled="settingsLoading || saveBusy"
+                  v-model="codexDegradationEnabled"
+                  @change="persistAppSettings"
+                />
+                <span></span>
+              </label>
+              <span class="hint-text">{{ $t('components.general.label.codexDegradationHint') }}</span>
+            </div>
+          </ListItem>
+          <ListItem :label="$t('components.general.label.codexDegradationMaxResend')">
+            <div class="toggle-with-hint">
+              <select
+                class="mac-select"
+                :disabled="settingsLoading || saveBusy || !codexDegradationEnabled"
+                v-model="codexDegradationMaxResend"
+                @change="persistAppSettings"
+              >
+                <option v-for="n in 9" :key="n" :value="n">{{ n }}</option>
+              </select>
+              <span class="hint-text">{{ $t('components.general.label.codexDegradationMaxResendHint') }}</span>
+            </div>
+          </ListItem>
+          <ListItem :label="$t('components.general.label.codexDegradationThreshold')">
+            <div class="toggle-with-hint">
+              <input
+                type="text"
+                class="mac-input"
+                :disabled="settingsLoading || saveBusy || !codexDegradationEnabled"
+                v-model="codexDegradationTokensInput"
+                placeholder="516,1030"
+                @blur="persistAppSettings"
+              />
+              <span class="hint-text">{{ $t('components.general.label.codexDegradationThresholdHint') }}</span>
             </div>
           </ListItem>
         </div>

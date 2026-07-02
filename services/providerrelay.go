@@ -50,6 +50,14 @@ type ProviderRelayService struct {
 // errClientAbort 表示客户端中断连接，不应计入 provider 失败次数
 var errClientAbort = errors.New("client aborted, skip failure count")
 
+// errResponseTooLargeToBuffer 表示 Codex 响应超过降智检测缓冲上限，跳过检测直接返回已缓冲内容
+var errResponseTooLargeToBuffer = errors.New("codex response too large to buffer for degradation check")
+
+const (
+	codexDegradationMaxBufferBytes = 16 * 1024 * 1024
+	codexDegradationResendInterval = 300 * time.Millisecond
+)
+
 func isClientAbortError(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
@@ -1047,6 +1055,12 @@ func (prs *ProviderRelayService) forwardRequest(
 		headers["Accept"] = "application/json"
 	}
 
+	// Codex 降智检测：流式/非流式都先完整缓冲响应，判定 reasoning_tokens 命中阈值后同 provider 重发。
+	// 在建立顶层 requestLog 之前分流，避免与单次转发的日志/active-tracker 冲突。
+	if shouldDetectCodexDegradation(prs.appSettings, kind, endpoint) {
+		return prs.forwardCodexWithDegradationRetry(c, provider, endpoint, query, headers, bodyBytes, isStream, model)
+	}
+
 	requestLog := &ReqeustLog{
 		Platform: kind,
 		Provider: provider.Name,
@@ -1078,8 +1092,9 @@ func (prs *ProviderRelayService) forwardRequest(
 			INSERT INTO request_log (
 				platform, model, provider, http_code,
 				input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-				reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
+				is_degraded, resend_count
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			requestLog.Platform,
 			requestLog.Model,
@@ -1094,6 +1109,8 @@ func (prs *ProviderRelayService) forwardRequest(
 			requestLog.DurationSec,
 			requestLog.FirstTokenDurationSec,
 			requestLog.ClientIP,
+			boolToInt(requestLog.IsDegraded),
+			requestLog.ResendCount,
 		)
 
 		if err != nil {
@@ -1508,6 +1525,8 @@ func ensureRequestLogTableWithDB(db *sql.DB) error {
 		duration_sec REAL DEFAULT 0,
 		first_token_duration_sec REAL DEFAULT 0,
 		client_ip TEXT,
+		is_degraded INTEGER DEFAULT 0,
+		resend_count INTEGER DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`
 
@@ -1533,6 +1552,8 @@ func ensureRequestLogTableWithDB(db *sql.DB) error {
 		{name: "duration_sec", definition: "REAL DEFAULT 0"},
 		{name: "first_token_duration_sec", definition: "REAL DEFAULT 0"},
 		{name: "client_ip", definition: "TEXT"},
+		{name: "is_degraded", definition: "INTEGER DEFAULT 0"},
+		{name: "resend_count", definition: "INTEGER DEFAULT 0"},
 	}
 	for _, column := range requiredColumns {
 		if err := ensureRequestLogColumn(db, column.name, column.definition); err != nil {
@@ -1626,6 +1647,8 @@ type ReqeustLog struct {
 	FirstTokenDurationSec float64 `json:"first_token_duration_sec"`
 	ClientIP              string  `json:"client_ip"`
 	CreatedAt             string  `json:"created_at"`
+	IsDegraded            bool    `json:"is_degraded"`
+	ResendCount           int     `json:"resend_count"`
 	InputCost             float64 `json:"input_cost"`
 	OutputCost            float64 `json:"output_cost"`
 	ReasoningCost         float64 `json:"reasoning_cost"`
@@ -1918,13 +1941,15 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 				INSERT INTO request_log (
 					platform, model, provider, http_code,
 					input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-					reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
+					is_degraded, resend_count
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`,
 				requestLog.Platform, requestLog.Model, requestLog.Provider, requestLog.HttpCode,
 				requestLog.InputTokens, requestLog.OutputTokens, requestLog.CacheCreateTokens,
 				requestLog.CacheReadTokens, requestLog.ReasoningTokens,
 				boolToInt(requestLog.IsStream), requestLog.DurationSec, requestLog.FirstTokenDurationSec, requestLog.ClientIP,
+				boolToInt(requestLog.IsDegraded), requestLog.ResendCount,
 			)
 		}()
 
@@ -2869,4 +2894,369 @@ func estimateInputTokens(bodyBytes []byte) int {
 		estimated = 1
 	}
 	return estimated
+}
+
+// shouldDetectCodexDegradation 判断是否对当前 codex 请求启用降智检测重发。
+// 仅对 /responses 入口（排除 count_tokens）且设置开启、特征值集合/次数有效时启用。
+func shouldDetectCodexDegradation(as *AppSettingsService, kind, endpoint string) bool {
+	if as == nil || kind != ProviderKindCodex {
+		return false
+	}
+	if !isResponsesEndpoint(endpoint) || strings.HasSuffix(endpoint, "/count_tokens") {
+		return false
+	}
+	settings, err := as.GetAppSettings()
+	if err != nil {
+		return false
+	}
+	if !settings.CodexDegradationResendEnabled {
+		return false
+	}
+	if settings.CodexDegradationMaxResend <= 0 || len(settings.CodexDegradationReasoningTokens) == 0 {
+		return false
+	}
+	return true
+}
+
+// isCodexDegradedReasoning 判断 reasoning_tokens 是否命中降智特征值集合（精确等于其中任一值）。
+func isCodexDegradedReasoning(reasoning int, tokens []int) bool {
+	for _, t := range tokens {
+		if reasoning == t {
+			return true
+		}
+	}
+	return false
+}
+
+// forwardCodexWithDegradationRetry 对 codex 请求做降智检测：每次尝试都把上游响应完整缓冲到内存
+// （不边收边发），解析 reasoning_tokens；命中特征值集合中任一值则丢弃并同 provider 重发，最多 maxResend 次；
+// 非降智或最后一次（仍降智）把缓冲真实返回给客户端。每次尝试各写一条 request_log。
+// 降智视为模型行为，不触发 RecordFailure/拉黑；真实上游错误/客户端中断则 return false 交回外层调度。
+func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
+	c *gin.Context,
+	provider Provider,
+	endpoint string,
+	query map[string]string,
+	headers map[string]string,
+	bodyBytes []byte,
+	isStream bool,
+	model string,
+) (bool, error) {
+	settings, err := prs.appSettings.GetAppSettings()
+	if err != nil {
+		return false, err
+	}
+	maxResend := settings.CodexDegradationMaxResend
+	if maxResend < 0 {
+		maxResend = 0
+	}
+	tokens := settings.CodexDegradationReasoningTokens
+
+	targetURL := joinURL(provider.APIURL, endpoint)
+	clientCtx := c.Request.Context()
+	clientIP := clientIPFromRequest(c.Request)
+
+	var activeID int64
+	activeStarted := false
+	defer func() {
+		if activeStarted {
+			defaultActiveRequestTracker.Finish(activeID)
+		}
+	}()
+	finalize := func(log *ReqeustLog, attemptStart time.Time) {
+		writeAttemptLog(log, attemptStart)
+		if activeStarted {
+			defaultActiveRequestTracker.Update(activeID, log)
+		}
+	}
+
+	for attempt := 0; attempt <= maxResend; attempt++ {
+		isLast := attempt == maxResend
+		attemptStart := time.Now()
+		attemptLog := &ReqeustLog{
+			Platform:    ProviderKindCodex,
+			Provider:    provider.Name,
+			Model:       model,
+			IsStream:    isStream,
+			ClientIP:    clientIP,
+			ResendCount: attempt,
+		}
+		if attempt == 0 {
+			activeID = defaultActiveRequestTracker.Start(attemptLog, attemptStart)
+			activeStarted = true
+		}
+
+		if isClientAbortError(clientCtx, clientCtx.Err()) {
+			attemptLog.SkipLog = true
+			finalize(attemptLog, attemptStart)
+			return false, errClientAbort
+		}
+
+		req := xrequest.New().
+			SetHeaders(headers).
+			SetQueryParams(query).
+			SetRetry(1, 500*time.Millisecond).
+			SetClient(prs.httpClient).
+			WithContext(clientCtx)
+		req = req.SetBody(bytes.NewReader(bodyBytes))
+
+		resp, postErr := req.Post(targetURL)
+		if resp != nil {
+			attemptLog.HttpCode = resp.StatusCode()
+		}
+
+		// 发送阶段错误
+		if postErr != nil {
+			if isClientAbortError(clientCtx, postErr) {
+				attemptLog.SkipLog = true
+				finalize(attemptLog, attemptStart)
+				return false, fmt.Errorf("%w: %v", errClientAbort, postErr)
+			}
+			if resp != nil {
+				if upstreamBody := extractUpstreamError(resp); upstreamBody != "" {
+					finalize(attemptLog, attemptStart)
+					return false, fmt.Errorf("upstream status %d: %s", resp.StatusCode(), upstreamBody)
+				}
+			}
+			finalize(attemptLog, attemptStart)
+			return false, postErr
+		}
+		if resp == nil {
+			finalize(attemptLog, attemptStart)
+			return false, fmt.Errorf("empty response")
+		}
+
+		status := attemptLog.HttpCode
+		if respErr := resp.Error(); respErr != nil {
+			if isClientAbortError(clientCtx, respErr) || status == 0 {
+				attemptLog.SkipLog = true
+				finalize(attemptLog, attemptStart)
+				return false, fmt.Errorf("%w: %v", errClientAbort, respErr)
+			}
+			errMsg := strings.TrimSpace(respErr.Error())
+			if errMsg == "" {
+				if upstreamBody := extractUpstreamError(resp); upstreamBody != "" {
+					errMsg = upstreamBody
+				}
+			}
+			finalize(attemptLog, attemptStart)
+			if errMsg != "" {
+				return false, fmt.Errorf("upstream status %d: %s", status, errMsg)
+			}
+			return false, fmt.Errorf("upstream status %d", status)
+		}
+
+		// 非 2xx：上游失败，交回外层调度（不在此拉黑）
+		if status != 0 && (status < http.StatusOK || status >= http.StatusMultipleChoices) {
+			if upstreamBody := extractUpstreamError(resp); upstreamBody != "" {
+				finalize(attemptLog, attemptStart)
+				return false, fmt.Errorf("upstream status %d: %s", status, upstreamBody)
+			}
+			finalize(attemptLog, attemptStart)
+			return false, fmt.Errorf("upstream status %d", status)
+		}
+
+		// 2xx / status==0：缓冲响应（不碰 c.Writer），解析 usage
+		var (
+			capturedStatus int
+			capturedHeader http.Header
+			capturedBody   []byte
+			captureErr     error
+		)
+		if isStreamResponse(resp, isStream) {
+			capturedStatus, capturedHeader, capturedBody, captureErr = captureCodexStreamingResponse(resp, attemptLog, attemptStart, clientCtx, codexDegradationMaxBufferBytes)
+		} else {
+			capturedStatus, capturedHeader, capturedBody, captureErr = captureCodexNonStreamingResponse(resp, attemptLog)
+		}
+
+		if captureErr != nil {
+			// 超限：已缓冲内容直接返回，不重发，视为成功
+			if errors.Is(captureErr, errResponseTooLargeToBuffer) && len(capturedBody) > 0 {
+				fmt.Printf("[Codex降智] Provider %s 响应超过缓冲上限 %d 字节，跳过检测直接返回已缓冲内容\n", provider.Name, codexDegradationMaxBufferBytes)
+				if writeErr := writeCapturedResponse(c.Writer, capturedStatus, capturedHeader, capturedBody); writeErr != nil && isClientAbortError(clientCtx, writeErr) {
+					attemptLog.SkipLog = true
+				}
+				finalize(attemptLog, attemptStart)
+				return true, nil
+			}
+			if isClientAbortError(clientCtx, captureErr) || errors.Is(captureErr, errClientAbort) {
+				attemptLog.SkipLog = true
+			}
+			finalize(attemptLog, attemptStart)
+			if errors.Is(captureErr, errClientAbort) {
+				return false, captureErr
+			}
+			return false, fmt.Errorf("%w: %v", errClientAbort, captureErr)
+		}
+
+		degraded := isCodexDegradedReasoning(attemptLog.ReasoningTokens, tokens)
+		attemptLog.IsDegraded = degraded
+
+		// 降智且还能重发：记日志后重发
+		if degraded && !isLast {
+			fmt.Printf("[Codex降智] Provider %s 第 %d/%d 次请求命中特征值 %v（reasoning=%d），同 provider 重发\n", provider.Name, attempt+1, maxResend+1, tokens, attemptLog.ReasoningTokens)
+			finalize(attemptLog, attemptStart)
+			time.Sleep(codexDegradationResendInterval)
+			continue
+		}
+
+		if degraded {
+			fmt.Printf("[Codex降智] Provider %s 达到最大重发次数 %d 仍降智，返回降智结果\n", provider.Name, maxResend)
+		} else {
+			fmt.Printf("[Codex降智] Provider %s 第 %d/%d 次请求未降智（reasoning=%d），返回结果\n", provider.Name, attempt+1, maxResend+1, attemptLog.ReasoningTokens)
+		}
+		if writeErr := writeCapturedResponse(c.Writer, capturedStatus, capturedHeader, capturedBody); writeErr != nil && isClientAbortError(clientCtx, writeErr) {
+			attemptLog.SkipLog = true
+		}
+		finalize(attemptLog, attemptStart)
+		return true, nil
+	}
+
+	return false, fmt.Errorf("codex degradation retry exhausted")
+}
+
+// captureCodexStreamingResponse 把 codex 流式响应完整缓冲到内存，逐行解析 usage。
+// 字节处理严格镜像 writeStreamingResponse/writeStreamingLine，保证 SSE 拓扑（event:/data:/空行）逐字节保真。
+// 不写任何 http.ResponseWriter。缓冲超过 maxBytes 返回 errResponseTooLargeToBuffer（已缓冲内容随返回）。
+func captureCodexStreamingResponse(
+	resp *xrequest.Response,
+	attemptLog *ReqeustLog,
+	start time.Time,
+	clientCtx context.Context,
+	maxBytes int,
+) (int, http.Header, []byte, error) {
+	if resp == nil || resp.RawResponse == nil {
+		return 0, nil, nil, fmt.Errorf("empty upstream response")
+	}
+	raw := resp.RawResponse
+	if raw.Body != nil {
+		defer raw.Body.Close()
+	}
+
+	capturedHeader := http.Header{}
+	copyStreamingResponseHeaders(capturedHeader, raw.Header)
+	status := resp.StatusCode()
+	if status == 0 {
+		status = http.StatusOK
+	}
+	if raw.Body == nil {
+		return status, capturedHeader, nil, nil
+	}
+
+	hook := ReqeustLogHook(nil, ProviderKindCodex, attemptLog)
+	reader := bufio.NewReader(raw.Body)
+	var buf bytes.Buffer
+	for {
+		if clientCtx != nil && clientCtx.Err() != nil {
+			return status, capturedHeader, buf.Bytes(), fmt.Errorf("%w: client disconnected while buffering", errClientAbort)
+		}
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			// 镜像 writeStreamingLine：空白行原样保留；非空行经 hook（codex 原样不改字节）。
+			originalLine := line
+			outputLine := originalLine
+			trimmedLine := bytes.TrimRight(line, "\n")
+			if len(bytes.TrimSpace(trimmedLine)) > 0 {
+				flush, processedLine := hook(trimmedLine)
+				if flush {
+					if len(bytes.TrimSpace(processedLine)) > 0 {
+						markFirstTokenDuration(attemptLog, start)
+					}
+					if bytes.HasSuffix(originalLine, []byte("\n")) {
+						processedLine = append(processedLine, '\n')
+					}
+					outputLine = processedLine
+				} else {
+					outputLine = nil
+				}
+			}
+			if len(outputLine) > 0 {
+				buf.Write(outputLine)
+				if maxBytes > 0 && buf.Len() > maxBytes {
+					return status, capturedHeader, buf.Bytes(), errResponseTooLargeToBuffer
+				}
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return status, capturedHeader, buf.Bytes(), nil
+			}
+			return status, capturedHeader, buf.Bytes(), fmt.Errorf("error capturing streaming response: %w", readErr)
+		}
+	}
+}
+
+// captureCodexNonStreamingResponse 缓冲 codex 非流式 JSON 响应。
+// 注意：非流式 /responses 响应 usage 在顶层 usage.*（无 response. 前缀），故用 ClaudeCodeParse 解析器。
+func captureCodexNonStreamingResponse(resp *xrequest.Response, attemptLog *ReqeustLog) (int, http.Header, []byte, error) {
+	if resp == nil || resp.RawResponse == nil {
+		return 0, nil, nil, fmt.Errorf("empty upstream response")
+	}
+	raw := resp.RawResponse
+	if raw.Body != nil {
+		defer raw.Body.Close()
+	}
+	body := resp.Bytes()
+	status := resp.StatusCode()
+	if status == 0 {
+		status = http.StatusOK
+	}
+	capturedHeader := http.Header{}
+	copyStreamingResponseHeaders(capturedHeader, raw.Header)
+	ClaudeCodeParseTokenUsageFromResponse(string(body), attemptLog)
+	return status, capturedHeader, body, nil
+}
+
+// writeCapturedResponse 把缓冲的响应（header/status/body）一次性写给客户端。
+func writeCapturedResponse(w http.ResponseWriter, status int, header http.Header, body []byte) error {
+	if header != nil {
+		for key, values := range header {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+	}
+	w.WriteHeader(status)
+	if len(body) > 0 {
+		if _, err := w.Write(body); err != nil {
+			return fmt.Errorf("error writing captured response: %w", err)
+		}
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return nil
+}
+
+// writeAttemptLog 显式写一条 request_log（含降智/重发字段）。SkipLog=true 时跳过。
+func writeAttemptLog(log *ReqeustLog, start time.Time) {
+	if log == nil {
+		return
+	}
+	log.DurationSec = time.Since(start).Seconds()
+	if log.SkipLog {
+		return
+	}
+	if GlobalDBQueueLogs == nil {
+		fmt.Printf("⚠️  写入 request_log 失败: 队列未初始化\n")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := GlobalDBQueueLogs.ExecBatchCtx(ctx, `
+		INSERT INTO request_log (
+			platform, model, provider, http_code,
+			input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
+			reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
+			is_degraded, resend_count
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		log.Platform, log.Model, log.Provider, log.HttpCode,
+		log.InputTokens, log.OutputTokens, log.CacheCreateTokens, log.CacheReadTokens,
+		log.ReasoningTokens, boolToInt(log.IsStream), log.DurationSec, log.FirstTokenDurationSec, log.ClientIP,
+		boolToInt(log.IsDegraded), log.ResendCount,
+	)
+	if err != nil {
+		fmt.Printf("写入 request_log 失败: %v\n", err)
+	}
 }

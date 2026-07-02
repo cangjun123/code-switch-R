@@ -814,8 +814,9 @@ func (prs *ProviderRelayService) writeRelayRequestLog(requestLog *ReqeustLog, st
 		INSERT INTO request_log (
 			platform, model, provider, http_code,
 			input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-			reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
+			is_degraded, resend_count
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		requestLog.Platform,
 		requestLog.Model,
@@ -830,6 +831,8 @@ func (prs *ProviderRelayService) writeRelayRequestLog(requestLog *ReqeustLog, st
 		requestLog.DurationSec,
 		requestLog.FirstTokenDurationSec,
 		requestLog.ClientIP,
+		boolToInt(requestLog.IsDegraded),
+		requestLog.ResendCount,
 	)
 	if err != nil {
 		fmt.Printf("写入 request_log 失败: %v\n", err)
