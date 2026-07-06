@@ -45,6 +45,8 @@ const autoUpdateEnabled = ref(getCachedValue('autoUpdate', true))     // 自动�
 const codexDegradationEnabled = ref(getCachedValue('codexDegradation', false))           // Codex 降智检测开关
 const codexDegradationMaxResend = ref(getCachedNumber('codexDegradationMaxResend', 3))   // 最多重发次数
 const codexDegradationTokensInput = ref(getCachedString('codexDegradationTokens', '516')) // 降智特征值（逗号分隔）
+const logRefreshIntervalSec = ref(getCachedNumber('logRefreshIntervalSec', 30)) // 日志页默认轮询间隔（秒）
+const logFastRefreshIntervalSec = ref(getCachedNumber('logFastRefreshIntervalSec', 3)) // 日志页有活动请求时的快轮询间隔（秒）
 const notificationWebhookUrl = ref(getCachedString('notificationWebhookUrl', ''))
 const notificationWebhookMethod = ref(getCachedString('notificationWebhookMethod', 'POST'))
 const notificationWebhookHeaders = ref(getCachedString('notificationWebhookHeaders', DEFAULT_NOTIFICATION_WEBHOOK_HEADERS))
@@ -138,6 +140,10 @@ const loadAppSettings = async () => {
     notificationWebhookMethod.value = normalizeNotificationWebhookMethod(data?.notification_webhook_method ?? 'POST')
     notificationWebhookHeaders.value = data?.notification_webhook_headers || DEFAULT_NOTIFICATION_WEBHOOK_HEADERS
     notificationWebhookBody.value = data?.notification_webhook_body || DEFAULT_NOTIFICATION_WEBHOOK_BODY
+    const slowInterval = Number(data?.log_refresh_interval_sec)
+    logRefreshIntervalSec.value = slowInterval > 0 ? slowInterval : 30
+    const fastInterval = Number(data?.log_fast_refresh_interval_sec)
+    logFastRefreshIntervalSec.value = fastInterval > 0 ? fastInterval : 3
 
     // 缓存到 localStorage，下次打开时直接显示正确状态
     localStorage.setItem('app-settings-heatmap', String(heatmapEnabled.value))
@@ -172,6 +178,8 @@ const loadAppSettings = async () => {
     localStorage.setItem('app-settings-notificationWebhookMethod', notificationWebhookMethod.value)
     localStorage.setItem('app-settings-notificationWebhookHeaders', notificationWebhookHeaders.value)
     localStorage.setItem('app-settings-notificationWebhookBody', notificationWebhookBody.value)
+    localStorage.setItem('app-settings-logRefreshIntervalSec', String(logRefreshIntervalSec.value))
+    localStorage.setItem('app-settings-logFastRefreshIntervalSec', String(logFastRefreshIntervalSec.value))
   } catch (error) {
     console.error('failed to load app settings', error)
     heatmapEnabled.value = true
@@ -205,6 +213,8 @@ const loadAppSettings = async () => {
     notificationWebhookMethod.value = 'POST'
     notificationWebhookHeaders.value = DEFAULT_NOTIFICATION_WEBHOOK_HEADERS
     notificationWebhookBody.value = DEFAULT_NOTIFICATION_WEBHOOK_BODY
+    logRefreshIntervalSec.value = 30
+    logFastRefreshIntervalSec.value = 3
   } finally {
     settingsLoading.value = false
   }
@@ -259,6 +269,14 @@ const persistAppSettings = async (): Promise<boolean> => {
       )
     )
     codexDegradationTokensInput.value = normalizedCodexDegradationTokens.join(',')
+    const normalizedLogRefreshIntervalSec = Number.isFinite(logRefreshIntervalSec.value)
+      ? Math.min(Math.max(Math.floor(logRefreshIntervalSec.value), 1), 600)
+      : 30
+    logRefreshIntervalSec.value = normalizedLogRefreshIntervalSec
+    const normalizedLogFastRefreshIntervalSec = Number.isFinite(logFastRefreshIntervalSec.value)
+      ? Math.min(Math.max(Math.floor(logFastRefreshIntervalSec.value), 1), 60)
+      : 3
+    logFastRefreshIntervalSec.value = normalizedLogFastRefreshIntervalSec
     const payload: AppSettings = {
       show_heatmap: heatmapEnabled.value,
       show_home_title: homeTitleVisible.value,
@@ -292,6 +310,8 @@ const persistAppSettings = async (): Promise<boolean> => {
       notification_webhook_method: normalizedNotificationWebhookMethod,
       notification_webhook_headers: notificationWebhookHeaders.value.trim(),
       notification_webhook_body: notificationWebhookBody.value.trim(),
+      log_refresh_interval_sec: normalizedLogRefreshIntervalSec,
+      log_fast_refresh_interval_sec: normalizedLogFastRefreshIntervalSec,
     }
     await saveAppSettings(payload)
 
@@ -334,6 +354,8 @@ const persistAppSettings = async (): Promise<boolean> => {
     localStorage.setItem('app-settings-notificationWebhookMethod', normalizedNotificationWebhookMethod)
     localStorage.setItem('app-settings-notificationWebhookHeaders', notificationWebhookHeaders.value.trim())
     localStorage.setItem('app-settings-notificationWebhookBody', notificationWebhookBody.value.trim())
+    localStorage.setItem('app-settings-logRefreshIntervalSec', String(logRefreshIntervalSec.value))
+    localStorage.setItem('app-settings-logFastRefreshIntervalSec', String(logFastRefreshIntervalSec.value))
 
     window.dispatchEvent(new CustomEvent('app-settings-updated'))
     return true
@@ -706,6 +728,40 @@ onMounted(async () => {
                 @blur="persistAppSettings"
               />
               <span class="hint-text">{{ $t('components.general.label.codexDegradationThresholdHint') }}</span>
+            </div>
+          </ListItem>
+        </div>
+      </section>
+
+      <section>
+        <h2 class="mac-section-title">{{ $t('components.general.title.logsPolling') }}</h2>
+        <div class="mac-panel">
+          <ListItem :label="$t('components.general.label.logsRefreshInterval')">
+            <div class="toggle-with-hint">
+              <input
+                type="number"
+                class="mac-input"
+                min="1"
+                max="600"
+                :disabled="settingsLoading || saveBusy"
+                v-model.number="logRefreshIntervalSec"
+                @change="persistAppSettings"
+              />
+              <span class="hint-text">{{ $t('components.general.label.logsRefreshIntervalHint') }}</span>
+            </div>
+          </ListItem>
+          <ListItem :label="$t('components.general.label.logsFastRefreshInterval')">
+            <div class="toggle-with-hint">
+              <input
+                type="number"
+                class="mac-input"
+                min="1"
+                max="60"
+                :disabled="settingsLoading || saveBusy"
+                v-model.number="logFastRefreshIntervalSec"
+                @change="persistAppSettings"
+              />
+              <span class="hint-text">{{ $t('components.general.label.logsFastRefreshIntervalHint') }}</span>
             </div>
           </ListItem>
         </div>

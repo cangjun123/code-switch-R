@@ -698,7 +698,8 @@
         "blacklist": "Blacklist Settings",
         "dataImport": "Data Import",
         "connectivity": "Connectivity Test",
-        "codexDegradation": "Codex Degradation Detection"
+        "codexDegradation": "Codex Degradation Detection",
+        "logsPolling": "Logs"
       },
       "label": {
         "assistant_access": "Accessibility permissions",
@@ -758,6 +759,10 @@
         "codexDegradationHint": "When reasoning_tokens in a Codex response exactly hits the threshold, treat it as degraded and resend to the same provider. Streaming responses are fully buffered before returning, so the client waits for the whole response.",
         "codexDegradationMaxResend": "Max resend attempts",
         "codexDegradationMaxResendHint": "Extra resend attempts after a degraded response before giving up (1-9).",
+        "logsRefreshInterval": "Log polling interval (s)",
+        "logsRefreshIntervalHint": "Default refresh interval for the logs page (1-600 s).",
+        "logsFastRefreshInterval": "Fast polling interval (s)",
+        "logsFastRefreshIntervalHint": "Shorter interval used while requests are active so the first token shows sooner (1-60 s).",
         "codexDegradationThreshold": "Degradation token values",
         "codexDegradationThresholdHint": "Treat the response as degraded when reasoning_tokens exactly equals any of these values. Separate multiple values with commas (e.g. 516,1030). Leave empty to disable.",
         "autoUpdate": "Automatic update",

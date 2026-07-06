@@ -699,7 +699,8 @@
         "blacklist": "拉黑配置",
         "dataImport": "数据导入",
         "connectivity": "连通性检测",
-        "codexDegradation": "Codex 降智检测"
+        "codexDegradation": "Codex 降智检测",
+        "logsPolling": "日志监控"
       },
       "label": {
         "assistant_access": "辅助功能访问权限",
@@ -757,6 +758,10 @@
         "codexDegradationHint": "当 Codex 响应的 reasoning_tokens 恰好命中阈值时判定为降智，自动对同一 provider 重发。流式请求会先完整缓冲再返回，客户端需等待整条响应生成完成。",
         "codexDegradationMaxResend": "最大重发次数",
         "codexDegradationMaxResendHint": "命中降智后最多额外重发的次数（1–9）。",
+        "logsRefreshInterval": "日志轮询间隔（秒）",
+        "logsRefreshIntervalHint": "日志页默认刷新间隔（1–600 秒）。",
+        "logsFastRefreshInterval": "处理中请求快轮询间隔（秒）",
+        "logsFastRefreshIntervalHint": "有活动请求时缩短到此间隔，首 token 更快显示（1–60 秒）。",
         "codexDegradationThreshold": "降智特征值",
         "codexDegradationThresholdHint": "reasoning_tokens 恰好等于其中任一值即判定降智。多个值用英文逗号分隔（如 516,1030）。留空则关闭检测。",
         "autoUpdate": "自动更新",

@@ -48,6 +48,10 @@ type AppSettings struct {
 	NotificationWebhookHeaders string  `json:"notification_webhook_headers"`
 	NotificationWebhookBody    string  `json:"notification_webhook_body"`
 
+	// 日志页轮询间隔（秒）：默认间隔 / 有活动请求时的快轮询间隔
+	LogRefreshIntervalSec     int `json:"log_refresh_interval_sec"`
+	LogFastRefreshIntervalSec int `json:"log_fast_refresh_interval_sec"`
+
 	// Codex 降智检测：reasoning_tokens 恰好等于阈值时判定为降智，同 provider 自动重发
 	CodexDegradationResendEnabled   bool  `json:"codex_degradation_resend_enabled"`
 	CodexDegradationMaxResend       int   `json:"codex_degradation_max_resend"`
@@ -209,6 +213,9 @@ func (as *AppSettingsService) defaultSettings() AppSettings {
 		NotificationWebhookHeaders: defaultNotificationWebhookHeaders,
 		NotificationWebhookBody:    defaultNotificationWebhookBody,
 
+		LogRefreshIntervalSec:     30,
+		LogFastRefreshIntervalSec: 3,
+
 		CodexDegradationResendEnabled:   false,
 		CodexDegradationMaxResend:       3,
 		CodexDegradationReasoningTokens: []int{516},
@@ -225,7 +232,18 @@ func (as *AppSettingsService) defaultSettingsFile() persistedAppSettings {
 func (as *AppSettingsService) GetAppSettings() (AppSettings, error) {
 	as.mu.Lock()
 	defer as.mu.Unlock()
-	return as.loadLocked()
+	s, err := as.loadLocked()
+	if err != nil {
+		return s, err
+	}
+	// 老配置文件缺字段时为 0，兜底为默认值，避免前端 0 秒死循环轮询
+	if s.LogRefreshIntervalSec <= 0 {
+		s.LogRefreshIntervalSec = 30
+	}
+	if s.LogFastRefreshIntervalSec <= 0 {
+		s.LogFastRefreshIntervalSec = 3
+	}
+	return s, nil
 }
 
 func (as *AppSettingsService) GetAdminAuthConfig() (AdminAuthConfig, error) {

@@ -253,6 +253,7 @@ import {
   type ProviderDailyStat,
   type RequestLogMaintenanceInfo,
 } from '../../services/logs'
+import { fetchAppSettings } from '../../services/appSettings'
 import {
   Chart,
   CategoryScale,
@@ -588,19 +589,27 @@ const formatSeriesLabel = (value?: string) => {
   return value
 }
 
-const REFRESH_INTERVAL = 30
-const countdown = ref(REFRESH_INTERVAL)
+const pollIntervalSec = ref(30)
+const busyPollIntervalSec = ref(3)
+const hasProcessing = computed(() => logs.value.some(item => item.status === 'processing'))
+const currentInterval = computed(() => (hasProcessing.value ? busyPollIntervalSec.value : pollIntervalSec.value))
+const countdown = ref(currentInterval.value)
 let timer: number | undefined
 
+// 有/无活动请求时在快慢档之间切换，几秒内生效
+watch(hasProcessing, () => {
+  countdown.value = currentInterval.value
+})
+
 const resetTimer = () => {
-  countdown.value = REFRESH_INTERVAL
+  countdown.value = currentInterval.value
 }
 
 const startCountdown = () => {
   stopCountdown()
   timer = window.setInterval(() => {
     if (countdown.value <= 1) {
-      countdown.value = REFRESH_INTERVAL
+      countdown.value = currentInterval.value
       void loadDashboard()
     } else {
       countdown.value -= 1
@@ -662,6 +671,19 @@ const loadDashboard = async () => {
   syncProviderOptionsFromLogs(logs.value)
 }
 
+const loadPollIntervals = async () => {
+  try {
+    const s = await fetchAppSettings()
+    const slow = Number(s?.log_refresh_interval_sec)
+    const fast = Number(s?.log_fast_refresh_interval_sec)
+    pollIntervalSec.value = slow > 0 ? slow : 30
+    busyPollIntervalSec.value = fast > 0 ? fast : 3
+  } catch (error) {
+    console.error('failed to load poll intervals', error)
+  }
+  countdown.value = currentInterval.value
+}
+
 const pagedLogs = computed(() => {
   const start = (page.value - 1) * PAGE_SIZE
   return logs.value.slice(start, start + PAGE_SIZE)
@@ -721,7 +743,10 @@ const formatDuration = (value?: number) => {
 const isProcessingLog = (item: RequestLog) => item.status === 'processing'
 
 const formatFirstTokenDuration = (item: RequestLog) => {
-  if (isProcessingLog(item)) return '—'
+  if (isProcessingLog(item)) {
+    // 处理中：已产出首 token 就实时显示，尚未产出仍显示 —
+    return item.first_token_duration_sec ? formatDuration(item.first_token_duration_sec) : '—'
+  }
   return formatDuration(item.first_token_duration_sec)
 }
 
@@ -892,12 +917,14 @@ watch(
 )
 
 onMounted(async () => {
-  await Promise.all([loadDashboard(), loadMaintenanceInfo()])
+  await Promise.all([loadDashboard(), loadMaintenanceInfo(), loadPollIntervals()])
   startCountdown()
+  window.addEventListener('app-settings-updated', loadPollIntervals)
 })
 
 onUnmounted(() => {
   stopCountdown()
+  window.removeEventListener('app-settings-updated', loadPollIntervals)
 })
 </script>
 

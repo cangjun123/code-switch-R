@@ -112,6 +112,9 @@ func markFirstTokenDuration(requestLog *ReqeustLog, start time.Time) {
 		return
 	}
 	requestLog.FirstTokenDurationSec = time.Since(start).Seconds()
+	// 首 token 落定后同步到活动请求追踪器，让日志页的处理中行实时显示首 token 耗时。
+	// ActiveRequestID 为 0（未注册活动请求）时 Update 是 no-op，安全。
+	defaultActiveRequestTracker.Update(requestLog.ActiveRequestID, requestLog)
 }
 
 func NewProviderRelayService(providerService *ProviderService, geminiService *GeminiService, codexRelayKeys *CodexRelayKeyService, blacklistService *BlacklistService, notificationService *NotificationService, appSettings *AppSettingsService, addr string) *ProviderRelayService {
@@ -2983,6 +2986,7 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 		}
 		if attempt == 0 {
 			activeID = defaultActiveRequestTracker.Start(attemptLog, attemptStart)
+			attemptLog.ActiveRequestID = activeID
 			activeStarted = true
 		}
 
