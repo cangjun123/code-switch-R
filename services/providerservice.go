@@ -102,6 +102,14 @@ type Provider struct {
 	// 会在转发前移除这些顶层 JSON 字段或 multipart field，用于兼容不支持对应参数的非标准 Images 上游。
 	DropImageFields []string `json:"dropImageFields,omitempty"`
 
+	// 异步生图模式（如 duomiapi / 多米API 的 ?async=true 流程）
+	// 仅用于 GPT 生图请求。启用后对客户端完全透明地把异步上游包成同步：
+	//   1. 创建任务时自动给上游追加 async=true 查询参数；
+	//   2. 收到 {id} 后在服务端轮询 GET {apiUrl}/v1/tasks/{id}（间隔 3s，最长 10 分钟）；
+	//   3. 任务 state=succeeded 时把 {data:{images:[{url}]}} 转成 OpenAI 图片格式返回；
+	//      state=error 或超时则视为失败，走现有黑名单 + 降级到下一个 Provider 的逻辑。
+	ImageAsyncMode bool `json:"imageAsyncMode,omitempty"`
+
 	// CLI 配置 - 供应商编辑弹窗中关联的 CLI 可编辑配置
 	// 需要持久化到 provider 配置文件，否则前端保存的自定义字段会在 Go 反序列化时被丢弃。
 	CLIConfig map[string]interface{} `json:"cliConfig,omitempty"`

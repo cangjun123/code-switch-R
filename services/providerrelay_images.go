@@ -137,7 +137,7 @@ func (prs *ProviderRelayService) openAIImagesProxyHandler(endpoint string) gin.H
 
 			effectiveEndpoint := resolveOpenAIImageEndpoint(candidate.provider, endpoint)
 			start := time.Now()
-			ok, err := prs.forwardOpenAIImageRequest(c, candidate.kind, candidate.provider, effectiveEndpoint, query, currentHeaders, currentBody, effectiveModel, streamRequested)
+			ok, err := prs.forwardOpenAIImageRequest(c, candidate.kind, candidate.provider, effectiveEndpoint, query, currentHeaders, currentBody, effectiveModel, streamRequested, candidate.provider.ImageAsyncMode)
 			duration := time.Since(start)
 			if ok {
 				if prs.blacklistService != nil {
@@ -628,6 +628,7 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 	bodyBytes []byte,
 	model string,
 	streamRequested bool,
+	asyncMode bool,
 ) (bool, error) {
 	targetURL := joinURL(provider.APIURL, endpoint)
 	headers := cloneMap(clientHeaders)
@@ -636,7 +637,10 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 	if _, ok := headers["Accept"]; !ok {
 		headers["Accept"] = "application/json"
 	}
-	if streamRequested {
+	if asyncMode {
+		// 异步模式：创建任务统一走 JSON（即便客户端请求了 stream 也不请求 SSE）
+		headers["Accept"] = "application/json"
+	} else if streamRequested {
 		headers["Accept"] = "text/event-stream"
 	}
 
@@ -656,6 +660,10 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 	q := req.URL.Query()
 	for key, value := range query {
 		q.Set(key, value)
+	}
+	if asyncMode {
+		// duomiapi 等异步上游强制要求 ?async=true
+		q.Set("async", "true")
 	}
 	req.URL.RawQuery = q.Encode()
 
@@ -689,6 +697,9 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 	requestLog.HttpCode = resp.StatusCode
 
 	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		if asyncMode {
+			return prs.handleAsyncImageResponse(c, ctx, provider, resp, requestLog, start)
+		}
 		if streamRequested || isOpenAIImageStreamingResponse(resp) {
 			if err := streamOpenAIImageResponse(c.Writer, resp, streamRequested, requestLog, start); err != nil {
 				if isClientAbortError(c.Request.Context(), err) {
@@ -718,8 +729,182 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 	return false, fmt.Errorf("upstream status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
-func isOpenAIImageStreamingResponse(resp *http.Response) bool {
-	if resp == nil {
+const (
+	asyncImagePollInterval = 3 * time.Second // 异步生图任务轮询间隔
+	asyncImagePollTimeout  = 10 * time.Minute // 异步生图任务最长等待时间（官方示例约 5 分钟，留足余量）
+)
+
+// handleAsyncImageResponse 处理异步生图上游的创建任务响应：
+// 读取返回的 {id}，轮询 /v1/tasks/{id} 直到完成，再把结果转成 OpenAI 图片格式返回给客户端。
+// 失败/超时返回错误，交由上层走黑名单 + 降级到下一个 Provider 的逻辑。
+func (prs *ProviderRelayService) handleAsyncImageResponse(
+	c *gin.Context,
+	ctx context.Context,
+	provider Provider,
+	createResp *http.Response,
+	requestLog *ReqeustLog,
+	start time.Time,
+) (bool, error) {
+	createBody, err := io.ReadAll(io.LimitReader(createResp.Body, 1<<20))
+	if err != nil {
+		return false, err
+	}
+
+	taskID := strings.TrimSpace(gjson.GetBytes(createBody, "id").String())
+	if taskID == "" {
+		// 兜底：上游已直接返回完整 OpenAI 响应（含 data 数组），原样透传
+		if gjson.GetBytes(createBody, "data").IsArray() {
+			copyOpenAIImageResponseHeaders(c.Writer.Header(), createResp.Header)
+			c.Data(http.StatusOK, firstNonEmpty(createResp.Header.Get("Content-Type"), "application/json"), createBody)
+			requestLog.HttpCode = http.StatusOK
+			return true, nil
+		}
+		snippet := strings.TrimSpace(string(createBody))
+		if len(snippet) > 512 {
+			snippet = snippet[:512] + "..."
+		}
+		return false, fmt.Errorf("异步生图创建任务未返回 id: %s", snippet)
+	}
+
+	fmt.Printf("[Images] 异步生图任务已提交: id=%s provider=%s，开始轮询 /v1/tasks/%s\n", taskID, provider.Name, taskID)
+
+	state, taskBody, err := prs.pollAsyncImageTask(ctx, provider, taskID)
+	if err != nil {
+		if isClientAbortError(ctx, err) {
+			requestLog.SkipLog = true
+			return false, fmt.Errorf("%w: %v", errClientAbort, err)
+		}
+		return false, fmt.Errorf("异步生图轮询失败 (task=%s): %w", taskID, err)
+	}
+	if state != "succeeded" {
+		return false, fmt.Errorf("异步生图任务未成功 (task=%s, state=%s)", taskID, state)
+	}
+
+	openAIBody, err := buildOpenAIImageResponseFromTask(taskBody)
+	if err != nil {
+		return false, fmt.Errorf("异步生图结果转换失败 (task=%s): %w", taskID, err)
+	}
+
+	c.Data(http.StatusOK, "application/json", openAIBody)
+	requestLog.HttpCode = http.StatusOK
+	fmt.Printf("[Images] ✓ 异步生图任务完成: id=%s provider=%s | 耗时: %.2fs\n", taskID, provider.Name, time.Since(start).Seconds())
+	return true, nil
+}
+
+// pollAsyncImageTask 轮询 GET /v1/tasks/{id}，直到任务进入终态（succeeded/error）或超时/取消。
+func (prs *ProviderRelayService) pollAsyncImageTask(ctx context.Context, provider Provider, taskID string) (string, []byte, error) {
+	queryURL := joinURL(provider.APIURL, "/v1/tasks/"+taskID)
+	deadline := time.Now().Add(asyncImagePollTimeout)
+
+	ticker := time.NewTicker(asyncImagePollInterval)
+	defer ticker.Stop()
+
+	var lastState string
+	var lastBody []byte
+	for {
+		// 任务刚提交时几乎必然 pending，首轮延迟一个间隔再查
+		select {
+		case <-ctx.Done():
+			err := ctx.Err()
+			if isClientAbortError(ctx, err) {
+				return lastState, lastBody, fmt.Errorf("%w: %v", errClientAbort, err)
+			}
+			return lastState, lastBody, err
+		case <-ticker.C:
+		}
+
+		state, body, err := prs.fetchAsyncImageTask(ctx, provider, queryURL)
+		if err != nil {
+			return lastState, lastBody, err
+		}
+		lastState, lastBody = state, body
+
+		if state == "succeeded" || state == "error" {
+			return state, body, nil
+		}
+		fmt.Printf("[Images] 异步生图轮询中: task=%s state=%s\n", taskID, state)
+
+		if time.Now().After(deadline) {
+			return lastState, lastBody, fmt.Errorf("异步生图轮询超时（%s），任务未完成 (task=%s, last_state=%s)", asyncImagePollTimeout, taskID, lastState)
+		}
+	}
+}
+
+// fetchAsyncImageTask 发起一次 GET /v1/tasks/{id} 查询，返回任务的 state 与原始响应体。
+func (prs *ProviderRelayService) fetchAsyncImageTask(ctx context.Context, provider Provider, queryURL string) (string, []byte, error) {
+	headers := map[string]string{"Accept": "application/json"}
+	removeInboundAuthHeaders(headers)
+	injectProviderAuthHeaders(headers, provider, false)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, queryURL, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	resp, err := prs.httpClient.Do(req)
+	if err != nil {
+		if isClientAbortError(ctx, err) {
+			return "", nil, fmt.Errorf("%w: %v", errClientAbort, err)
+		}
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+	if err != nil {
+		return "", nil, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		snippet := strings.TrimSpace(string(body))
+		if len(snippet) > 512 {
+			snippet = snippet[:512] + "..."
+		}
+		return "", nil, fmt.Errorf("查询异步任务失败，上游状态 %d: %s", resp.StatusCode, snippet)
+	}
+
+	state := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "state").String()))
+	return state, body, nil
+}
+
+// buildOpenAIImageResponseFromTask 把 duomiapi 异步任务结果转成 OpenAI 图片响应格式：
+// {"created":<ts>,"data":[{"url"|"b64_json":"..."}]}。
+func buildOpenAIImageResponseFromTask(taskBody []byte) ([]byte, error) {
+	imagesResult := gjson.GetBytes(taskBody, "data.images")
+	if !imagesResult.IsArray() {
+		return nil, fmt.Errorf("异步任务结果缺少 data.images 数组")
+	}
+
+	data := make([]map[string]string, 0)
+	for _, img := range imagesResult.Array() {
+		item := map[string]string{}
+		if b64 := strings.TrimSpace(img.Get("b64_json").String()); b64 != "" {
+			item["b64_json"] = b64
+		} else if url := strings.TrimSpace(img.Get("url").String()); url != "" {
+			item["url"] = url
+		} else {
+			continue
+		}
+		data = append(data, item)
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("异步任务结果 data.images 中没有可用的图片")
+	}
+
+	created := gjson.GetBytes(taskBody, "update_time").Int()
+	if created == 0 {
+		created = gjson.GetBytes(taskBody, "create_time").Int()
+	}
+
+	return json.Marshal(map[string]interface{}{
+		"created": created,
+		"data":    data,
+	})
+}
+
+func isOpenAIImageStreamingResponse(resp *http.Response) bool {	if resp == nil {
 		return false
 	}
 	return strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")

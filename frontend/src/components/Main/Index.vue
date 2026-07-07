@@ -710,6 +710,20 @@
                   <span class="field-hint">{{ t('components.main.form.hints.dropImageFields') }}</span>
                 </label>
 
+                <div v-if="modalState.tabId === 'gpt-image'" class="form-field switch-field">
+                  <span>{{ t('components.main.form.labels.imageAsyncMode') }}</span>
+                  <div class="switch-inline">
+                    <label class="mac-switch">
+                      <input type="checkbox" v-model="modalState.form.imageAsyncMode" />
+                      <span></span>
+                    </label>
+                    <span class="switch-text">
+                      {{ modalState.form.imageAsyncMode ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
+                    </span>
+                  </div>
+                  <span class="field-hint">{{ t('components.main.form.hints.imageAsyncMode') }}</span>
+                </div>
+
                 <!-- 认证方式 -->
                 <div class="form-field">
                   <span>{{ t('components.main.form.labels.connectivityAuthType') }}</span>
@@ -2538,6 +2552,7 @@ type VendorForm = {
   forceResponsesStoreFalse?: boolean
   dropResponsesFieldsText?: string
   dropImageFieldsText?: string
+  imageAsyncMode?: boolean
   cliConfig?: Record<string, any>
   // === 可用性监控配置（新） ===
   availabilityMonitorEnabled?: boolean
@@ -2642,6 +2657,7 @@ const defaultFormValues = (platform?: string): VendorForm => ({
   forceResponsesStoreFalse: false, // Responses store=false 兼容开关
   dropResponsesFieldsText: '', // Responses 丢弃字段列表
   dropImageFieldsText: '', // Images 丢弃字段列表
+  imageAsyncMode: false, // 异步生图模式（duomiapi 等仅支持异步的生图上游）
   // 可用性监控配置（新）
   availabilityMonitorEnabled: false,
   connectivityAutoBlacklist: false,
@@ -2770,6 +2786,7 @@ const openEditModal = (card: AutomationCard) => {
     forceResponsesStoreFalse: !!card.forceResponsesStoreFalse,
     dropResponsesFieldsText: formatResponsesDropFields(getResponsesDropFields(card)),
     dropImageFieldsText: formatImageDropFields(getImageDropFields(card)),
+    imageAsyncMode: !!card.imageAsyncMode,
     // 可用性监控配置（新）- 兼容从旧字段迁移
     availabilityMonitorEnabled:
       card.availabilityMonitorEnabled ?? card.connectivityCheck ?? false,
@@ -2891,6 +2908,7 @@ const submitModal = async (): Promise<boolean> => {
       forceResponsesStoreFalse: !!modalState.form.forceResponsesStoreFalse,
       dropResponsesFields,
       dropImageFields,
+      imageAsyncMode: !!modalState.form.imageAsyncMode,
       dropResponsesMaxOutputTokens: false,
       dropResponsesTemperature: false,
       // 可用性监控配置（新）
@@ -2939,6 +2957,7 @@ const submitModal = async (): Promise<boolean> => {
       forceResponsesStoreFalse: !!modalState.form.forceResponsesStoreFalse,
       dropResponsesFields,
       dropImageFields,
+      imageAsyncMode: !!modalState.form.imageAsyncMode,
       dropResponsesMaxOutputTokens: false,
       dropResponsesTemperature: false,
       // 可用性监控配置（新）

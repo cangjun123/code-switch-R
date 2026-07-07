@@ -30,6 +30,9 @@ export type AutomationCard = {
   dropResponsesTemperature?: boolean
   // Images 丢弃字段列表：为不支持指定 JSON key 或 multipart field 的生图请求在转发前移除对应字段
   dropImageFields?: string[]
+  // 异步生图模式：开启后自动走 创建任务（带 async=true）→轮询 /v1/tasks/{id}→转 OpenAI 格式
+  // 适用于 duomiapi 等仅支持异步的生图上游，对客户端完全透明
+  imageAsyncMode?: boolean
   // CLI 配置：存储供应商关联的 CLI 可编辑配置
   cliConfig?: Record<string, any>
 
