@@ -649,7 +649,12 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 		headers["Accept"] = "text/event-stream"
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
+	// 异步生图可能需要长时间轮询（最长 asyncImagePollTimeout），需要比同步生图更长的请求级超时预算。
+	requestTimeout := 10 * time.Minute
+	if asyncMode {
+		requestTimeout = asyncImagePollTimeout + 2*time.Minute // 轮询上限 + 余量
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), requestTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(bodyBytes))
@@ -735,8 +740,8 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 }
 
 const (
-	asyncImagePollInterval = 3 * time.Second // 异步生图任务轮询间隔
-	asyncImagePollTimeout  = 10 * time.Minute // 异步生图任务最长等待时间（官方示例约 5 分钟，留足余量）
+	asyncImagePollInterval = 3 * time.Second  // 异步生图任务轮询间隔
+	asyncImagePollTimeout  = 30 * time.Minute // 异步生图任务最长等待时间（官方示例约 5 分钟，复杂任务/图编辑可能更久，留足余量）
 )
 
 // handleAsyncImageResponse 处理异步生图上游的创建任务响应：
