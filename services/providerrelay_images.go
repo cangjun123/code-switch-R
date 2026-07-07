@@ -2,6 +2,8 @@ package services
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -640,6 +642,9 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 	if asyncMode {
 		// 异步模式：创建任务统一走 JSON（即便客户端请求了 stream 也不请求 SSE）
 		headers["Accept"] = "application/json"
+		// 不透传客户端的 Accept-Encoding：否则上游会压缩响应体，而 transport 不会自动解压，
+		// 导致后续按 JSON 解析 {id} 时拿到 gzip/br 原始字节。去掉后由 transport 自行协商并透明解压。
+		deleteHeaderCaseInsensitive(headers, "Accept-Encoding")
 	} else if streamRequested {
 		headers["Accept"] = "text/event-stream"
 	}
@@ -745,7 +750,7 @@ func (prs *ProviderRelayService) handleAsyncImageResponse(
 	requestLog *ReqeustLog,
 	start time.Time,
 ) (bool, error) {
-	createBody, err := io.ReadAll(io.LimitReader(createResp.Body, 1<<20))
+	createBody, err := readImageTaskBody(createResp, 1<<20)
 	if err != nil {
 		return false, err
 	}
@@ -853,7 +858,7 @@ func (prs *ProviderRelayService) fetchAsyncImageTask(ctx context.Context, provid
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+	body, err := readImageTaskBody(resp, 8*1024*1024)
 	if err != nil {
 		return "", nil, err
 	}
@@ -867,6 +872,30 @@ func (prs *ProviderRelayService) fetchAsyncImageTask(ctx context.Context, provid
 
 	state := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "state").String()))
 	return state, body, nil
+}
+
+// readImageTaskBody 读取异步生图任务的响应体并按 Content-Encoding 解压（gzip/deflate）。
+// 创建/查询响应都需要按 JSON 解析，必须拿到明文。
+func readImageTaskBody(resp *http.Response, limit int64) ([]byte, error) {
+	var reader io.Reader = resp.Body
+	if limit > 0 {
+		reader = io.LimitReader(resp.Body, limit)
+	}
+	switch strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))) {
+	case "gzip":
+		gr, err := gzip.NewReader(reader)
+		if err != nil {
+			return nil, err
+		}
+		defer gr.Close()
+		return io.ReadAll(gr)
+	case "deflate":
+		zr := flate.NewReader(reader)
+		defer zr.Close()
+		return io.ReadAll(zr)
+	default:
+		return io.ReadAll(reader)
+	}
 }
 
 // buildOpenAIImageResponseFromTask 把 duomiapi 异步任务结果转成 OpenAI 图片响应格式：
