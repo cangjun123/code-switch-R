@@ -17,7 +17,7 @@ type AvailabilityConfig struct {
 	TestEndpoint string `json:"testEndpoint,omitempty"` // 覆盖默认测试端点
 	Timeout      int    `json:"timeout,omitempty"`      // 覆盖默认超时（毫秒）
 	MaxTokens    int    `json:"maxTokens,omitempty"`    // 覆盖探测请求 max_tokens；0=平台默认（文本类=1），gpt-image 忽略此字段
-	Stream       bool   `json:"stream,omitempty"`      // 探测请求是否流式（仅作用于探活请求，不影响真实转发）
+	Stream       bool   `json:"stream,omitempty"`       // 探测请求是否流式（仅作用于探活请求，不影响真实转发）
 }
 
 type Provider struct {
@@ -91,6 +91,11 @@ type Provider struct {
 	// 为 true 时，会显式把顶层 store 设为 false，
 	// 用于兼容要求 store 必须为 false 的非标准 Responses 上游。
 	ForceResponsesStoreFalse bool `json:"forceResponsesStoreFalse,omitempty"`
+
+	// Codex 多代理 namespace 兼容开关
+	// 仅用于 Codex/OpenAI Responses 请求。启用后，上游请求固定执行
+	// collaboration -> agents，并仅对实际改写过的请求反向改写响应。
+	CodexMultiAgentNamespaceRewrite bool `json:"codexMultiAgentNamespaceRewrite,omitempty"`
 
 	// Responses 丢弃字段列表
 	// 仅用于 Codex/OpenAI Responses 请求。
@@ -553,27 +558,28 @@ func (ps *ProviderService) DuplicateProvider(kind string, sourceID int64) (*Prov
 
 	// 5. 克隆配置（深拷贝）
 	cloned := &Provider{
-		ID:                          newID,
-		Name:                        source.Name + " (副本)",
-		APIURL:                      source.APIURL,
-		APIKey:                      source.APIKey,
-		Site:                        source.Site,
-		Icon:                        source.Icon,
-		Tint:                        source.Tint,
-		Accent:                      source.Accent,
-		Enabled:                     false, // 默认禁用，避免与源供应商冲突
-		Level:                       source.Level,
-		APIEndpoint:                 source.APIEndpoint,                 // 复制端点配置
-		UpstreamProtocol:            source.UpstreamProtocol,            // 复制上游协议配置
-		OpenAIEndpointMode:          source.OpenAIEndpointMode,          // 复制 OpenAI 接口能力配置
-		BridgeResponsesInstructions: source.BridgeResponsesInstructions, // 复制 Responses instructions 兼容开关
-		ForceResponsesStoreFalse:    source.ForceResponsesStoreFalse,    // 复制 Responses store=false 兼容开关
-		DropResponsesFields:         append([]string{}, source.GetResponsesDropFields()...),
-		DropImageFields:             append([]string{}, source.GetImageDropFields()...),
-		CLIConfig:                   cloneStringAnyMap(source.CLIConfig),
-		SupportsWebSearch:           source.SupportsWebSearch,    // 复制 WebSearch 兼容开关
-		SupportsCountTokens:         source.SupportsCountTokens,  // 复制 count_tokens 支持开关
-		ConnectivityAuthType:        source.ConnectivityAuthType, // 复制认证方式
+		ID:                              newID,
+		Name:                            source.Name + " (副本)",
+		APIURL:                          source.APIURL,
+		APIKey:                          source.APIKey,
+		Site:                            source.Site,
+		Icon:                            source.Icon,
+		Tint:                            source.Tint,
+		Accent:                          source.Accent,
+		Enabled:                         false, // 默认禁用，避免与源供应商冲突
+		Level:                           source.Level,
+		APIEndpoint:                     source.APIEndpoint,                 // 复制端点配置
+		UpstreamProtocol:                source.UpstreamProtocol,            // 复制上游协议配置
+		OpenAIEndpointMode:              source.OpenAIEndpointMode,          // 复制 OpenAI 接口能力配置
+		BridgeResponsesInstructions:     source.BridgeResponsesInstructions, // 复制 Responses instructions 兼容开关
+		ForceResponsesStoreFalse:        source.ForceResponsesStoreFalse,    // 复制 Responses store=false 兼容开关
+		CodexMultiAgentNamespaceRewrite: source.CodexMultiAgentNamespaceRewrite,
+		DropResponsesFields:             append([]string{}, source.GetResponsesDropFields()...),
+		DropImageFields:                 append([]string{}, source.GetImageDropFields()...),
+		CLIConfig:                       cloneStringAnyMap(source.CLIConfig),
+		SupportsWebSearch:               source.SupportsWebSearch,    // 复制 WebSearch 兼容开关
+		SupportsCountTokens:             source.SupportsCountTokens,  // 复制 count_tokens 支持开关
+		ConnectivityAuthType:            source.ConnectivityAuthType, // 复制认证方式
 		// 可用性监控配置
 		AvailabilityMonitorEnabled: source.AvailabilityMonitorEnabled,
 		ConnectivityAutoBlacklist:  false, // 副本默认关闭自动拉黑

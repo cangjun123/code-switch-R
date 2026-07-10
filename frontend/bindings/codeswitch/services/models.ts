@@ -2079,6 +2079,11 @@ export class Provider {
     "forceResponsesStoreFalse"?: boolean;
 
     /**
+     * Codex multi-agent namespace compatibility for Responses requests.
+     */
+    "codexMultiAgentNamespaceRewrite"?: boolean;
+
+    /**
      * Responses 丢弃字段列表
      * 仅用于 OpenAI Responses 请求，必要时在转发前移除这些顶层字段。
      */
