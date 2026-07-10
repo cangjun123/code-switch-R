@@ -238,6 +238,57 @@ func TestCodexMultiAgentNamespaceRewriteStreaming(t *testing.T) {
 	}
 }
 
+func TestCodexMultiAgentNamespaceRewriteStreamingMislabeledAsJSON(t *testing.T) {
+	upstreamSSE := strings.Join([]string{
+		"event: response.output_text.delta",
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}",
+		"",
+		"event: response.output_item.added",
+		"data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"namespace\":\"agents\",\"name\":\"spawn_agent\"}}",
+		"",
+		"event: response.completed",
+		"data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"function_call\",\"namespace\":\"agents\",\"name\":\"spawn_agent\"}],\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"input_tokens_details\":{\"cached_tokens\":3},\"output_tokens_details\":{\"reasoning_tokens\":2}}}}",
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(upstreamSSE))
+	}))
+	defer upstream.Close()
+
+	providers, relay := newTestRelayService(t)
+	if err := providers.SaveProviders(ProviderKindCodex, []Provider{{
+		ID:                              1,
+		Name:                            "namespace-mislabeled-stream",
+		APIURL:                          upstream.URL,
+		APIKey:                          "upstream-key",
+		Enabled:                         true,
+		CodexMultiAgentNamespaceRewrite: true,
+	}}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+	requestBody := []byte("{\"model\":\"gpt-5-codex\",\"stream\":true,\"tools\":[{\"type\":\"namespace\",\"name\":\"collaboration\"}]}")
+	recorder := performCodexNamespaceTestRequest(t, relay, requestBody)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	response := recorder.Body.String()
+	if got := recorder.Header().Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("mislabeled stream content type was not normalized: %q", got)
+	}
+	for _, expected := range []string{"\"delta\":\"hello\"", "\"namespace\":\"collaboration\"", "\"input_tokens\":11", "data: [DONE]"} {
+		if !strings.Contains(response, expected) {
+			t.Errorf("stream missing %q: %s", expected, response)
+		}
+	}
+	if strings.Contains(response, "\"namespace\":\"agents\"") {
+		t.Fatalf("mislabeled stream retained upstream namespace: %s", response)
+	}
+}
+
 func TestCodexMultiAgentNamespaceStreamRequestWithJSONResponse(t *testing.T) {
 	for _, test := range []struct {
 		name        string
