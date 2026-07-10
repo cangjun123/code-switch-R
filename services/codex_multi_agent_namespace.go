@@ -33,7 +33,9 @@ type codexProviderHistorySanitizePlan struct {
 	removedItemIDs      map[string]struct{}
 	removedItemHashes   map[[sha256.Size]byte]struct{}
 	removedContentParts map[[sha256.Size]byte]struct{}
+	removedOutputParts  map[[sha256.Size]byte]struct{}
 	strippedItemIDs     map[string]struct{}
+	strippedEncrypted   map[[sha256.Size]byte]struct{}
 	topLevelRefs        map[string][sha256.Size]byte
 }
 
@@ -62,7 +64,9 @@ func buildCodexProviderHistorySanitizePlan(body []byte) (*codexProviderHistorySa
 		removedItemIDs:      make(map[string]struct{}),
 		removedItemHashes:   make(map[[sha256.Size]byte]struct{}),
 		removedContentParts: make(map[[sha256.Size]byte]struct{}),
+		removedOutputParts:  make(map[[sha256.Size]byte]struct{}),
 		strippedItemIDs:     make(map[string]struct{}),
+		strippedEncrypted:   make(map[[sha256.Size]byte]struct{}),
 		topLevelRefs:        make(map[string][sha256.Size]byte),
 	}
 	for _, key := range []string{"previous_response_id", "conversation"} {
@@ -81,12 +85,15 @@ func buildCodexProviderHistorySanitizePlan(body []byte) (*codexProviderHistorySa
 
 			itemType := stringField(item, "type")
 			_, hasEncryptedContent := item["encrypted_content"]
-			if itemType == "reasoning" || itemType == "item_reference" || hasEncryptedContent {
+			if itemType == "reasoning" || itemType == "item_reference" || (hasEncryptedContent && !isCodexToolOutputType(itemType)) {
 				if id := stringField(item, "id"); id != "" {
 					plan.removedItemIDs[id] = struct{}{}
 				}
 				plan.removedItemHashes[hashCodexHistoryValue(item)] = struct{}{}
 				continue
+			}
+			if hasEncryptedContent {
+				plan.strippedEncrypted[hashCodexHistoryValue(item)] = struct{}{}
 			}
 
 			if id := stringField(item, "id"); id != "" {
@@ -100,6 +107,13 @@ func buildCodexProviderHistorySanitizePlan(body []byte) (*codexProviderHistorySa
 						if stringField(part, "type") == "encrypted_content" || partHasEncryptedContent {
 							plan.removedContentParts[hashCodexHistoryValue(part)] = struct{}{}
 						}
+					}
+				}
+			}
+			if output, isArray := item["output"].([]any); isArray {
+				for _, rawPart := range output {
+					if isCodexEncryptedHistoryValue(rawPart) {
+						plan.removedOutputParts[hashCodexHistoryValue(rawPart)] = struct{}{}
 					}
 				}
 			}
@@ -139,8 +153,9 @@ func sanitizeCodexProviderBoundHistoryWithPlan(body []byte, plan *codexProviderH
 			}
 
 			id := stringField(item, "id")
+			itemHash := hashCodexHistoryValue(item)
 			_, removeByID := plan.removedItemIDs[id]
-			_, removeByHash := plan.removedItemHashes[hashCodexHistoryValue(item)]
+			_, removeByHash := plan.removedItemHashes[itemHash]
 			if (id != "" && removeByID) || removeByHash {
 				stats.RemovedItems++
 				continue
@@ -148,6 +163,10 @@ func sanitizeCodexProviderBoundHistoryWithPlan(body []byte, plan *codexProviderH
 			if _, stripID := plan.strippedItemIDs[id]; id != "" && stripID {
 				delete(item, "id")
 				stats.RemovedItemIDs++
+			}
+			if _, stripEncrypted := plan.strippedEncrypted[itemHash]; stripEncrypted {
+				delete(item, "encrypted_content")
+				stats.RemovedContentParts++
 			}
 			if content, hasContent := item["content"].([]any); hasContent {
 				filtered := make([]any, 0, len(content))
@@ -164,6 +183,21 @@ func sanitizeCodexProviderBoundHistoryWithPlan(body []byte, plan *codexProviderH
 				}
 				item["content"] = filtered
 			}
+			if output, hasOutput := item["output"].([]any); hasOutput {
+				filtered := make([]any, 0, len(output))
+				for _, rawPart := range output {
+					if _, remove := plan.removedOutputParts[hashCodexHistoryValue(rawPart)]; remove {
+						stats.RemovedContentParts++
+						continue
+					}
+					filtered = append(filtered, rawPart)
+				}
+				if len(filtered) == 0 && len(output) > 0 {
+					stats.RemovedItems++
+					continue
+				}
+				item["output"] = filtered
+			}
 			sanitized = append(sanitized, item)
 		}
 		object["input"] = sanitized
@@ -177,6 +211,15 @@ func sanitizeCodexProviderBoundHistoryWithPlan(body []byte, plan *codexProviderH
 		return body, CodexProviderHistorySanitizeStats{}, fmt.Errorf("marshal sanitized codex provider history: %w", err)
 	}
 	return rewritten, stats, nil
+}
+
+func isCodexEncryptedHistoryValue(value any) bool {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	_, hasEncryptedContent := object["encrypted_content"]
+	return hasEncryptedContent || stringField(object, "type") == "encrypted_content"
 }
 
 func hashCodexHistoryValue(value any) [sha256.Size]byte {

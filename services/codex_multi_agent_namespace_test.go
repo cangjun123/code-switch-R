@@ -84,6 +84,10 @@ func TestSanitizeCodexProviderBoundHistory(t *testing.T) {
     ]},
     {"type":"function_call","id":"fc_foreign","namespace":"agents","name":"spawn_agent","call_id":"call_1","arguments":"{\"id\":\"keep inside arguments\"}"},
     {"type":"function_call_output","id":"out_foreign","call_id":"call_1","output":"done"},
+	{"type":"custom_tool_call_output","id":"custom_out_foreign","call_id":"call_2","encrypted_content":"item-ciphertext","output":[
+	  {"type":"input_text","text":"keep structured output"},
+	  {"type":"encrypted_content","encrypted_content":"ciphertext"}
+	]},
     {"type":"compaction","encrypted_content":"ciphertext"}
   ]
 }`)
@@ -92,15 +96,15 @@ func TestSanitizeCodexProviderBoundHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SanitizeCodexProviderBoundHistory() error = %v", err)
 	}
-	if stats.RemovedItems != 3 || stats.RemovedContentParts != 1 || stats.RemovedItemIDs != 3 || stats.RemovedTopLevelRefs != 2 {
+	if stats.RemovedItems != 3 || stats.RemovedContentParts != 3 || stats.RemovedItemIDs != 4 || stats.RemovedTopLevelRefs != 2 {
 		t.Fatalf("unexpected sanitize stats: %+v", stats)
 	}
 	result := gjson.ParseBytes(sanitized)
 	if result.Get("previous_response_id").Exists() || result.Get("conversation").Exists() {
 		t.Fatalf("provider-bound top-level references remain: %s", sanitized)
 	}
-	if got := result.Get("input.#").Int(); got != 3 {
-		t.Fatalf("sanitized input item count = %d, want 3: %s", got, sanitized)
+	if got := result.Get("input.#").Int(); got != 4 {
+		t.Fatalf("sanitized input item count = %d, want 4: %s", got, sanitized)
 	}
 	if got := result.Get("input.0.content.#").Int(); got != 1 {
 		t.Fatalf("message content count = %d, want 1: %s", got, sanitized)
@@ -108,7 +112,7 @@ func TestSanitizeCodexProviderBoundHistory(t *testing.T) {
 	if got := result.Get("input.0.content.0.text").String(); got != "keep this message" {
 		t.Fatalf("message text = %q", got)
 	}
-	for index := 0; index < 3; index++ {
+	for index := 0; index < 4; index++ {
 		if result.Get(fmt.Sprintf("input.%d.id", index)).Exists() {
 			t.Fatalf("provider-bound input id remains at index %d: %s", index, sanitized)
 		}
@@ -118,6 +122,15 @@ func TestSanitizeCodexProviderBoundHistory(t *testing.T) {
 	}
 	if got := result.Get("input.1.arguments").String(); got != "{\"id\":\"keep inside arguments\"}" {
 		t.Fatalf("function arguments changed to %q", got)
+	}
+	if got := result.Get("input.3.output.#").Int(); got != 1 {
+		t.Fatalf("custom tool output count = %d, want 1: %s", got, sanitized)
+	}
+	if got := result.Get("input.3.output.0.text").String(); got != "keep structured output" {
+		t.Fatalf("custom tool output text changed to %q", got)
+	}
+	if result.Get("input.3.encrypted_content").Exists() {
+		t.Fatalf("custom tool output retained item-level ciphertext: %s", sanitized)
 	}
 }
 
