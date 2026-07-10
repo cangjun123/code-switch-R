@@ -1003,6 +1003,76 @@ func TestProviderCLIConfigJSON(t *testing.T) {
 	}
 }
 
+func TestProviderCodexMultiAgentNamespaceRewriteJSON(t *testing.T) {
+	enabled, err := json.Marshal(Provider{CodexMultiAgentNamespaceRewrite: true})
+	if err != nil {
+		t.Fatalf("marshal enabled provider: %v", err)
+	}
+	if !containsString(string(enabled), `"codexMultiAgentNamespaceRewrite":true`) {
+		t.Fatalf("enabled field missing from JSON: %s", enabled)
+	}
+
+	disabled, err := json.Marshal(Provider{})
+	if err != nil {
+		t.Fatalf("marshal default provider: %v", err)
+	}
+	if containsString(string(disabled), `"codexMultiAgentNamespaceRewrite"`) {
+		t.Fatalf("false field should be omitted: %s", disabled)
+	}
+
+	var legacy Provider
+	if err := json.Unmarshal([]byte(`{"id":1,"name":"legacy"}`), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy provider: %v", err)
+	}
+	if legacy.CodexMultiAgentNamespaceRewrite {
+		t.Fatal("legacy provider must default namespace rewrite to false")
+	}
+}
+
+func TestProviderServicePreservesAndDuplicatesCodexMultiAgentNamespaceRewrite(t *testing.T) {
+	testHome := t.TempDir()
+	t.Setenv("HOME", testHome)
+	t.Setenv("USERPROFILE", testHome)
+
+	service := NewProviderService()
+	original := Provider{
+		ID:                              1,
+		Name:                            "Codex Namespace Provider",
+		APIURL:                          "https://api.example.com",
+		APIKey:                          "sk-test",
+		Enabled:                         true,
+		CodexMultiAgentNamespaceRewrite: true,
+	}
+	if err := service.SaveProviders(ProviderKindCodex, []Provider{original}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+	loaded, err := service.LoadProviders(ProviderKindCodex)
+	if err != nil {
+		t.Fatalf("LoadProviders: %v", err)
+	}
+	if len(loaded) != 1 || !loaded[0].CodexMultiAgentNamespaceRewrite {
+		t.Fatalf("saved rewrite flag was not preserved: %+v", loaded)
+	}
+
+	duplicate, err := service.DuplicateProvider(ProviderKindCodex, original.ID)
+	if err != nil {
+		t.Fatalf("DuplicateProvider: %v", err)
+	}
+	if !duplicate.CodexMultiAgentNamespaceRewrite {
+		t.Fatal("duplicate lost Codex namespace rewrite flag")
+	}
+	if duplicate.Enabled {
+		t.Fatal("duplicate should remain disabled by default")
+	}
+	reloaded, err := service.LoadProviders(ProviderKindCodex)
+	if err != nil {
+		t.Fatalf("reload duplicated providers: %v", err)
+	}
+	if len(reloaded) != 2 || !reloaded[1].CodexMultiAgentNamespaceRewrite {
+		t.Fatalf("persisted duplicate lost rewrite flag: %+v", reloaded)
+	}
+}
+
 func TestProviderServicePreservesCLIConfig(t *testing.T) {
 	testHome := t.TempDir()
 	t.Setenv("HOME", testHome)

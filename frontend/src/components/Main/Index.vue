@@ -663,6 +663,20 @@
                 </div>
 
                 <div v-if="modalState.tabId === 'codex'" class="form-field switch-field">
+                  <span>{{ t('components.main.form.labels.codexMultiAgentNamespaceRewrite') }}</span>
+                  <div class="switch-inline">
+                    <label class="mac-switch">
+                      <input type="checkbox" v-model="modalState.form.codexMultiAgentNamespaceRewrite" />
+                      <span></span>
+                    </label>
+                    <span class="switch-text">
+                      {{ modalState.form.codexMultiAgentNamespaceRewrite ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
+                    </span>
+                  </div>
+                  <span class="field-hint">{{ t('components.main.form.hints.codexMultiAgentNamespaceRewrite') }}</span>
+                </div>
+
+                <div v-if="modalState.tabId === 'codex'" class="form-field switch-field">
                   <span>{{ t('components.main.form.labels.bridgeResponsesInstructions') }}</span>
                   <div class="switch-inline">
                     <label class="mac-switch">
@@ -2548,6 +2562,7 @@ type VendorForm = {
   level?: number
   apiEndpoint?: string
   openAIEndpointMode?: string
+  codexMultiAgentNamespaceRewrite?: boolean
   bridgeResponsesInstructions?: boolean
   forceResponsesStoreFalse?: boolean
   dropResponsesFieldsText?: string
@@ -2653,6 +2668,7 @@ const defaultFormValues = (platform?: string): VendorForm => ({
   apiEndpoint: '', // API 端点（可选）
   upstreamProtocol: 'auto', // 上游协议类型（anthropic/openai_chat/auto）
   openAIEndpointMode: 'auto', // OpenAI 入口能力（仅 codex 使用）
+  codexMultiAgentNamespaceRewrite: false, // Codex collaboration <-> agents namespace 兼容
   bridgeResponsesInstructions: false, // Responses instructions 兼容开关
   forceResponsesStoreFalse: false, // Responses store=false 兼容开关
   dropResponsesFieldsText: '', // Responses 丢弃字段列表
@@ -2782,6 +2798,7 @@ const openEditModal = (card: AutomationCard) => {
     apiEndpoint: card.apiEndpoint || '',
     upstreamProtocol: card.upstreamProtocol || 'auto',
     openAIEndpointMode: card.openAIEndpointMode || 'auto',
+    codexMultiAgentNamespaceRewrite: !!card.codexMultiAgentNamespaceRewrite,
     bridgeResponsesInstructions: !!card.bridgeResponsesInstructions,
     forceResponsesStoreFalse: !!card.forceResponsesStoreFalse,
     dropResponsesFieldsText: formatResponsesDropFields(getResponsesDropFields(card)),
@@ -2904,6 +2921,7 @@ const submitModal = async (): Promise<boolean> => {
       apiEndpoint: modalState.form.apiEndpoint || '',
       upstreamProtocol: modalState.form.upstreamProtocol || 'auto',
       openAIEndpointMode: modalState.form.openAIEndpointMode || 'auto',
+      codexMultiAgentNamespaceRewrite: !!modalState.form.codexMultiAgentNamespaceRewrite,
       bridgeResponsesInstructions: !!modalState.form.bridgeResponsesInstructions,
       forceResponsesStoreFalse: !!modalState.form.forceResponsesStoreFalse,
       dropResponsesFields,
@@ -2953,6 +2971,7 @@ const submitModal = async (): Promise<boolean> => {
       apiEndpoint: modalState.form.apiEndpoint || '',
       upstreamProtocol: modalState.form.upstreamProtocol || 'auto',
       openAIEndpointMode: modalState.form.openAIEndpointMode || 'auto',
+      codexMultiAgentNamespaceRewrite: !!modalState.form.codexMultiAgentNamespaceRewrite,
       bridgeResponsesInstructions: !!modalState.form.bridgeResponsesInstructions,
       forceResponsesStoreFalse: !!modalState.form.forceResponsesStoreFalse,
       dropResponsesFields,

@@ -519,6 +519,9 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 			return
 		}
 
+		codexNamespaceConflict := false
+		codexNamespaceConflictInspected := false
+
 		active := make([]Provider, 0, len(providers))
 		skippedCount := 0
 		for _, provider := range providers {
@@ -552,6 +555,24 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 				fmt.Printf("⛔ Provider %s 已拉黑，过期时间: %v\n", provider.Name, until.Format("15:04:05"))
 				skippedCount++
 				continue
+			}
+
+			if provider.CodexMultiAgentNamespaceRewrite && kind == ProviderKindCodex &&
+				isResponsesEndpoint(prs.resolveRelayEndpoint(kind, provider, endpoint)) {
+				if !codexNamespaceConflictInspected {
+					conflict, inspectErr := HasCodexMultiAgentNamespaceConflict(bodyBytes)
+					if inspectErr != nil {
+						fmt.Printf("[WARN] Codex 多代理 namespace 兼容检查失败，继续按原请求调度: %v\n", inspectErr)
+					} else {
+						codexNamespaceConflict = conflict
+					}
+					codexNamespaceConflictInspected = true
+				}
+				if codexNamespaceConflict {
+					fmt.Printf("[INFO] Provider %s 因请求同时定义 collaboration 与 agents namespace，已跳过\n", provider.Name)
+					skippedCount++
+					continue
+				}
 			}
 
 			active = append(active, provider)
@@ -681,6 +702,10 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 							}
 							prs.setLastUsedProvider(kind, provider.Name)
 							return
+						}
+						if errors.Is(err, ErrCodexMultiAgentNamespaceConflict) {
+							fmt.Printf("[INFO] Provider %s 与请求的多代理 namespace 定义不兼容，切换到下一个\n", provider.Name)
+							break
 						}
 
 						// 失败处理
@@ -813,6 +838,10 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 
 					return // 成功，立即返回
 				}
+				if errors.Is(err, ErrCodexMultiAgentNamespaceConflict) {
+					fmt.Printf("[INFO] Provider %s 与请求的多代理 namespace 定义不兼容，切换到下一个\n", provider.Name)
+					continue
+				}
 
 				// 失败：记录错误并尝试下一个
 				lastError = err
@@ -921,6 +950,7 @@ func (prs *ProviderRelayService) forwardRequest(
 	upstreamProtocol := provider.ResolveUpstreamProtocol(endpoint)
 	var sseConverter SSEProtocolConverter
 	useResponsesTransform := false
+	requestNamespaceRewritten := false
 	var convertInfo ConvertInfo
 	webSearchFallback, hasWebSearchFallback := claudeWebSearchFallbackRequest{}, false
 	if kind == "claude" && upstreamProtocol == UpstreamProtocolOpenAIChat {
@@ -986,6 +1016,20 @@ func (prs *ProviderRelayService) forwardRequest(
 	}
 	_ = convertInfo // 避免未使用警告
 
+	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) && provider.CodexMultiAgentNamespaceRewrite {
+		rewrittenBody, modified, err := RewriteCodexMultiAgentRequest(bodyBytes)
+		if errors.Is(err, ErrCodexMultiAgentNamespaceConflict) {
+			return false, fmt.Errorf("%w: provider %s cannot merge collaboration and agents", ErrCodexMultiAgentNamespaceConflict, provider.Name)
+		}
+		if err != nil {
+			fmt.Printf("[WARN] Provider %s Codex 多代理 namespace 请求改写失败，继续透传原请求: %v\n", provider.Name, err)
+		} else if modified > 0 {
+			bodyBytes = rewrittenBody
+			requestNamespaceRewritten = true
+			fmt.Printf("[Codex Multi-Agent Namespace] Provider=%s direction=collaboration->agents modified=%d\n", provider.Name, modified)
+		}
+	}
+
 	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) && provider.BridgeResponsesInstructions {
 		bridgedBody, bridged, err := BridgeResponsesInstructionsFromInput(bodyBytes)
 		if err != nil {
@@ -1017,6 +1061,11 @@ func (prs *ProviderRelayService) forwardRequest(
 				fmt.Printf("[INFO] Provider %s 已为 Responses 请求移除顶层字段: %v\n", provider.Name, removedFields)
 			}
 		}
+	}
+	if requestNamespaceRewritten {
+		// Let net/http negotiate gzip itself so RawResponse.Body is decompressed
+		// before the namespace JSON/SSE hooks inspect it.
+		deleteHeaderCaseInsensitive(headers, "accept-encoding")
 	}
 
 	removeInboundAuthHeaders(headers)
@@ -1061,7 +1110,7 @@ func (prs *ProviderRelayService) forwardRequest(
 	// Codex 降智检测：流式/非流式都先完整缓冲响应，判定 reasoning_tokens 命中阈值后同 provider 重发。
 	// 在建立顶层 requestLog 之前分流，避免与单次转发的日志/active-tracker 冲突。
 	if shouldDetectCodexDegradation(prs.appSettings, kind, endpoint) {
-		return prs.forwardCodexWithDegradationRetry(c, provider, endpoint, query, headers, bodyBytes, isStream, model)
+		return prs.forwardCodexWithDegradationRetry(c, provider, endpoint, query, headers, bodyBytes, isStream, model, requestNamespaceRewritten)
 	}
 
 	requestLog := &ReqeustLog{
@@ -1126,22 +1175,25 @@ func (prs *ProviderRelayService) forwardRequest(
 		return prs.serveClaudeWebSearchFallback(c, webSearchFallback, isStream, model, requestLog)
 	}
 
-	req := xrequest.New().
-		SetHeaders(headers).
-		SetQueryParams(query).
-		SetRetry(1, 500*time.Millisecond).
-		SetClient(prs.httpClient).
-		WithContext(c.Request.Context())
-
-	reqBody := bytes.NewReader(bodyBytes)
-	req = req.SetBody(reqBody)
-
 	if isClientAbortError(c.Request.Context(), c.Request.Context().Err()) {
 		requestLog.SkipLog = true
 		return false, errClientAbort
 	}
 
-	resp, err := req.Post(targetURL)
+	var resp *xrequest.Response
+	var err error
+	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) {
+		resp, err = prs.postCodexResponsesRequest(c.Request.Context(), targetURL, query, headers, bodyBytes)
+	} else {
+		req := xrequest.New().
+			SetHeaders(headers).
+			SetQueryParams(query).
+			SetRetry(1, 500*time.Millisecond).
+			SetClient(prs.httpClient).
+			WithContext(c.Request.Context()).
+			SetBody(bytes.NewReader(bodyBytes))
+		resp, err = req.Post(targetURL)
+	}
 
 	// 无论成功失败，先尝试记录 HttpCode
 	if resp != nil {
@@ -1203,20 +1255,40 @@ func (prs *ProviderRelayService) forwardRequest(
 		return false, fmt.Errorf("upstream status %d", status)
 	}
 
+	writeUpstreamResponse := func() error {
+		if useResponsesTransform && !isStream {
+			return writeTransformedJSONResponse(c.Writer, resp, requestLog)
+		}
+		if sseConverter != nil && isStream {
+			_, copyErr := writeStreamingResponse(c.Writer, resp, requestLog, start, protocolConvertHook(sseConverter, kind, requestLog))
+			return copyErr
+		}
+		if requestNamespaceRewritten && detectAndNormalizeJSONResponse(resp, isStream) {
+			return writeCodexNamespaceJSONResponse(c.Writer, resp, requestLog, provider.Name)
+		}
+		if isStreamResponse(resp, isStream) {
+			hooks := []xrequest.ResponseHook{ReqeustLogHook(c, kind, requestLog)}
+			responseModified := 0
+			if requestNamespaceRewritten {
+				hooks = append(hooks, NewCodexMultiAgentNamespaceSSEHook(&responseModified))
+			}
+			_, copyErr := writeStreamingResponse(c.Writer, resp, requestLog, start, hooks...)
+			if responseModified > 0 {
+				fmt.Printf("[Codex Multi-Agent Namespace] Provider=%s direction=agents->collaboration modified=%d\n", provider.Name, responseModified)
+			}
+			return copyErr
+		}
+		if requestNamespaceRewritten {
+			return writeCodexNamespaceJSONResponse(c.Writer, resp, requestLog, provider.Name)
+		}
+		_, copyErr := resp.ToHttpResponseWriter(c.Writer, ReqeustLogHook(c, kind, requestLog))
+		return copyErr
+	}
+
 	// 状态码为 0 且无错误：当作成功处理
 	if status == 0 {
 		fmt.Printf("[WARN] Provider %s 返回状态码 0，但无错误，当作成功处理\n", provider.Name)
-		var copyErr error
-		if useResponsesTransform && !isStream {
-			copyErr = writeTransformedJSONResponse(c.Writer, resp, requestLog)
-		} else if sseConverter != nil && isStream {
-			// 使用协议转换 Hook
-			_, copyErr = writeStreamingResponse(c.Writer, resp, requestLog, start, protocolConvertHook(sseConverter, kind, requestLog))
-		} else if isStreamResponse(resp, isStream) {
-			_, copyErr = writeStreamingResponse(c.Writer, resp, requestLog, start, ReqeustLogHook(c, kind, requestLog))
-		} else {
-			_, copyErr = resp.ToHttpResponseWriter(c.Writer, ReqeustLogHook(c, kind, requestLog))
-		}
+		copyErr := writeUpstreamResponse()
 		if copyErr != nil {
 			if isClientAbortError(c.Request.Context(), copyErr) {
 				requestLog.SkipLog = true
@@ -1229,17 +1301,7 @@ func (prs *ProviderRelayService) forwardRequest(
 	}
 
 	if status >= http.StatusOK && status < http.StatusMultipleChoices {
-		var copyErr error
-		if useResponsesTransform && !isStream {
-			copyErr = writeTransformedJSONResponse(c.Writer, resp, requestLog)
-		} else if sseConverter != nil && isStream {
-			// 使用协议转换 Hook
-			_, copyErr = writeStreamingResponse(c.Writer, resp, requestLog, start, protocolConvertHook(sseConverter, kind, requestLog))
-		} else if isStreamResponse(resp, isStream) {
-			_, copyErr = writeStreamingResponse(c.Writer, resp, requestLog, start, ReqeustLogHook(c, kind, requestLog))
-		} else {
-			_, copyErr = resp.ToHttpResponseWriter(c.Writer, ReqeustLogHook(c, kind, requestLog))
-		}
+		copyErr := writeUpstreamResponse()
 		if copyErr != nil {
 			fmt.Printf("[WARN] 复制响应到客户端失败（不影响provider成功判定）: %v\n", copyErr)
 		}
@@ -1258,6 +1320,36 @@ func isResponsesEndpoint(endpoint string) bool {
 	return strings.Contains(strings.ToLower(endpoint), "/responses")
 }
 
+// postCodexResponsesRequest avoids xrequest's automatic curl diagnostics,
+// which serialize provider credentials and the complete tool request body.
+// Namespace rewrite logs remain limited to provider, direction, and count.
+func (prs *ProviderRelayService) postCodexResponsesRequest(
+	ctx context.Context,
+	targetURL string,
+	query map[string]string,
+	headers map[string]string,
+	body []byte,
+) (*xrequest.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	queryValues := req.URL.Query()
+	for key, value := range query {
+		queryValues.Add(key, value)
+	}
+	req.URL.RawQuery = queryValues.Encode()
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	rawResponse, err := prs.httpClient.Do(req)
+	if rawResponse == nil {
+		return nil, err
+	}
+	return xrequest.NewResponse(rawResponse), err
+}
+
 func isStreamResponse(resp *xrequest.Response, requestedStream bool) bool {
 	if requestedStream {
 		return true
@@ -1266,6 +1358,59 @@ func isStreamResponse(resp *xrequest.Response, requestedStream bool) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(resp.RawResponse.Header.Get("Content-Type")), "text/event-stream")
+}
+
+func isJSONResponse(resp *xrequest.Response) bool {
+	if resp == nil || resp.RawResponse == nil {
+		return false
+	}
+	contentType := strings.ToLower(resp.RawResponse.Header.Get("Content-Type"))
+	return strings.Contains(contentType, "application/json") || strings.Contains(contentType, "+json")
+}
+
+type bufferedResponseBody struct {
+	*bufio.Reader
+	io.Closer
+}
+
+// detectAndNormalizeJSONResponse falls back to sniffing only for stream:true
+// requests. The buffered wrapper preserves every byte and closes the original
+// body, while normalizing the header lets xrequest parse a mislabeled SSE body.
+func detectAndNormalizeJSONResponse(resp *xrequest.Response, sniffBody bool) bool {
+	if isJSONResponse(resp) {
+		return true
+	}
+	if !sniffBody || resp == nil || resp.RawResponse == nil || resp.RawResponse.Body == nil {
+		return false
+	}
+
+	originalBody := resp.RawResponse.Body
+	reader := bufio.NewReader(originalBody)
+	resp.RawResponse.Body = &bufferedResponseBody{Reader: reader, Closer: originalBody}
+
+	for size := 1; size <= reader.Size(); size++ {
+		prefix, _ := reader.Peek(size)
+		if len(prefix) < size {
+			return false
+		}
+		candidate := prefix[size-1]
+		if isJSONWhitespace(candidate) {
+			continue
+		}
+		if candidate != '{' && candidate != '[' {
+			return false
+		}
+		if resp.RawResponse.Header == nil {
+			resp.RawResponse.Header = make(http.Header)
+		}
+		resp.RawResponse.Header.Set("Content-Type", "application/json")
+		return true
+	}
+	return false
+}
+
+func isJSONWhitespace(value byte) bool {
+	return value == ' ' || value == '\t' || value == '\r' || value == '\n'
 }
 
 func writeStreamingResponse(w http.ResponseWriter, resp *xrequest.Response, requestLog *ReqeustLog, start time.Time, hooks ...xrequest.ResponseHook) (int64, error) {
@@ -1393,6 +1538,41 @@ func writeTransformedJSONResponse(w http.ResponseWriter, resp *xrequest.Response
 	w.WriteHeader(resp.StatusCode())
 
 	_, err = w.Write(transformedBody)
+	return err
+}
+
+func writeCodexNamespaceJSONResponse(w http.ResponseWriter, resp *xrequest.Response, requestLog *ReqeustLog, providerName string) error {
+	if resp == nil || resp.RawResponse == nil {
+		return fmt.Errorf("empty upstream response")
+	}
+
+	body := resp.Bytes()
+	rewrittenBody, modified, err := RewriteCodexMultiAgentResponse(body)
+	if err != nil {
+		fmt.Printf("[WARN] Provider %s Codex 多代理 namespace 响应改写失败，继续返回原响应: %v\n", providerName, err)
+	} else if modified > 0 {
+		body = rewrittenBody
+		fmt.Printf("[Codex Multi-Agent Namespace] Provider=%s direction=agents->collaboration modified=%d\n", providerName, modified)
+	}
+
+	ClaudeCodeParseTokenUsageFromResponse(string(body), requestLog)
+	for key, values := range resp.Headers() {
+		lowerKey := strings.ToLower(key)
+		switch lowerKey {
+		case "content-length", "content-encoding", "transfer-encoding", "connection":
+			continue
+		}
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.Header().Del("Content-Length")
+	status := resp.StatusCode()
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
+	_, err = w.Write(body)
 	return err
 }
 
@@ -2944,6 +3124,7 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 	bodyBytes []byte,
 	isStream bool,
 	model string,
+	rewriteNamespaceResponse ...bool,
 ) (bool, error) {
 	settings, err := prs.appSettings.GetAppSettings()
 	if err != nil {
@@ -2958,6 +3139,7 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 	targetURL := joinURL(provider.APIURL, endpoint)
 	clientCtx := c.Request.Context()
 	clientIP := clientIPFromRequest(c.Request)
+	shouldRewriteNamespaceResponse := len(rewriteNamespaceResponse) > 0 && rewriteNamespaceResponse[0]
 
 	var activeID int64
 	activeStarted := false
@@ -2996,15 +3178,7 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 			return false, errClientAbort
 		}
 
-		req := xrequest.New().
-			SetHeaders(headers).
-			SetQueryParams(query).
-			SetRetry(1, 500*time.Millisecond).
-			SetClient(prs.httpClient).
-			WithContext(clientCtx)
-		req = req.SetBody(bytes.NewReader(bodyBytes))
-
-		resp, postErr := req.Post(targetURL)
+		resp, postErr := prs.postCodexResponsesRequest(clientCtx, targetURL, query, headers, bodyBytes)
 		if resp != nil {
 			attemptLog.HttpCode = resp.StatusCode()
 		}
@@ -3067,8 +3241,17 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 			capturedBody   []byte
 			captureErr     error
 		)
-		if isStreamResponse(resp, isStream) {
-			capturedStatus, capturedHeader, capturedBody, captureErr = captureCodexStreamingResponse(resp, attemptLog, attemptStart, clientCtx, codexDegradationMaxBufferBytes)
+		streamResponse := isStreamResponse(resp, isStream)
+		if shouldRewriteNamespaceResponse && detectAndNormalizeJSONResponse(resp, isStream) {
+			streamResponse = false
+		}
+		responseModified := 0
+		if streamResponse {
+			var captureHooks []xrequest.ResponseHook
+			if shouldRewriteNamespaceResponse {
+				captureHooks = append(captureHooks, NewCodexMultiAgentNamespaceSSEHook(&responseModified))
+			}
+			capturedStatus, capturedHeader, capturedBody, captureErr = captureCodexStreamingResponse(resp, attemptLog, attemptStart, clientCtx, codexDegradationMaxBufferBytes, captureHooks...)
 		} else {
 			capturedStatus, capturedHeader, capturedBody, captureErr = captureCodexNonStreamingResponse(resp, attemptLog)
 		}
@@ -3077,6 +3260,9 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 			// 超限：已缓冲内容直接返回，不重发，视为成功
 			if errors.Is(captureErr, errResponseTooLargeToBuffer) && len(capturedBody) > 0 {
 				fmt.Printf("[Codex降智] Provider %s 响应超过缓冲上限 %d 字节，跳过检测直接返回已缓冲内容\n", provider.Name, codexDegradationMaxBufferBytes)
+				if responseModified > 0 {
+					fmt.Printf("[Codex Multi-Agent Namespace] Provider=%s direction=agents->collaboration modified=%d\n", provider.Name, responseModified)
+				}
 				if writeErr := writeCapturedResponse(c.Writer, capturedStatus, capturedHeader, capturedBody); writeErr != nil && isClientAbortError(clientCtx, writeErr) {
 					attemptLog.SkipLog = true
 				}
@@ -3109,6 +3295,18 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 		} else {
 			fmt.Printf("[Codex降智] Provider %s 第 %d/%d 次请求未降智（reasoning=%d），返回结果\n", provider.Name, attempt+1, maxResend+1, attemptLog.ReasoningTokens)
 		}
+		if shouldRewriteNamespaceResponse && !streamResponse {
+			rewrittenBody, modified, rewriteErr := RewriteCodexMultiAgentResponse(capturedBody)
+			if rewriteErr != nil {
+				fmt.Printf("[WARN] Provider %s Codex 多代理 namespace 响应改写失败，继续返回原响应: %v\n", provider.Name, rewriteErr)
+			} else if modified > 0 {
+				capturedBody = rewrittenBody
+				responseModified += modified
+			}
+		}
+		if responseModified > 0 {
+			fmt.Printf("[Codex Multi-Agent Namespace] Provider=%s direction=agents->collaboration modified=%d\n", provider.Name, responseModified)
+		}
 		if writeErr := writeCapturedResponse(c.Writer, capturedStatus, capturedHeader, capturedBody); writeErr != nil && isClientAbortError(clientCtx, writeErr) {
 			attemptLog.SkipLog = true
 		}
@@ -3128,6 +3326,7 @@ func captureCodexStreamingResponse(
 	start time.Time,
 	clientCtx context.Context,
 	maxBytes int,
+	hooks ...xrequest.ResponseHook,
 ) (int, http.Header, []byte, error) {
 	if resp == nil || resp.RawResponse == nil {
 		return 0, nil, nil, fmt.Errorf("empty upstream response")
@@ -3147,7 +3346,9 @@ func captureCodexStreamingResponse(
 		return status, capturedHeader, nil, nil
 	}
 
-	hook := ReqeustLogHook(nil, ProviderKindCodex, attemptLog)
+	allHooks := make([]xrequest.ResponseHook, 0, len(hooks)+1)
+	allHooks = append(allHooks, ReqeustLogHook(nil, ProviderKindCodex, attemptLog))
+	allHooks = append(allHooks, hooks...)
 	reader := bufio.NewReader(raw.Body)
 	var buf bytes.Buffer
 	for {
@@ -3161,7 +3362,14 @@ func captureCodexStreamingResponse(
 			outputLine := originalLine
 			trimmedLine := bytes.TrimRight(line, "\n")
 			if len(bytes.TrimSpace(trimmedLine)) > 0 {
-				flush, processedLine := hook(trimmedLine)
+				flush := true
+				processedLine := trimmedLine
+				for _, hook := range allHooks {
+					flush, processedLine = hook(processedLine)
+					if !flush {
+						break
+					}
+				}
 				if flush {
 					if len(bytes.TrimSpace(processedLine)) > 0 {
 						markFirstTokenDuration(attemptLog, start)

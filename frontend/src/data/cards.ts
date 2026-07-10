@@ -18,6 +18,8 @@ export type AutomationCard = {
   apiEndpoint?: string
   // OpenAI 入口能力：auto / responses / chat_completions / both
   openAIEndpointMode?: string
+  // Codex 多代理 namespace 兼容：上游 collaboration -> agents，响应反向映射
+  codexMultiAgentNamespaceRewrite?: boolean
   // Responses instructions 兼容：为缺失 instructions 的 Responses 请求补齐顶层 instructions
   bridgeResponsesInstructions?: boolean
   // Responses store=false 兼容：为要求 store=false 的 Responses 请求显式设置顶层 store=false
