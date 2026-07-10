@@ -55,18 +55,37 @@ func (body *closeTrackingResponseBody) Close() error {
 
 func TestDetectAndNormalizeJSONResponsePreservesBodyAndClose(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		body     []byte
-		wantJSON bool
+		name            string
+		contentType     string
+		body            []byte
+		wantJSON        bool
+		wantContentType string
 	}{
-		{name: "JSON", body: []byte(" \r\n{\"output\":[]}"), wantJSON: true},
-		{name: "SSE", body: []byte("event: response.created\n\ndata: {}\n\n")},
+		{
+			name:            "JSON mislabeled as SSE",
+			contentType:     "text/event-stream",
+			body:            []byte(" \r\n{\"output\":[]}"),
+			wantJSON:        true,
+			wantContentType: "application/json",
+		},
+		{
+			name:            "SSE with correct content type",
+			contentType:     "text/event-stream; charset=utf-8",
+			body:            []byte("event: response.created\n\ndata: {}\n\n"),
+			wantContentType: "text/event-stream",
+		},
+		{
+			name:            "SSE mislabeled as JSON",
+			contentType:     "application/json",
+			body:            []byte("data: {\"type\":\"response.created\"}\n\n"),
+			wantContentType: "text/event-stream",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			original := &closeTrackingResponseBody{Reader: bytes.NewReader(test.body)}
 			resp := xrequest.NewResponse(&http.Response{
 				StatusCode: http.StatusOK,
-				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Header:     http.Header{"Content-Type": []string{test.contentType}},
 				Body:       original,
 			})
 
@@ -89,8 +108,8 @@ func TestDetectAndNormalizeJSONResponsePreservesBodyAndClose(t *testing.T) {
 			if !original.closed {
 				t.Fatal("wrapper Close did not close original response body")
 			}
-			if test.wantJSON && !isJSONResponse(resp) {
-				t.Fatalf("sniffed JSON response was not normalized: %q", resp.RawResponse.Header.Get("Content-Type"))
+			if got := resp.RawResponse.Header.Get("Content-Type"); got != test.wantContentType {
+				t.Fatalf("normalized content type = %q, want %q", got, test.wantContentType)
 			}
 		})
 	}

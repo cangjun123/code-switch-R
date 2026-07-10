@@ -1373,15 +1373,15 @@ type bufferedResponseBody struct {
 	io.Closer
 }
 
-// detectAndNormalizeJSONResponse falls back to sniffing only for stream:true
-// requests. The buffered wrapper preserves every byte and closes the original
-// body, while normalizing the header lets xrequest parse a mislabeled SSE body.
+// detectAndNormalizeJSONResponse sniffs stream:true responses because some
+// Responses-compatible providers label JSON fallbacks as SSE, or SSE as JSON.
+// The buffered wrapper preserves every byte and closes the original body.
 func detectAndNormalizeJSONResponse(resp *xrequest.Response, sniffBody bool) bool {
-	if isJSONResponse(resp) {
-		return true
-	}
-	if !sniffBody || resp == nil || resp.RawResponse == nil || resp.RawResponse.Body == nil {
+	if resp == nil || resp.RawResponse == nil {
 		return false
+	}
+	if !sniffBody || resp.RawResponse.Body == nil {
+		return isJSONResponse(resp)
 	}
 
 	originalBody := resp.RawResponse.Body
@@ -1391,22 +1391,28 @@ func detectAndNormalizeJSONResponse(resp *xrequest.Response, sniffBody bool) boo
 	for size := 1; size <= reader.Size(); size++ {
 		prefix, _ := reader.Peek(size)
 		if len(prefix) < size {
-			return false
+			return isJSONResponse(resp)
 		}
 		candidate := prefix[size-1]
 		if isJSONWhitespace(candidate) {
 			continue
 		}
-		if candidate != '{' && candidate != '[' {
-			return false
-		}
 		if resp.RawResponse.Header == nil {
 			resp.RawResponse.Header = make(http.Header)
 		}
-		resp.RawResponse.Header.Set("Content-Type", "application/json")
-		return true
+		switch candidate {
+		case '{', '[':
+			resp.RawResponse.Header.Set("Content-Type", "application/json")
+			return true
+		case ':', 'd', 'e', 'i', 'r':
+			// Valid SSE fields can start with a comment, data, event, id, or retry.
+			resp.RawResponse.Header.Set("Content-Type", "text/event-stream")
+			return false
+		default:
+			return isJSONResponse(resp)
+		}
 	}
-	return false
+	return isJSONResponse(resp)
 }
 
 func isJSONWhitespace(value byte) bool {

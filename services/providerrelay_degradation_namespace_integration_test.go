@@ -94,8 +94,10 @@ func degradationNamespaceSSE(reasoningTokens int) []byte {
 	return []byte(fmt.Sprintf(
 		"event: response.output_item.added\n"+
 			"data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"namespace\":\"agents\",\"name\":\"spawn_agent\"}}\n\n"+
+			"event: response.output_text.delta\n"+
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"+
 			"event: response.completed\n"+
-			"data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"function_call\",\"namespace\":\"agents\",\"name\":\"spawn_agent\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"output_tokens_details\":{\"reasoning_tokens\":%d}}}}\n\n"+
+			"data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"function_call\",\"namespace\":\"agents\",\"name\":\"spawn_agent\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"input_tokens_details\":{\"cached_tokens\":3},\"output_tokens_details\":{\"reasoning_tokens\":%d}}}}\n\n"+
 			"data: [DONE]\n\n",
 		reasoningTokens,
 	))
@@ -149,6 +151,62 @@ func TestDegradationNamespaceHandlerStreamingRewriteAndRetry(t *testing.T) {
 	}
 	if !strings.Contains(response, "data: [DONE]") {
 		t.Fatalf("client stream lost DONE sentinel: %s", response)
+	}
+	if got := recorder.Header().Get("Content-Length"); got != "" {
+		t.Fatalf("rewritten buffered stream retained stale Content-Length %q", got)
+	}
+}
+
+func TestDegradationNamespaceHandlerStreamingMislabeledAsJSON(t *testing.T) {
+	var capture degradationNamespaceRequestCapture
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		attempt := capture.add(body)
+		reasoning := 516
+		if attempt > 1 {
+			reasoning = 800
+		}
+		responseBody := degradationNamespaceSSE(reasoning)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(responseBody)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(responseBody)
+	}))
+	defer upstream.Close()
+
+	providers, relay := newTestRelayService(t)
+	enableDegradationForNamespaceHandlerTest(t, relay)
+	saveDegradationNamespaceProvider(t, providers, "degradation-namespace-mislabeled-stream", upstream.URL)
+	requestBody := []byte("{\"model\":\"gpt-5-codex\",\"stream\":true,\"tools\":[{\"type\":\"namespace\",\"name\":\"collaboration\"}]}")
+
+	recorder := performDegradationNamespaceHandlerRequest(t, relay, requestBody)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	bodies := capture.snapshot()
+	if len(bodies) != 2 {
+		t.Fatalf("upstream calls = %d, want 2; mislabeled SSE usage was not parsed", len(bodies))
+	}
+	for i, body := range bodies {
+		if got := gjson.GetBytes(body, "tools.0.name").String(); got != "agents" {
+			t.Fatalf("attempt %d upstream namespace = %q, body = %s", i+1, got, body)
+		}
+	}
+
+	response := recorder.Body.String()
+	if got := recorder.Header().Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("mislabeled stream content type was not normalized: %q", got)
+	}
+	if strings.Contains(response, "\"namespace\":\"agents\"") {
+		t.Fatalf("client stream retained agents namespace: %s", response)
+	}
+	for _, expected := range []string{"\"namespace\":\"collaboration\"", "\"delta\":\"hello\"", "\"cached_tokens\":3", "\"reasoning_tokens\":800", "data: [DONE]"} {
+		if !strings.Contains(response, expected) {
+			t.Errorf("client stream missing %q: %s", expected, response)
+		}
+	}
+	if strings.Contains(response, "\"reasoning_tokens\":516") {
+		t.Fatalf("client received the discarded degraded response: %s", response)
 	}
 	if got := recorder.Header().Get("Content-Length"); got != "" {
 		t.Fatalf("rewritten buffered stream retained stale Content-Length %q", got)
