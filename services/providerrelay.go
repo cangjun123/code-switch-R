@@ -47,6 +47,8 @@ type ProviderRelayService struct {
 	rrLastStart          map[string]string            // 轮询状态：key="platform:level" → value=上次起始 Provider Name
 	codexHistoryMu       sync.Mutex
 	codexHistorySanitize map[string]codexHistorySanitizeCacheEntry
+	codexSessionMu       sync.Mutex
+	codexSessionRoutes   map[codexSessionKey]codexSessionRouteState
 }
 
 // errClientAbort 表示客户端中断连接，不应计入 provider 失败次数
@@ -149,6 +151,7 @@ func NewProviderRelayService(providerService *ProviderService, geminiService *Ge
 		},
 		rrLastStart:          make(map[string]string),
 		codexHistorySanitize: make(map[string]codexHistorySanitizeCacheEntry),
+		codexSessionRoutes:   make(map[codexSessionKey]codexSessionRouteState),
 	}
 }
 
@@ -513,6 +516,8 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 
 		isStream := gjson.GetBytes(bodyBytes, "stream").Bool()
 		requestedModel := gjson.GetBytes(bodyBytes, "model").String()
+		clientHeaders := cloneHeaders(c.Request.Header)
+		codexSessionRequest := prs.attachCodexSessionRequest(c, kind, endpoint, bodyBytes, clientHeaders)
 
 		// 如果未指定模型，记录警告但不拦截
 		if requestedModel == "" {
@@ -527,6 +532,15 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 
 		codexNamespaceConflict := false
 		codexNamespaceConflictInspected := false
+		if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) {
+			conflict, inspectErr := HasCodexMultiAgentNamespaceConflict(bodyBytes)
+			if inspectErr != nil {
+				fmt.Printf("[WARN] Codex 多代理 namespace 兼容检查失败，继续按原请求调度: %v\n", inspectErr)
+			} else {
+				codexNamespaceConflict = conflict
+			}
+			codexNamespaceConflictInspected = true
+		}
 
 		active := make([]Provider, 0, len(providers))
 		skippedCount := 0
@@ -583,6 +597,14 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 
 			active = append(active, provider)
 		}
+		active = prs.preferCodexStickyProvider(
+			codexSessionRequest,
+			active,
+			providers,
+			requestedModel,
+			endpoint,
+			codexNamespaceConflict,
+		)
 
 		if len(active) == 0 {
 			if requestedModel != "" {
@@ -621,7 +643,6 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 		fmt.Printf("[INFO] 共 %d 个 Level 分组：%v\n", len(levels), levels)
 
 		query := flattenQuery(c.Request.URL.Query())
-		clientHeaders := cloneHeaders(c.Request.Header)
 
 		// 获取拉黑功能开关状态
 		blacklistEnabled := prs.blacklistService.ShouldUseFixedMode()
@@ -654,7 +675,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 				providersInLevel := levelGroups[level]
 
 				// 如果启用轮询，对同 Level 的 providers 进行轮询排序
-				if roundRobinSettingEnabled {
+				if roundRobinSettingEnabled && (codexSessionRequest == nil || codexSessionRequest.stickyProvider == "") {
 					providersInLevel = prs.roundRobinOrder(kind, level, providersInLevel)
 				}
 
@@ -796,7 +817,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 			providersInLevel := levelGroups[level]
 
 			// 如果启用轮询，对同 Level 的 providers 进行轮询排序
-			if roundRobinEnabled {
+			if roundRobinEnabled && (codexSessionRequest == nil || codexSessionRequest.stickyProvider == "") {
 				providersInLevel = prs.roundRobinOrder(kind, level, providersInLevel)
 			}
 
@@ -1068,9 +1089,9 @@ func (prs *ProviderRelayService) forwardRequest(
 			}
 		}
 	}
-	if requestNamespaceRewritten {
+	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) {
 		// Let net/http negotiate gzip itself so RawResponse.Body is decompressed
-		// before the namespace JSON/SSE hooks inspect it.
+		// before the history/session and namespace JSON/SSE hooks inspect it.
 		deleteHeaderCaseInsensitive(headers, "accept-encoding")
 	}
 
@@ -1117,6 +1138,15 @@ func (prs *ProviderRelayService) forwardRequest(
 	// 在建立顶层 requestLog 之前分流，避免与单次转发的日志/active-tracker 冲突。
 	if shouldDetectCodexDegradation(prs.appSettings, kind, endpoint) {
 		return prs.forwardCodexWithDegradationRetry(c, provider, endpoint, query, headers, bodyBytes, isStream, model, requestNamespaceRewritten)
+	}
+
+	var historyAttempt *codexHistoryAttempt
+	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) {
+		bodyBytes, headers, historyAttempt = prs.prepareCodexHistoryAttempt(c, provider.Name, headers, bodyBytes)
+		if historyAttempt != nil {
+			historyAttempt.inspectEmpty = historyAttempt.unknownOwner ||
+				(historyAttempt.sessionRequest == nil && requestNamespaceRewritten)
+		}
 	}
 
 	requestLog := &ReqeustLog{
@@ -1189,19 +1219,16 @@ func (prs *ProviderRelayService) forwardRequest(
 	var resp *xrequest.Response
 	var err error
 	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) {
-		if requestNamespaceRewritten {
-			resp, err = prs.postCodexResponsesRequestWithHistoryFallback(
-				c.Request.Context(),
-				targetURL,
-				query,
-				headers,
-				bodyBytes,
-				isStream,
-				provider.Name,
-			)
-		} else {
-			resp, err = prs.postCodexResponsesRequest(c.Request.Context(), targetURL, query, headers, bodyBytes)
-		}
+		resp, err = prs.postCodexResponsesRequestWithHistoryFallback(
+			c.Request.Context(),
+			targetURL,
+			query,
+			headers,
+			bodyBytes,
+			isStream,
+			provider.Name,
+			historyAttempt,
+		)
 	} else {
 		req := xrequest.New().
 			SetHeaders(headers).
@@ -1273,6 +1300,10 @@ func (prs *ProviderRelayService) forwardRequest(
 		return false, fmt.Errorf("upstream status %d", status)
 	}
 
+	responseObservation := codexResponseObservation{}
+	responseObservation.onSuccess = func() {
+		prs.commitCodexSessionAttempt(historyAttempt, &responseObservation)
+	}
 	writeUpstreamResponse := func() error {
 		if useResponsesTransform && !isStream {
 			return writeTransformedJSONResponse(c.Writer, resp, requestLog)
@@ -1282,10 +1313,14 @@ func (prs *ProviderRelayService) forwardRequest(
 			return copyErr
 		}
 		if requestNamespaceRewritten && detectAndNormalizeJSONResponse(resp, isStream) {
+			responseObservation.observePayload(resp.Bytes())
 			return writeCodexNamespaceJSONResponse(c.Writer, resp, requestLog, provider.Name)
 		}
 		if isStreamResponse(resp, isStream) {
 			hooks := []xrequest.ResponseHook{ReqeustLogHook(c, kind, requestLog)}
+			if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) {
+				hooks = append(hooks, responseObservation.Hook())
+			}
 			responseModified := 0
 			responseDiagnostics := codexStreamDiagnostics{}
 			if requestNamespaceRewritten {
@@ -1302,9 +1337,17 @@ func (prs *ProviderRelayService) forwardRequest(
 			return copyErr
 		}
 		if requestNamespaceRewritten {
+			responseObservation.observePayload(resp.Bytes())
 			return writeCodexNamespaceJSONResponse(c.Writer, resp, requestLog, provider.Name)
 		}
-		_, copyErr := resp.ToHttpResponseWriter(c.Writer, ReqeustLogHook(c, kind, requestLog))
+		hooks := []xrequest.ResponseHook{ReqeustLogHook(c, kind, requestLog)}
+		if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) {
+			hooks = append(hooks, func(data []byte) (bool, []byte) {
+				responseObservation.observePayload(bytes.TrimSpace(data))
+				return true, data
+			})
+		}
+		_, copyErr := resp.ToHttpResponseWriter(c.Writer, hooks...)
 		return copyErr
 	}
 
@@ -1312,6 +1355,9 @@ func (prs *ProviderRelayService) forwardRequest(
 	if status == 0 {
 		fmt.Printf("[WARN] Provider %s 返回状态码 0，但无错误，当作成功处理\n", provider.Name)
 		copyErr := writeUpstreamResponse()
+		if copyErr == nil {
+			responseObservation.commitIfSuccessful()
+		}
 		if copyErr != nil {
 			if isClientAbortError(c.Request.Context(), copyErr) {
 				requestLog.SkipLog = true
@@ -1325,6 +1371,9 @@ func (prs *ProviderRelayService) forwardRequest(
 
 	if status >= http.StatusOK && status < http.StatusMultipleChoices {
 		copyErr := writeUpstreamResponse()
+		if copyErr == nil {
+			responseObservation.commitIfSuccessful()
+		}
 		if copyErr != nil {
 			fmt.Printf("[WARN] 复制响应到客户端失败（不影响provider成功判定）: %v\n", copyErr)
 		}
@@ -1391,7 +1440,11 @@ func (prs *ProviderRelayService) postCodexResponsesRequestWithHistoryFallback(
 	body []byte,
 	isStream bool,
 	providerName string,
+	attempt *codexHistoryAttempt,
 ) (*xrequest.Response, error) {
+	if attempt != nil && (attempt.preSanitized || !attempt.inspectEmpty) {
+		return prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body)
+	}
 	currentPlan, sanitizeErr := buildCodexProviderHistorySanitizePlan(body)
 	if sanitizeErr != nil {
 		fmt.Printf("[WARN] Provider %s Codex 跨供应商历史检查失败，继续使用原请求: %v\n", providerName, sanitizeErr)
@@ -1407,14 +1460,16 @@ func (prs *ProviderRelayService) postCodexResponsesRequestWithHistoryFallback(
 	}
 
 	cacheKey := codexHistorySanitizeCacheKey(providerName, body)
-	if cachedPlan, ok := prs.cachedCodexHistorySanitizePlan(cacheKey); ok {
-		cachedBody, cachedStats, cachedErr := sanitizeCodexProviderBoundHistoryWithPlan(body, cachedPlan)
-		if cachedErr != nil {
-			fmt.Printf("[WARN] Provider %s Codex 已缓存历史清理失败，继续检查原响应: %v\n", providerName, cachedErr)
-		} else if cachedStats.Total() > 0 {
-			sanitizedHeaders, removedHeaders := sanitizeCodexProviderBoundHeaders(headers)
-			logCodexHistorySanitize(providerName, "cached", "", cachedStats, removedHeaders)
-			return prs.postCodexResponsesRequest(ctx, targetURL, query, sanitizedHeaders, cachedBody)
+	if attempt == nil || !attempt.preSanitized {
+		if cachedPlan, ok := prs.cachedCodexHistorySanitizePlan(cacheKey); ok {
+			cachedBody, cachedStats, cachedErr := sanitizeCodexProviderBoundHistoryWithPlan(body, cachedPlan)
+			if cachedErr != nil {
+				fmt.Printf("[WARN] Provider %s Codex 已缓存历史清理失败，继续检查原响应: %v\n", providerName, cachedErr)
+			} else if cachedStats.Total() > 0 {
+				sanitizedHeaders, removedHeaders := sanitizeCodexProviderBoundHeaders(headers)
+				logCodexHistorySanitize(providerName, "cached", "", cachedStats, removedHeaders)
+				return prs.postCodexResponsesRequest(ctx, targetURL, query, sanitizedHeaders, cachedBody)
+			}
 		}
 	}
 
@@ -1424,9 +1479,21 @@ func (prs *ProviderRelayService) postCodexResponsesRequestWithHistoryFallback(
 	}
 	status := resp.StatusCode()
 	if status < http.StatusOK || status >= http.StatusMultipleChoices {
-		return resp, nil
+		if attempt != nil && attempt.preSanitized {
+			return resp, nil
+		}
+		retry, reason := codexErrorResponseNeedsProviderHistoryFallback(resp)
+		if !retry {
+			return resp, nil
+		}
+		if resp.RawResponse != nil && resp.RawResponse.Body != nil {
+			_ = resp.RawResponse.Body.Close()
+		}
+		prs.rememberCodexHistorySanitize(cacheKey, currentPlan)
+		sanitizedHeaders, removedHeaders := sanitizeCodexProviderBoundHeaders(headers)
+		logCodexHistorySanitize(providerName, "retry", reason, stats, removedHeaders)
+		return prs.postCodexResponsesRequest(ctx, targetURL, query, sanitizedHeaders, sanitizedBody)
 	}
-
 	retry, reason, inspectErr := codexResponseNeedsProviderHistoryFallback(resp, isStream)
 	if inspectErr != nil {
 		return resp, inspectErr
@@ -1442,6 +1509,25 @@ func (prs *ProviderRelayService) postCodexResponsesRequestWithHistoryFallback(
 	sanitizedHeaders, removedHeaders := sanitizeCodexProviderBoundHeaders(headers)
 	logCodexHistorySanitize(providerName, "retry", reason, stats, removedHeaders)
 	return prs.postCodexResponsesRequest(ctx, targetURL, query, sanitizedHeaders, sanitizedBody)
+}
+
+func codexErrorResponseNeedsProviderHistoryFallback(resp *xrequest.Response) (bool, string) {
+	if resp == nil || resp.RawResponse == nil {
+		return false, ""
+	}
+	body := resp.Bytes()
+	if !codexPayloadContainsEncryptedHistoryError(body) {
+		return false, ""
+	}
+	return true, "encrypted_history_error"
+}
+
+func codexPayloadContainsEncryptedHistoryError(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	if !strings.Contains(lower, "encrypted") {
+		return false
+	}
+	return strings.Contains(lower, "decrypt") || strings.Contains(lower, "decoded") || strings.Contains(lower, "decode")
 }
 
 func sanitizeCodexProviderBoundHeaders(headers map[string]string) (map[string]string, int) {
@@ -1473,11 +1559,11 @@ func logCodexHistorySanitize(providerName, action, reason string, stats CodexPro
 }
 
 func codexHistorySanitizeCacheKey(providerName string, body []byte) string {
-	promptCacheKey := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
-	if promptCacheKey == "" {
+	sessionKey, ok := codexSessionKeyFromRequest(body, nil)
+	if !ok {
 		return ""
 	}
-	return providerName + "\x00" + promptCacheKey
+	return providerName + "\x00" + string(sessionKey[:])
 }
 
 func (prs *ProviderRelayService) cachedCodexHistorySanitizePlan(cacheKey string) (*codexProviderHistorySanitizePlan, bool) {
@@ -3530,6 +3616,11 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 	clientCtx := c.Request.Context()
 	clientIP := clientIPFromRequest(c.Request)
 	shouldRewriteNamespaceResponse := len(rewriteNamespaceResponse) > 0 && rewriteNamespaceResponse[0]
+	bodyBytes, headers, historyAttempt := prs.prepareCodexHistoryAttempt(c, provider.Name, headers, bodyBytes)
+	if historyAttempt != nil {
+		historyAttempt.inspectEmpty = historyAttempt.unknownOwner ||
+			(historyAttempt.sessionRequest == nil && shouldRewriteNamespaceResponse)
+	}
 
 	var activeID int64
 	activeStarted := false
@@ -3570,19 +3661,16 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 
 		var resp *xrequest.Response
 		var postErr error
-		if shouldRewriteNamespaceResponse {
-			resp, postErr = prs.postCodexResponsesRequestWithHistoryFallback(
-				clientCtx,
-				targetURL,
-				query,
-				headers,
-				bodyBytes,
-				isStream,
-				provider.Name,
-			)
-		} else {
-			resp, postErr = prs.postCodexResponsesRequest(clientCtx, targetURL, query, headers, bodyBytes)
-		}
+		resp, postErr = prs.postCodexResponsesRequestWithHistoryFallback(
+			clientCtx,
+			targetURL,
+			query,
+			headers,
+			bodyBytes,
+			isStream,
+			provider.Name,
+			historyAttempt,
+		)
 		if resp != nil {
 			attemptLog.HttpCode = resp.StatusCode()
 		}
@@ -3650,9 +3738,10 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 			streamResponse = false
 		}
 		responseModified := 0
+		responseObservation := codexResponseObservation{}
 		responseDiagnostics := codexStreamDiagnostics{}
 		if streamResponse {
-			var captureHooks []xrequest.ResponseHook
+			captureHooks := []xrequest.ResponseHook{responseObservation.Hook()}
 			if shouldRewriteNamespaceResponse {
 				captureHooks = append(captureHooks, responseDiagnostics.Hook())
 				captureHooks = append(captureHooks, NewCodexMultiAgentNamespaceSSEHook(&responseModified))
@@ -3660,6 +3749,7 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 			capturedStatus, capturedHeader, capturedBody, captureErr = captureCodexStreamingResponse(resp, attemptLog, attemptStart, clientCtx, codexDegradationMaxBufferBytes, captureHooks...)
 		} else {
 			capturedStatus, capturedHeader, capturedBody, captureErr = captureCodexNonStreamingResponse(resp, attemptLog)
+			responseObservation.observePayload(capturedBody)
 			if shouldRewriteNamespaceResponse {
 				responseDiagnostics.observePayload(capturedBody)
 			}
@@ -3677,6 +3767,11 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 				}
 				if writeErr := writeCapturedResponse(c.Writer, capturedStatus, capturedHeader, capturedBody); writeErr != nil && isClientAbortError(clientCtx, writeErr) {
 					attemptLog.SkipLog = true
+				} else {
+					responseObservation.onSuccess = func() {
+						prs.commitCodexSessionAttempt(historyAttempt, &responseObservation)
+					}
+					responseObservation.commitIfSuccessful()
 				}
 				finalize(attemptLog, attemptStart)
 				return true, nil
@@ -3719,8 +3814,13 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 		if responseModified > 0 {
 			fmt.Printf("[Codex Multi-Agent Namespace] Provider=%s direction=agents->collaboration modified=%d\n", provider.Name, responseModified)
 		}
+		responseObservation.onSuccess = func() {
+			prs.commitCodexSessionAttempt(historyAttempt, &responseObservation)
+		}
 		if writeErr := writeCapturedResponse(c.Writer, capturedStatus, capturedHeader, capturedBody); writeErr != nil && isClientAbortError(clientCtx, writeErr) {
 			attemptLog.SkipLog = true
+		} else {
+			responseObservation.commitIfSuccessful()
 		}
 		finalize(attemptLog, attemptStart)
 		return true, nil
