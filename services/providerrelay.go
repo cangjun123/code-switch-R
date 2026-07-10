@@ -32,19 +32,21 @@ type LastUsedProvider struct {
 }
 
 type ProviderRelayService struct {
-	providerService     *ProviderService
-	geminiService       *GeminiService
-	codexRelayKeys      *CodexRelayKeyService
-	blacklistService    *BlacklistService
-	notificationService *NotificationService
-	appSettings         *AppSettingsService // 应用设置服务（用于获取轮询开关状态）
-	httpClient          *http.Client
-	server              *http.Server
-	addr                string
-	lastUsed            map[string]*LastUsedProvider // 各平台最后使用的供应商
-	lastUsedMu          sync.RWMutex                 // 保护 lastUsed 的锁
-	rrMu                sync.Mutex                   // 轮询状态锁
-	rrLastStart         map[string]string            // 轮询状态：key="platform:level" → value=上次起始 Provider Name
+	providerService      *ProviderService
+	geminiService        *GeminiService
+	codexRelayKeys       *CodexRelayKeyService
+	blacklistService     *BlacklistService
+	notificationService  *NotificationService
+	appSettings          *AppSettingsService // 应用设置服务（用于获取轮询开关状态）
+	httpClient           *http.Client
+	server               *http.Server
+	addr                 string
+	lastUsed             map[string]*LastUsedProvider // 各平台最后使用的供应商
+	lastUsedMu           sync.RWMutex                 // 保护 lastUsed 的锁
+	rrMu                 sync.Mutex                   // 轮询状态锁
+	rrLastStart          map[string]string            // 轮询状态：key="platform:level" → value=上次起始 Provider Name
+	codexHistoryMu       sync.Mutex
+	codexHistorySanitize map[string]codexHistorySanitizeCacheEntry
 }
 
 // errClientAbort 表示客户端中断连接，不应计入 provider 失败次数
@@ -56,6 +58,9 @@ var errResponseTooLargeToBuffer = errors.New("codex response too large to buffer
 const (
 	codexDegradationMaxBufferBytes = 16 * 1024 * 1024
 	codexDegradationResendInterval = 300 * time.Millisecond
+	codexHistoryPreflightMaxBytes  = 1024 * 1024
+	codexHistorySanitizeCacheMax   = 4096
+	codexHistorySanitizeCacheTTL   = 24 * time.Hour
 )
 
 func isClientAbortError(ctx context.Context, err error) bool {
@@ -142,7 +147,8 @@ func NewProviderRelayService(providerService *ProviderService, geminiService *Ge
 			"codex":  nil,
 			"gemini": nil,
 		},
-		rrLastStart: make(map[string]string),
+		rrLastStart:          make(map[string]string),
+		codexHistorySanitize: make(map[string]codexHistorySanitizeCacheEntry),
 	}
 }
 
@@ -1183,7 +1189,19 @@ func (prs *ProviderRelayService) forwardRequest(
 	var resp *xrequest.Response
 	var err error
 	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) {
-		resp, err = prs.postCodexResponsesRequest(c.Request.Context(), targetURL, query, headers, bodyBytes)
+		if requestNamespaceRewritten {
+			resp, err = prs.postCodexResponsesRequestWithHistoryFallback(
+				c.Request.Context(),
+				targetURL,
+				query,
+				headers,
+				bodyBytes,
+				isStream,
+				provider.Name,
+			)
+		} else {
+			resp, err = prs.postCodexResponsesRequest(c.Request.Context(), targetURL, query, headers, bodyBytes)
+		}
 	} else {
 		req := xrequest.New().
 			SetHeaders(headers).
@@ -1269,10 +1287,15 @@ func (prs *ProviderRelayService) forwardRequest(
 		if isStreamResponse(resp, isStream) {
 			hooks := []xrequest.ResponseHook{ReqeustLogHook(c, kind, requestLog)}
 			responseModified := 0
+			responseDiagnostics := codexStreamDiagnostics{}
 			if requestNamespaceRewritten {
+				hooks = append(hooks, responseDiagnostics.Hook())
 				hooks = append(hooks, NewCodexMultiAgentNamespaceSSEHook(&responseModified))
 			}
 			_, copyErr := writeStreamingResponse(c.Writer, resp, requestLog, start, hooks...)
+			if requestNamespaceRewritten {
+				responseDiagnostics.LogZeroUsage(provider.Name, requestLog)
+			}
 			if responseModified > 0 {
 				fmt.Printf("[Codex Multi-Agent Namespace] Provider=%s direction=agents->collaboration modified=%d\n", provider.Name, responseModified)
 			}
@@ -1348,6 +1371,294 @@ func (prs *ProviderRelayService) postCodexResponsesRequest(
 		return nil, err
 	}
 	return xrequest.NewResponse(rawResponse), err
+}
+
+type replayResponseBody struct {
+	io.Reader
+	io.Closer
+}
+
+type codexHistorySanitizeCacheEntry struct {
+	markedAt time.Time
+	plan     *codexProviderHistorySanitizePlan
+}
+
+func (prs *ProviderRelayService) postCodexResponsesRequestWithHistoryFallback(
+	ctx context.Context,
+	targetURL string,
+	query map[string]string,
+	headers map[string]string,
+	body []byte,
+	isStream bool,
+	providerName string,
+) (*xrequest.Response, error) {
+	currentPlan, sanitizeErr := buildCodexProviderHistorySanitizePlan(body)
+	if sanitizeErr != nil {
+		fmt.Printf("[WARN] Provider %s Codex 跨供应商历史检查失败，继续使用原请求: %v\n", providerName, sanitizeErr)
+		return prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body)
+	}
+	sanitizedBody, stats, sanitizeErr := sanitizeCodexProviderBoundHistoryWithPlan(body, currentPlan)
+	if sanitizeErr != nil {
+		fmt.Printf("[WARN] Provider %s Codex 跨供应商历史清理失败，继续使用原请求: %v\n", providerName, sanitizeErr)
+		return prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body)
+	}
+	if stats.Total() == 0 {
+		return prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body)
+	}
+
+	cacheKey := codexHistorySanitizeCacheKey(providerName, body)
+	if cachedPlan, ok := prs.cachedCodexHistorySanitizePlan(cacheKey); ok {
+		cachedBody, cachedStats, cachedErr := sanitizeCodexProviderBoundHistoryWithPlan(body, cachedPlan)
+		if cachedErr != nil {
+			fmt.Printf("[WARN] Provider %s Codex 已缓存历史清理失败，继续检查原响应: %v\n", providerName, cachedErr)
+		} else if cachedStats.Total() > 0 {
+			sanitizedHeaders, removedHeaders := sanitizeCodexProviderBoundHeaders(headers)
+			logCodexHistorySanitize(providerName, "cached", "", cachedStats, removedHeaders)
+			return prs.postCodexResponsesRequest(ctx, targetURL, query, sanitizedHeaders, cachedBody)
+		}
+	}
+
+	resp, err := prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body)
+	if err != nil || resp == nil {
+		return resp, err
+	}
+	status := resp.StatusCode()
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return resp, nil
+	}
+
+	retry, reason, inspectErr := codexResponseNeedsProviderHistoryFallback(resp, isStream)
+	if inspectErr != nil {
+		return resp, inspectErr
+	}
+	if !retry {
+		return resp, nil
+	}
+	if resp.RawResponse != nil && resp.RawResponse.Body != nil {
+		_ = resp.RawResponse.Body.Close()
+	}
+
+	prs.rememberCodexHistorySanitize(cacheKey, currentPlan)
+	sanitizedHeaders, removedHeaders := sanitizeCodexProviderBoundHeaders(headers)
+	logCodexHistorySanitize(providerName, "retry", reason, stats, removedHeaders)
+	return prs.postCodexResponsesRequest(ctx, targetURL, query, sanitizedHeaders, sanitizedBody)
+}
+
+func sanitizeCodexProviderBoundHeaders(headers map[string]string) (map[string]string, int) {
+	sanitized := cloneMap(headers)
+	removed := 0
+	for key := range sanitized {
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "session_id", "thread_id", "x-client-request-id", "x-codex-turn-metadata",
+			"x-codex-window-id", "openai-conversation-id", "content-length":
+			delete(sanitized, key)
+			removed++
+		}
+	}
+	return sanitized, removed
+}
+
+func logCodexHistorySanitize(providerName, action, reason string, stats CodexProviderHistorySanitizeStats, removedHeaders int) {
+	fmt.Printf(
+		"[Codex Provider History] Provider=%s action=%s reason=%s removed_items=%d removed_content_parts=%d removed_item_ids=%d removed_top_level_refs=%d removed_headers=%d\n",
+		providerName,
+		action,
+		reason,
+		stats.RemovedItems,
+		stats.RemovedContentParts,
+		stats.RemovedItemIDs,
+		stats.RemovedTopLevelRefs,
+		removedHeaders,
+	)
+}
+
+func codexHistorySanitizeCacheKey(providerName string, body []byte) string {
+	promptCacheKey := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+	if promptCacheKey == "" {
+		return ""
+	}
+	return providerName + "\x00" + promptCacheKey
+}
+
+func (prs *ProviderRelayService) cachedCodexHistorySanitizePlan(cacheKey string) (*codexProviderHistorySanitizePlan, bool) {
+	if cacheKey == "" {
+		return nil, false
+	}
+	prs.codexHistoryMu.Lock()
+	defer prs.codexHistoryMu.Unlock()
+	entry, ok := prs.codexHistorySanitize[cacheKey]
+	if !ok {
+		return nil, false
+	}
+	if time.Since(entry.markedAt) >= codexHistorySanitizeCacheTTL {
+		delete(prs.codexHistorySanitize, cacheKey)
+		return nil, false
+	}
+	entry.markedAt = time.Now()
+	prs.codexHistorySanitize[cacheKey] = entry
+	return entry.plan, true
+}
+
+func (prs *ProviderRelayService) rememberCodexHistorySanitize(cacheKey string, plan *codexProviderHistorySanitizePlan) {
+	if cacheKey == "" || plan == nil {
+		return
+	}
+	prs.codexHistoryMu.Lock()
+	defer prs.codexHistoryMu.Unlock()
+	if prs.codexHistorySanitize == nil {
+		prs.codexHistorySanitize = make(map[string]codexHistorySanitizeCacheEntry)
+	}
+	now := time.Now()
+	if len(prs.codexHistorySanitize) >= codexHistorySanitizeCacheMax {
+		for key, entry := range prs.codexHistorySanitize {
+			if now.Sub(entry.markedAt) >= codexHistorySanitizeCacheTTL {
+				delete(prs.codexHistorySanitize, key)
+			}
+		}
+		if len(prs.codexHistorySanitize) >= codexHistorySanitizeCacheMax {
+			for key := range prs.codexHistorySanitize {
+				delete(prs.codexHistorySanitize, key)
+				break
+			}
+		}
+	}
+	prs.codexHistorySanitize[cacheKey] = codexHistorySanitizeCacheEntry{markedAt: now, plan: plan}
+}
+
+func codexResponseNeedsProviderHistoryFallback(resp *xrequest.Response, requestedStream bool) (bool, string, error) {
+	if resp == nil || resp.RawResponse == nil {
+		return false, "", nil
+	}
+	if detectAndNormalizeJSONResponse(resp, requestedStream) {
+		body := resp.Bytes()
+		return codexJSONNeedsProviderHistoryFallback(body)
+	}
+	if !isStreamResponse(resp, requestedStream) || resp.RawResponse.Body == nil {
+		return false, "", nil
+	}
+	return inspectCodexSSEProviderHistoryResponse(resp)
+}
+
+func codexJSONNeedsProviderHistoryFallback(body []byte) (bool, string, error) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return true, "empty_body", nil
+	}
+	if !gjson.ValidBytes(trimmed) {
+		return false, "", nil
+	}
+	terminal, retry, reason := codexPayloadProviderHistoryDecision(trimmed)
+	if terminal {
+		return retry, reason, nil
+	}
+	return false, "", nil
+}
+
+func inspectCodexSSEProviderHistoryResponse(resp *xrequest.Response) (bool, string, error) {
+	originalBody := resp.RawResponse.Body
+	reader := bufio.NewReader(originalBody)
+	var prefix bytes.Buffer
+	replay := func() {
+		resp.RawResponse.Body = &replayResponseBody{
+			Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), reader),
+			Closer: originalBody,
+		}
+	}
+
+	for prefix.Len() <= codexHistoryPreflightMaxBytes {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			_, _ = prefix.Write(line)
+			trimmed := bytes.TrimSpace(line)
+			if bytes.HasPrefix(trimmed, []byte("data:")) {
+				payload := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
+				if gjson.ValidBytes(payload) {
+					if codexPayloadHasOutput(payload) {
+						replay()
+						return false, "", nil
+					}
+					if terminal, retry, reason := codexPayloadProviderHistoryDecision(payload); terminal {
+						if !retry {
+							replay()
+						}
+						return retry, reason, nil
+					}
+				}
+			}
+		}
+		if prefix.Len() > codexHistoryPreflightMaxBytes {
+			replay()
+			return false, "", nil
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return true, "stream_without_output", nil
+			}
+			replay()
+			return false, "", fmt.Errorf("inspect codex provider history response: %w", readErr)
+		}
+	}
+
+	replay()
+	return false, "", nil
+}
+
+func codexPayloadProviderHistoryDecision(payload []byte) (terminal bool, retry bool, reason string) {
+	eventType := gjson.GetBytes(payload, "type").String()
+	status := gjson.GetBytes(payload, "response.status").String()
+	if status == "" {
+		status = gjson.GetBytes(payload, "status").String()
+	}
+	errorValue := gjson.GetBytes(payload, "response.error")
+	if !errorValue.Exists() {
+		errorValue = gjson.GetBytes(payload, "error")
+	}
+	hasError := errorValue.Exists() && errorValue.Raw != "" && errorValue.Raw != "null"
+
+	if eventType == "error" || eventType == "response.failed" || status == "failed" || hasError {
+		return true, true, "failed_terminal"
+	}
+	if eventType == "response.completed" || status == "completed" {
+		if codexPayloadHasOutput(payload) || codexPayloadHasUsage(payload) {
+			return true, false, ""
+		}
+		return true, true, "completed_without_output_or_usage"
+	}
+	if eventType == "response.incomplete" || status == "incomplete" {
+		if codexPayloadHasOutput(payload) || codexPayloadHasUsage(payload) {
+			return true, false, ""
+		}
+		return true, true, "incomplete_without_output_or_usage"
+	}
+	return false, false, ""
+}
+
+func codexPayloadHasOutput(payload []byte) bool {
+	if gjson.GetBytes(payload, "response.output.#").Int() > 0 ||
+		gjson.GetBytes(payload, "output.#").Int() > 0 ||
+		strings.TrimSpace(gjson.GetBytes(payload, "response.output_text").String()) != "" ||
+		strings.TrimSpace(gjson.GetBytes(payload, "output_text").String()) != "" {
+		return true
+	}
+	eventType := gjson.GetBytes(payload, "type").String()
+	return strings.HasPrefix(eventType, "response.output_text.") ||
+		strings.HasPrefix(eventType, "response.output_item.") ||
+		strings.HasPrefix(eventType, "response.content_part.") ||
+		strings.HasPrefix(eventType, "response.function_call_arguments.") ||
+		strings.HasPrefix(eventType, "response.custom_tool_call_input.") ||
+		strings.HasPrefix(eventType, "response.reasoning")
+}
+
+func codexPayloadHasUsage(payload []byte) bool {
+	for _, prefix := range []string{"response.usage", "usage"} {
+		if gjson.GetBytes(payload, prefix+".input_tokens").Int() != 0 ||
+			gjson.GetBytes(payload, prefix+".output_tokens").Int() != 0 ||
+			gjson.GetBytes(payload, prefix+".input_tokens_details.cached_tokens").Int() != 0 ||
+			gjson.GetBytes(payload, prefix+".output_tokens_details.reasoning_tokens").Int() != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func isStreamResponse(resp *xrequest.Response, requestedStream bool) bool {
@@ -1562,6 +1873,9 @@ func writeCodexNamespaceJSONResponse(w http.ResponseWriter, resp *xrequest.Respo
 	}
 
 	ClaudeCodeParseTokenUsageFromResponse(string(body), requestLog)
+	diagnostics := codexStreamDiagnostics{}
+	diagnostics.observePayload(body)
+	diagnostics.LogZeroUsage(providerName, requestLog)
 	for key, values := range resp.Headers() {
 		lowerKey := strings.ToLower(key)
 		switch lowerKey {
@@ -1810,12 +2124,76 @@ func ReqeustLogHook(c *gin.Context, kind string, usage *ReqeustLog) func(data []
 	}
 }
 
+type codexStreamDiagnostics struct {
+	lines        int
+	dataEvents   int
+	jsonEvents   int
+	outputEvents int
+	terminalType string
+	status       string
+}
+
+func (diagnostics *codexStreamDiagnostics) Hook() xrequest.ResponseHook {
+	return func(data []byte) (bool, []byte) {
+		diagnostics.lines++
+		line := bytes.TrimSpace(data)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			return true, data
+		}
+		diagnostics.dataEvents++
+		diagnostics.observePayload(bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:"))))
+		return true, data
+	}
+}
+
+func (diagnostics *codexStreamDiagnostics) observePayload(payload []byte) {
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) || !gjson.ValidBytes(payload) {
+		return
+	}
+	diagnostics.jsonEvents++
+	eventType := gjson.GetBytes(payload, "type").String()
+	if strings.HasPrefix(eventType, "response.output_") ||
+		strings.HasPrefix(eventType, "response.content_part.") ||
+		strings.HasPrefix(eventType, "response.reasoning") {
+		diagnostics.outputEvents++
+	}
+	switch eventType {
+	case "response.completed", "response.failed", "response.incomplete", "error":
+		diagnostics.terminalType = eventType
+	}
+	if outputCount := int(gjson.GetBytes(payload, "response.output.#").Int()); outputCount > diagnostics.outputEvents {
+		diagnostics.outputEvents = outputCount
+	}
+	if status := gjson.GetBytes(payload, "response.status").String(); status != "" {
+		diagnostics.status = status
+	} else if status := gjson.GetBytes(payload, "status").String(); status != "" {
+		diagnostics.status = status
+	}
+}
+
+func (diagnostics *codexStreamDiagnostics) LogZeroUsage(providerName string, usage *ReqeustLog) {
+	if usage == nil || usage.InputTokens != 0 || usage.OutputTokens != 0 ||
+		usage.CacheCreateTokens != 0 || usage.CacheReadTokens != 0 || usage.ReasoningTokens != 0 {
+		return
+	}
+	fmt.Printf(
+		"[WARN] Provider %s Codex namespace response usage=0 lines=%d data_events=%d json_events=%d output_events=%d terminal=%q status=%q\n",
+		providerName,
+		diagnostics.lines,
+		diagnostics.dataEvents,
+		diagnostics.jsonEvents,
+		diagnostics.outputEvents,
+		diagnostics.terminalType,
+		diagnostics.status,
+	)
+}
+
 func parseEventPayload(payload string, parser func(string, *ReqeustLog), usage *ReqeustLog) {
 	lines := strings.Split(payload, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "data:") {
-			parser(strings.TrimPrefix(line, "data: "), usage)
+			parser(strings.TrimSpace(strings.TrimPrefix(line, "data:")), usage)
 		}
 	}
 }
@@ -1872,10 +2250,16 @@ func ClaudeCodeParseTokenUsageFromResponse(data string, usage *ReqeustLog) {
 
 // codex usage parser
 func CodexParseTokenUsageFromResponse(data string, usage *ReqeustLog) {
-	usage.InputTokens += int(gjson.Get(data, "response.usage.input_tokens").Int())
-	usage.OutputTokens += int(gjson.Get(data, "response.usage.output_tokens").Int())
-	usage.CacheReadTokens += int(gjson.Get(data, "response.usage.input_tokens_details.cached_tokens").Int())
-	usage.ReasoningTokens += int(gjson.Get(data, "response.usage.output_tokens_details.reasoning_tokens").Int())
+	usagePath := "response.usage"
+	if !gjson.Get(data, usagePath).Exists() {
+		// Some Responses-compatible relays put usage directly on the completed
+		// event instead of nesting it under response.
+		usagePath = "usage"
+	}
+	usage.InputTokens += int(gjson.Get(data, usagePath+".input_tokens").Int())
+	usage.OutputTokens += int(gjson.Get(data, usagePath+".output_tokens").Int())
+	usage.CacheReadTokens += int(gjson.Get(data, usagePath+".input_tokens_details.cached_tokens").Int())
+	usage.ReasoningTokens += int(gjson.Get(data, usagePath+".output_tokens_details.reasoning_tokens").Int())
 }
 
 // gemini usage parser (流式响应专用)
@@ -3184,7 +3568,21 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 			return false, errClientAbort
 		}
 
-		resp, postErr := prs.postCodexResponsesRequest(clientCtx, targetURL, query, headers, bodyBytes)
+		var resp *xrequest.Response
+		var postErr error
+		if shouldRewriteNamespaceResponse {
+			resp, postErr = prs.postCodexResponsesRequestWithHistoryFallback(
+				clientCtx,
+				targetURL,
+				query,
+				headers,
+				bodyBytes,
+				isStream,
+				provider.Name,
+			)
+		} else {
+			resp, postErr = prs.postCodexResponsesRequest(clientCtx, targetURL, query, headers, bodyBytes)
+		}
 		if resp != nil {
 			attemptLog.HttpCode = resp.StatusCode()
 		}
@@ -3252,14 +3650,22 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 			streamResponse = false
 		}
 		responseModified := 0
+		responseDiagnostics := codexStreamDiagnostics{}
 		if streamResponse {
 			var captureHooks []xrequest.ResponseHook
 			if shouldRewriteNamespaceResponse {
+				captureHooks = append(captureHooks, responseDiagnostics.Hook())
 				captureHooks = append(captureHooks, NewCodexMultiAgentNamespaceSSEHook(&responseModified))
 			}
 			capturedStatus, capturedHeader, capturedBody, captureErr = captureCodexStreamingResponse(resp, attemptLog, attemptStart, clientCtx, codexDegradationMaxBufferBytes, captureHooks...)
 		} else {
 			capturedStatus, capturedHeader, capturedBody, captureErr = captureCodexNonStreamingResponse(resp, attemptLog)
+			if shouldRewriteNamespaceResponse {
+				responseDiagnostics.observePayload(capturedBody)
+			}
+		}
+		if shouldRewriteNamespaceResponse {
+			responseDiagnostics.LogZeroUsage(provider.Name, attemptLog)
 		}
 
 		if captureErr != nil {
