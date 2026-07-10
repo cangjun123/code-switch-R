@@ -213,6 +213,59 @@ func TestDegradationNamespaceHandlerStreamingMislabeledAsJSON(t *testing.T) {
 	}
 }
 
+func TestDegradationNamespaceHandlerRetriesWithoutForeignProviderHistory(t *testing.T) {
+	var capture degradationNamespaceRequestCapture
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		attempt := capture.add(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if gjson.GetBytes(body, `input.#(id=="rs_foreign")`).Exists() {
+			_, _ = w.Write([]byte(providerHistoryTestSSE(true)))
+			return
+		}
+		reasoning := 516
+		if attempt > 2 {
+			reasoning = 800
+		}
+		_, _ = w.Write(degradationNamespaceSSE(reasoning))
+	}))
+	defer upstream.Close()
+
+	providers, relay := newTestRelayService(t)
+	enableDegradationForNamespaceHandlerTest(t, relay)
+	saveDegradationNamespaceProvider(t, providers, "degradation-provider-history-fallback", upstream.URL)
+
+	recorder := performDegradationNamespaceHandlerRequest(t, relay, codexHistoryFallbackRequestBody())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	bodies := capture.snapshot()
+	if len(bodies) != 3 {
+		t.Fatalf("upstream calls = %d, want 3 (empty response + sanitized retry + degradation resend)", len(bodies))
+	}
+	if !gjson.GetBytes(bodies[0], `input.#(id=="rs_foreign")`).Exists() {
+		t.Fatalf("initial request unexpectedly removed foreign reasoning: %s", bodies[0])
+	}
+	for index, body := range bodies[1:] {
+		if gjson.GetBytes(body, `input.#(id=="rs_foreign")`).Exists() {
+			t.Fatalf("sanitized request %d retained foreign reasoning: %s", index+1, body)
+		}
+		if got := gjson.GetBytes(body, "tools.0.name").String(); got != "agents" {
+			t.Fatalf("sanitized request %d namespace = %q, body = %s", index+1, got, body)
+		}
+	}
+
+	response := recorder.Body.String()
+	if strings.Contains(response, `"namespace":"agents"`) || strings.Contains(response, `"reasoning_tokens":516`) {
+		t.Fatalf("client received an intermediate response: %s", response)
+	}
+	for _, expected := range []string{`"namespace":"collaboration"`, `"delta":"hello"`, `"reasoning_tokens":800`, "data: [DONE]"} {
+		if !strings.Contains(response, expected) {
+			t.Errorf("client response missing %q: %s", expected, response)
+		}
+	}
+}
+
 func TestDegradationNamespaceHandlerClientNativeAgentsDoesNotReverse(t *testing.T) {
 	var capture degradationNamespaceRequestCapture
 	responseBody := []byte(`{"output":[{"type":"function_call","namespace":"agents","name":"spawn_agent"}],"usage":{"input_tokens":1,"output_tokens":1,"output_tokens_details":{"reasoning_tokens":800}}}`)

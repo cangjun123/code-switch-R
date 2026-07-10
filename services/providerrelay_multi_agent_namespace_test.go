@@ -289,6 +289,193 @@ func TestCodexMultiAgentNamespaceRewriteStreamingMislabeledAsJSON(t *testing.T) 
 	}
 }
 
+func providerHistoryTestSSE(empty bool) string {
+	if empty {
+		return strings.Join([]string{
+			"event: response.created",
+			"data:{\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"output\":[]}}",
+			"",
+			"event: response.completed",
+			"data:{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}}}",
+			"",
+			"data:[DONE]",
+			"",
+		}, "\n")
+	}
+	return strings.Join([]string{
+		"event: response.output_text.delta",
+		"data:{\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}",
+		"",
+		"event: response.output_item.added",
+		"data:{\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"namespace\":\"agents\",\"name\":\"spawn_agent\"}}",
+		"",
+		"event: response.completed",
+		"data:{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"namespace\":\"agents\",\"name\":\"spawn_agent\"}],\"usage\":{\"input_tokens\":21,\"output_tokens\":8,\"input_tokens_details\":{\"cached_tokens\":5},\"output_tokens_details\":{\"reasoning_tokens\":3}}}}",
+		"",
+		"data:[DONE]",
+		"",
+	}, "\n")
+}
+
+func codexHistoryFallbackRequestBody() []byte {
+	return []byte(`{
+  "model":"gpt-5.6-sol",
+  "stream":true,
+  "prompt_cache_key":"foreign-provider-session",
+  "tools":[{"type":"namespace","name":"collaboration"}],
+  "input":[
+    {"type":"reasoning","id":"rs_foreign","summary":[],"encrypted_content":"foreign-ciphertext"},
+    {"type":"message","id":"msg_foreign","role":"user","content":[{"type":"input_text","text":"hello"}]}
+  ]
+}`)
+}
+
+func codexHistoryFallbackRequestBodyWithETOHistory() []byte {
+	return []byte(`{
+  "model":"gpt-5.6-sol",
+  "stream":true,
+  "prompt_cache_key":"foreign-provider-session",
+  "tools":[{"type":"namespace","name":"collaboration"}],
+  "input":[
+    {"type":"reasoning","id":"rs_foreign","summary":[],"encrypted_content":"foreign-ciphertext"},
+    {"type":"message","id":"msg_foreign","role":"user","content":[{"type":"input_text","text":"hello"}]},
+    {"type":"reasoning","id":"rs_eto","summary":[],"encrypted_content":"eto-ciphertext"},
+    {"type":"message","id":"msg_eto","role":"assistant","content":[{"type":"output_text","text":"previous ETO response"}]}
+  ]
+}`)
+}
+
+func TestCodexMultiAgentNamespaceRetriesWithoutForeignProviderHistory(t *testing.T) {
+	var mu sync.Mutex
+	var upstreamBodies [][]byte
+	var upstreamHeaders []http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		upstreamBodies = append(upstreamBodies, append([]byte(nil), body...))
+		upstreamHeaders = append(upstreamHeaders, r.Header.Clone())
+		mu.Unlock()
+		hasForeignReasoning := gjson.GetBytes(body, "input.#(id==\"rs_foreign\")").Exists()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(providerHistoryTestSSE(hasForeignReasoning)))
+	}))
+	defer upstream.Close()
+
+	providers, relay := newTestRelayService(t)
+	if err := providers.SaveProviders(ProviderKindCodex, []Provider{{
+		ID:                              1,
+		Name:                            "namespace-provider-history-fallback",
+		APIURL:                          upstream.URL,
+		APIKey:                          "upstream-key",
+		Enabled:                         true,
+		CodexMultiAgentNamespaceRewrite: true,
+	}}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	providerBoundHeaders := http.Header{
+		"Session_id":            []string{"foreign-session"},
+		"Thread_id":             []string{"foreign-thread"},
+		"X-Client-Request-Id":   []string{"foreign-request"},
+		"X-Codex-Turn-Metadata": []string{"foreign-metadata"},
+		"X-Codex-Window-Id":     []string{"foreign-window"},
+	}
+	requestBodies := [][]byte{codexHistoryFallbackRequestBody(), codexHistoryFallbackRequestBodyWithETOHistory()}
+	for requestIndex, requestBody := range requestBodies {
+		recorder := performCodexNamespaceTestRequestAtPath(t, relay, "/responses", requestBody, providerBoundHeaders)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, body = %s", requestIndex+1, recorder.Code, recorder.Body.String())
+		}
+		response := recorder.Body.String()
+		for _, expected := range []string{"\"delta\":\"hello\"", "\"namespace\":\"collaboration\"", "\"input_tokens\":21", "data:[DONE]"} {
+			if !strings.Contains(response, expected) {
+				t.Errorf("request %d response missing %q: %s", requestIndex+1, expected, response)
+			}
+		}
+		if strings.Contains(response, "\"namespace\":\"agents\"") || strings.Contains(response, "\"input_tokens\":0") {
+			t.Fatalf("request %d leaked discarded response data: %s", requestIndex+1, response)
+		}
+	}
+
+	mu.Lock()
+	bodies := append([][]byte(nil), upstreamBodies...)
+	headers := append([]http.Header(nil), upstreamHeaders...)
+	mu.Unlock()
+	if len(bodies) != 3 {
+		t.Fatalf("upstream calls = %d, want 3 (initial + fallback + cached fallback)", len(bodies))
+	}
+	if !gjson.GetBytes(bodies[0], "input.#(type==\"reasoning\")").Exists() {
+		t.Fatalf("initial request unexpectedly removed foreign reasoning: %s", bodies[0])
+	}
+	for key := range providerBoundHeaders {
+		if headers[0].Get(key) == "" {
+			t.Fatalf("initial request unexpectedly removed provider-bound header %s", key)
+		}
+	}
+	for index, body := range bodies[1:] {
+		if gjson.GetBytes(body, "input.#(id==\"rs_foreign\")").Exists() {
+			t.Fatalf("sanitized request %d retained foreign reasoning: %s", index+1, body)
+		}
+		if gjson.GetBytes(body, "input.0.id").Exists() {
+			t.Fatalf("sanitized request %d retained provider item id: %s", index+1, body)
+		}
+		if got := gjson.GetBytes(body, "tools.0.name").String(); got != "agents" {
+			t.Fatalf("sanitized request %d namespace = %q, body = %s", index+1, got, body)
+		}
+		for key := range providerBoundHeaders {
+			if headers[index+1].Get(key) != "" {
+				t.Fatalf("sanitized request %d retained provider-bound header %s", index+1, key)
+			}
+		}
+	}
+	if gjson.GetBytes(bodies[1], "input.#(type==\"reasoning\")").Exists() {
+		t.Fatalf("initial sanitized retry retained reasoning that existed before ETO cutover: %s", bodies[1])
+	}
+	if !gjson.GetBytes(bodies[2], "input.#(id==\"rs_eto\")").Exists() || !gjson.GetBytes(bodies[2], "input.#(id==\"msg_eto\")").Exists() {
+		t.Fatalf("cached sanitization removed history generated by ETO: %s", bodies[2])
+	}
+}
+
+func TestCodexMultiAgentNamespaceKeepsCompatibleProviderHistory(t *testing.T) {
+	var mu sync.Mutex
+	var upstreamBodies [][]byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		upstreamBodies = append(upstreamBodies, append([]byte(nil), body...))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(providerHistoryTestSSE(false)))
+	}))
+	defer upstream.Close()
+
+	providers, relay := newTestRelayService(t)
+	if err := providers.SaveProviders(ProviderKindCodex, []Provider{{
+		ID:                              1,
+		Name:                            "namespace-compatible-provider-history",
+		APIURL:                          upstream.URL,
+		APIKey:                          "upstream-key",
+		Enabled:                         true,
+		CodexMultiAgentNamespaceRewrite: true,
+	}}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	recorder := performCodexNamespaceTestRequest(t, relay, codexHistoryFallbackRequestBody())
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "\"delta\":\"hello\"") {
+		t.Fatalf("compatible history response status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	mu.Lock()
+	bodies := append([][]byte(nil), upstreamBodies...)
+	mu.Unlock()
+	if len(bodies) != 1 {
+		t.Fatalf("upstream calls = %d, want 1", len(bodies))
+	}
+	if !gjson.GetBytes(bodies[0], "input.#(type==\"reasoning\")").Exists() || !gjson.GetBytes(bodies[0], "input.1.id").Exists() {
+		t.Fatalf("compatible provider history was changed before the initial request: %s", bodies[0])
+	}
+}
+
 func TestCodexMultiAgentNamespaceStreamRequestWithJSONResponse(t *testing.T) {
 	for _, test := range []struct {
 		name        string

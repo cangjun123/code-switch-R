@@ -2,6 +2,7 @@ package services
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,175 @@ const (
 // ErrCodexMultiAgentNamespaceConflict means a request defines both namespace
 // names. Rewriting it would merge two independent tool namespaces.
 var ErrCodexMultiAgentNamespaceConflict = errors.New("codex multi-agent namespace conflict")
+
+type CodexProviderHistorySanitizeStats struct {
+	RemovedItems        int
+	RemovedContentParts int
+	RemovedItemIDs      int
+	RemovedTopLevelRefs int
+}
+
+func (stats CodexProviderHistorySanitizeStats) Total() int {
+	return stats.RemovedItems + stats.RemovedContentParts + stats.RemovedItemIDs + stats.RemovedTopLevelRefs
+}
+
+type codexProviderHistorySanitizePlan struct {
+	removedItemIDs      map[string]struct{}
+	removedItemHashes   map[[sha256.Size]byte]struct{}
+	removedContentParts map[[sha256.Size]byte]struct{}
+	strippedItemIDs     map[string]struct{}
+	topLevelRefs        map[string][sha256.Size]byte
+}
+
+// SanitizeCodexProviderBoundHistory removes opaque state that cannot be
+// replayed through a different Responses provider. Conversation text and tool
+// call/result pairs remain intact.
+func SanitizeCodexProviderBoundHistory(body []byte) ([]byte, CodexProviderHistorySanitizeStats, error) {
+	plan, err := buildCodexProviderHistorySanitizePlan(body)
+	if err != nil {
+		return body, CodexProviderHistorySanitizeStats{}, err
+	}
+	return sanitizeCodexProviderBoundHistoryWithPlan(body, plan)
+}
+
+func buildCodexProviderHistorySanitizePlan(body []byte) (*codexProviderHistorySanitizePlan, error) {
+	root, err := decodeJSONPreservingNumbers(body)
+	if err != nil {
+		return nil, err
+	}
+	object, ok := root.(map[string]any)
+	if !ok {
+		return &codexProviderHistorySanitizePlan{}, nil
+	}
+
+	plan := &codexProviderHistorySanitizePlan{
+		removedItemIDs:      make(map[string]struct{}),
+		removedItemHashes:   make(map[[sha256.Size]byte]struct{}),
+		removedContentParts: make(map[[sha256.Size]byte]struct{}),
+		strippedItemIDs:     make(map[string]struct{}),
+		topLevelRefs:        make(map[string][sha256.Size]byte),
+	}
+	for _, key := range []string{"previous_response_id", "conversation"} {
+		if value, exists := object[key]; exists {
+			plan.topLevelRefs[key] = hashCodexHistoryValue(value)
+		}
+	}
+
+	input, ok := object["input"].([]any)
+	if ok {
+		for _, rawItem := range input {
+			item, isObject := rawItem.(map[string]any)
+			if !isObject {
+				continue
+			}
+
+			itemType := stringField(item, "type")
+			_, hasEncryptedContent := item["encrypted_content"]
+			if itemType == "reasoning" || itemType == "item_reference" || hasEncryptedContent {
+				if id := stringField(item, "id"); id != "" {
+					plan.removedItemIDs[id] = struct{}{}
+				}
+				plan.removedItemHashes[hashCodexHistoryValue(item)] = struct{}{}
+				continue
+			}
+
+			if id := stringField(item, "id"); id != "" {
+				plan.strippedItemIDs[id] = struct{}{}
+			}
+			if content, isArray := item["content"].([]any); isArray {
+				for _, rawPart := range content {
+					part, isPartObject := rawPart.(map[string]any)
+					if isPartObject {
+						_, partHasEncryptedContent := part["encrypted_content"]
+						if stringField(part, "type") == "encrypted_content" || partHasEncryptedContent {
+							plan.removedContentParts[hashCodexHistoryValue(part)] = struct{}{}
+						}
+					}
+				}
+			}
+		}
+	}
+	return plan, nil
+}
+
+func sanitizeCodexProviderBoundHistoryWithPlan(body []byte, plan *codexProviderHistorySanitizePlan) ([]byte, CodexProviderHistorySanitizeStats, error) {
+	if plan == nil {
+		return body, CodexProviderHistorySanitizeStats{}, nil
+	}
+	root, err := decodeJSONPreservingNumbers(body)
+	if err != nil {
+		return body, CodexProviderHistorySanitizeStats{}, err
+	}
+	object, ok := root.(map[string]any)
+	if !ok {
+		return body, CodexProviderHistorySanitizeStats{}, nil
+	}
+
+	stats := CodexProviderHistorySanitizeStats{}
+	for key, expectedHash := range plan.topLevelRefs {
+		if value, exists := object[key]; exists && hashCodexHistoryValue(value) == expectedHash {
+			delete(object, key)
+			stats.RemovedTopLevelRefs++
+		}
+	}
+
+	if input, isArray := object["input"].([]any); isArray {
+		sanitized := make([]any, 0, len(input))
+		for _, rawItem := range input {
+			item, isObject := rawItem.(map[string]any)
+			if !isObject {
+				sanitized = append(sanitized, rawItem)
+				continue
+			}
+
+			id := stringField(item, "id")
+			_, removeByID := plan.removedItemIDs[id]
+			_, removeByHash := plan.removedItemHashes[hashCodexHistoryValue(item)]
+			if (id != "" && removeByID) || removeByHash {
+				stats.RemovedItems++
+				continue
+			}
+			if _, stripID := plan.strippedItemIDs[id]; id != "" && stripID {
+				delete(item, "id")
+				stats.RemovedItemIDs++
+			}
+			if content, hasContent := item["content"].([]any); hasContent {
+				filtered := make([]any, 0, len(content))
+				for _, rawPart := range content {
+					if _, remove := plan.removedContentParts[hashCodexHistoryValue(rawPart)]; remove {
+						stats.RemovedContentParts++
+						continue
+					}
+					filtered = append(filtered, rawPart)
+				}
+				if len(filtered) == 0 && len(content) > 0 {
+					stats.RemovedItems++
+					continue
+				}
+				item["content"] = filtered
+			}
+			sanitized = append(sanitized, item)
+		}
+		object["input"] = sanitized
+	}
+
+	if stats.Total() == 0 {
+		return body, stats, nil
+	}
+	rewritten, err := json.Marshal(root)
+	if err != nil {
+		return body, CodexProviderHistorySanitizeStats{}, fmt.Errorf("marshal sanitized codex provider history: %w", err)
+	}
+	return rewritten, stats, nil
+}
+
+func hashCodexHistoryValue(value any) [sha256.Size]byte {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return sha256.Sum256([]byte(fmt.Sprintf("%T:%v", value, value)))
+	}
+	return sha256.Sum256(encoded)
+}
 
 func HasCodexMultiAgentNamespaceConflict(body []byte) (bool, error) {
 	root, err := decodeJSONPreservingNumbers(body)

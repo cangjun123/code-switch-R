@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -67,6 +68,70 @@ func TestRewriteCodexMultiAgentRequestNoMatchReturnsOriginalBytes(t *testing.T) 
 	}
 	if !bytes.Equal(rewritten, body) {
 		t.Fatalf("no-match request bytes changed:\n got: %q\nwant: %q", rewritten, body)
+	}
+}
+
+func TestSanitizeCodexProviderBoundHistory(t *testing.T) {
+	body := []byte(`{
+  "previous_response_id":"resp_foreign",
+  "conversation":"conv_foreign",
+  "input":[
+    {"type":"reasoning","id":"rs_foreign","summary":[],"encrypted_content":"ciphertext"},
+    {"type":"item_reference","id":"item_foreign"},
+    {"type":"message","id":"msg_foreign","role":"assistant","content":[
+      {"type":"output_text","text":"keep this message"},
+      {"type":"encrypted_content","encrypted_content":"ciphertext"}
+    ]},
+    {"type":"function_call","id":"fc_foreign","namespace":"agents","name":"spawn_agent","call_id":"call_1","arguments":"{\"id\":\"keep inside arguments\"}"},
+    {"type":"function_call_output","id":"out_foreign","call_id":"call_1","output":"done"},
+    {"type":"compaction","encrypted_content":"ciphertext"}
+  ]
+}`)
+
+	sanitized, stats, err := SanitizeCodexProviderBoundHistory(body)
+	if err != nil {
+		t.Fatalf("SanitizeCodexProviderBoundHistory() error = %v", err)
+	}
+	if stats.RemovedItems != 3 || stats.RemovedContentParts != 1 || stats.RemovedItemIDs != 3 || stats.RemovedTopLevelRefs != 2 {
+		t.Fatalf("unexpected sanitize stats: %+v", stats)
+	}
+	result := gjson.ParseBytes(sanitized)
+	if result.Get("previous_response_id").Exists() || result.Get("conversation").Exists() {
+		t.Fatalf("provider-bound top-level references remain: %s", sanitized)
+	}
+	if got := result.Get("input.#").Int(); got != 3 {
+		t.Fatalf("sanitized input item count = %d, want 3: %s", got, sanitized)
+	}
+	if got := result.Get("input.0.content.#").Int(); got != 1 {
+		t.Fatalf("message content count = %d, want 1: %s", got, sanitized)
+	}
+	if got := result.Get("input.0.content.0.text").String(); got != "keep this message" {
+		t.Fatalf("message text = %q", got)
+	}
+	for index := 0; index < 3; index++ {
+		if result.Get(fmt.Sprintf("input.%d.id", index)).Exists() {
+			t.Fatalf("provider-bound input id remains at index %d: %s", index, sanitized)
+		}
+	}
+	if got := result.Get("input.1.namespace").String(); got != "agents" {
+		t.Fatalf("function call namespace = %q", got)
+	}
+	if got := result.Get("input.1.arguments").String(); got != "{\"id\":\"keep inside arguments\"}" {
+		t.Fatalf("function arguments changed to %q", got)
+	}
+}
+
+func TestSanitizeCodexProviderBoundHistoryNoMatchAndInvalidJSON(t *testing.T) {
+	body := []byte("{ \n  \"input\": [{\"type\":\"message\",\"content\":\"keep\"}]\n}\n")
+	sanitized, stats, err := SanitizeCodexProviderBoundHistory(body)
+	if err != nil || stats.Total() != 0 || !bytes.Equal(sanitized, body) {
+		t.Fatalf("no-match sanitize = (%q, %+v, %v)", sanitized, stats, err)
+	}
+
+	invalid := []byte("{\"input\":[")
+	sanitized, stats, err = SanitizeCodexProviderBoundHistory(invalid)
+	if err == nil || stats.Total() != 0 || !bytes.Equal(sanitized, invalid) {
+		t.Fatalf("invalid sanitize = (%q, %+v, %v)", sanitized, stats, err)
 	}
 }
 

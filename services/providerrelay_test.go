@@ -395,6 +395,21 @@ func TestClaudeCodeParseTokenUsageFromResponse(t *testing.T) {
 	}
 }
 
+func TestRequestLogHookParsesSSEDataWithOptionalSpacing(t *testing.T) {
+	for _, line := range []string{
+		"data: {\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":6,\"input_tokens_details\":{\"cached_tokens\":3},\"output_tokens_details\":{\"reasoning_tokens\":4}}}}",
+		"data:{\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":6,\"input_tokens_details\":{\"cached_tokens\":3},\"output_tokens_details\":{\"reasoning_tokens\":4}}}}",
+		"data:\t{\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":6,\"input_tokens_details\":{\"cached_tokens\":3},\"output_tokens_details\":{\"reasoning_tokens\":4}}}}",
+		"data:{\"type\":\"response.completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":6,\"input_tokens_details\":{\"cached_tokens\":3},\"output_tokens_details\":{\"reasoning_tokens\":4}}}",
+	} {
+		var usage ReqeustLog
+		ReqeustLogHook(nil, ProviderKindCodex, &usage)([]byte(line))
+		if usage.InputTokens != 10 || usage.OutputTokens != 6 || usage.CacheReadTokens != 3 || usage.ReasoningTokens != 4 {
+			t.Fatalf("usage from %q = input:%d output:%d cache:%d reasoning:%d", line, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ReasoningTokens)
+		}
+	}
+}
+
 func TestDeleteHeaderCaseInsensitive(t *testing.T) {
 	headers := map[string]string{
 		"Authorization":     "Bearer upstream-key",
