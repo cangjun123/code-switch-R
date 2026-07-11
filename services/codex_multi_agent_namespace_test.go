@@ -71,6 +71,59 @@ func TestRewriteCodexMultiAgentRequestNoMatchReturnsOriginalBytes(t *testing.T) 
 	}
 }
 
+func TestStripCodexInputNamespaces(t *testing.T) {
+	body := []byte(`{
+  "tools":[{"type":"namespace","name":"agents"}],
+  "input":[
+    {"type":"function_call","namespace":"agents","name":"spawn_agent","call_id":"call_1","arguments":"{\"namespace\":\"argument-value\"}"},
+    {"type":"custom_tool_call_output","namespace":"collaboration","call_id":"call_1","output":[{"type":"input_text","text":"done","namespace":"nested-output"}]},
+    {"type":"message","namespace":null,"content":[{"type":"input_text","text":"keep","namespace":"nested-content"}]},
+    {"type":"additional_tools","tools":[{"type":"namespace","name":"agents"}]}
+  ]
+}`)
+
+	stripped, count, err := stripCodexInputNamespaces(body)
+	if err != nil {
+		t.Fatalf("stripCodexInputNamespaces() error = %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("removed count = %d, want 3", count)
+	}
+	result := gjson.ParseBytes(stripped)
+	for _, path := range []string{"input.0.namespace", "input.1.namespace", "input.2.namespace"} {
+		if result.Get(path).Exists() {
+			t.Fatalf("direct namespace remains at %s: %s", path, stripped)
+		}
+	}
+	for path, want := range map[string]string{
+		"tools.0.name":                "agents",
+		"input.0.arguments":           `{"namespace":"argument-value"}`,
+		"input.1.output.0.namespace":  "nested-output",
+		"input.2.content.0.namespace": "nested-content",
+		"input.3.tools.0.name":        "agents",
+		"input.0.call_id":             "call_1",
+		"input.1.call_id":             "call_1",
+	} {
+		if got := result.Get(path).String(); got != want {
+			t.Errorf("%s = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestStripCodexInputNamespacesNoMatchAndInvalidJSON(t *testing.T) {
+	body := []byte("{ \n  \"input\": [{\"type\":\"message\",\"content\":\"keep\"}]\n}\n")
+	stripped, count, err := stripCodexInputNamespaces(body)
+	if err != nil || count != 0 || !bytes.Equal(stripped, body) {
+		t.Fatalf("no-match strip = (%q, %d, %v)", stripped, count, err)
+	}
+
+	invalid := []byte(`{"input":[`)
+	stripped, count, err = stripCodexInputNamespaces(invalid)
+	if err == nil || count != 0 || !bytes.Equal(stripped, invalid) {
+		t.Fatalf("invalid strip = (%q, %d, %v)", stripped, count, err)
+	}
+}
+
 func TestSanitizeCodexProviderBoundHistory(t *testing.T) {
 	body := []byte(`{
   "previous_response_id":"resp_foreign",

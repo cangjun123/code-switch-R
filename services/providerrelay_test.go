@@ -234,6 +234,60 @@ func TestWriteStreamingResponseFlushesFirstLineImmediately(t *testing.T) {
 	}
 }
 
+func TestCodexErrorResponseNeedsInputNamespaceFallback(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{
+			name:   "ETO bracket path",
+			status: http.StatusBadRequest,
+			body:   `[ObjectParam] [input[24].namespace] [unknown_parameter] Unknown parameter: 'input[24].namespace'.`,
+			want:   true,
+		},
+		{
+			name:   "JSON dot path",
+			status: http.StatusUnprocessableEntity,
+			body:   `{"error":{"code":"unknown_parameter","param":"input.24.namespace"}}`,
+			want:   true,
+		},
+		{
+			name:   "different field",
+			status: http.StatusBadRequest,
+			body:   `{"error":{"code":"unknown_parameter","param":"input[24].name"}}`,
+		},
+		{
+			name:   "namespace path without unknown marker",
+			status: http.StatusBadRequest,
+			body:   `invalid input[24].namespace`,
+		},
+		{
+			name:   "server error is not a schema rejection",
+			status: http.StatusInternalServerError,
+			body:   `unknown_parameter input[24].namespace`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resp := xrequest.NewResponse(&http.Response{
+				StatusCode: test.status,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(test.body)),
+			})
+			got, err := codexResponseNeedsInputNamespaceFallback(resp, true)
+			if err != nil {
+				t.Fatalf("codexResponseNeedsInputNamespaceFallback() error = %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("codexResponseNeedsInputNamespaceFallback() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 // ==================== 端到端场景测试 ====================
 
 func TestModelMappingEndToEnd(t *testing.T) {

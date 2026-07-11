@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -49,6 +50,8 @@ type ProviderRelayService struct {
 	codexHistorySanitize map[string]codexHistorySanitizeCacheEntry
 	codexSessionMu       sync.Mutex
 	codexSessionRoutes   map[codexSessionKey]codexSessionRouteState
+	codexCompatibilityMu sync.Mutex
+	codexInputNamespace  map[codexProviderCompatibilityKey]time.Time
 }
 
 // errClientAbort 表示客户端中断连接，不应计入 provider 失败次数
@@ -152,6 +155,7 @@ func NewProviderRelayService(providerService *ProviderService, geminiService *Ge
 		rrLastStart:          make(map[string]string),
 		codexHistorySanitize: make(map[string]codexHistorySanitizeCacheEntry),
 		codexSessionRoutes:   make(map[codexSessionKey]codexSessionRouteState),
+		codexInputNamespace:  make(map[codexProviderCompatibilityKey]time.Time),
 	}
 }
 
@@ -1442,6 +1446,67 @@ func (prs *ProviderRelayService) postCodexResponsesRequestWithHistoryFallback(
 	providerName string,
 	attempt *codexHistoryAttempt,
 ) (*xrequest.Response, error) {
+	compatibilityKey := newCodexProviderCompatibilityKey(providerName, targetURL)
+	strippedBody, removableNamespaces, stripErr := stripCodexInputNamespaces(body)
+	canStripInputNamespaces := stripErr == nil && removableNamespaces > 0
+	namespaceStripped := false
+	if canStripInputNamespaces && prs.codexProviderRejectsInputNamespace(compatibilityKey) {
+		body = strippedBody
+		headers = cloneMap(headers)
+		deleteHeaderCaseInsensitive(headers, "content-length")
+		namespaceStripped = true
+		logCodexInputNamespaceSanitize(providerName, "cached", removableNamespaces)
+	}
+
+	resp, err := prs.postCodexResponsesRequestWithProviderHistoryFallback(
+		ctx,
+		targetURL,
+		query,
+		headers,
+		body,
+		isStream,
+		providerName,
+		attempt,
+	)
+	if err != nil || resp == nil || namespaceStripped || !canStripInputNamespaces {
+		return resp, err
+	}
+	retryNamespace, inspectErr := codexResponseNeedsInputNamespaceFallback(resp, isStream)
+	if inspectErr != nil {
+		return resp, inspectErr
+	}
+	if !retryNamespace {
+		return resp, nil
+	}
+	if resp.RawResponse != nil && resp.RawResponse.Body != nil {
+		_ = resp.RawResponse.Body.Close()
+	}
+	prs.rememberCodexProviderRejectsInputNamespace(compatibilityKey)
+	retryHeaders := cloneMap(headers)
+	deleteHeaderCaseInsensitive(retryHeaders, "content-length")
+	logCodexInputNamespaceSanitize(providerName, "retry", removableNamespaces)
+	return prs.postCodexResponsesRequestWithProviderHistoryFallback(
+		ctx,
+		targetURL,
+		query,
+		retryHeaders,
+		strippedBody,
+		isStream,
+		providerName,
+		attempt,
+	)
+}
+
+func (prs *ProviderRelayService) postCodexResponsesRequestWithProviderHistoryFallback(
+	ctx context.Context,
+	targetURL string,
+	query map[string]string,
+	headers map[string]string,
+	body []byte,
+	isStream bool,
+	providerName string,
+	attempt *codexHistoryAttempt,
+) (*xrequest.Response, error) {
 	if attempt != nil && (attempt.preSanitized || !attempt.inspectEmpty) {
 		return prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body)
 	}
@@ -1509,6 +1574,104 @@ func (prs *ProviderRelayService) postCodexResponsesRequestWithHistoryFallback(
 	sanitizedHeaders, removedHeaders := sanitizeCodexProviderBoundHeaders(headers)
 	logCodexHistorySanitize(providerName, "retry", reason, stats, removedHeaders)
 	return prs.postCodexResponsesRequest(ctx, targetURL, query, sanitizedHeaders, sanitizedBody)
+}
+
+var codexInputNamespaceErrorPathPattern = regexp.MustCompile(`(?i)input(?:\[[0-9]+\]|\.[0-9]+)\.namespace`)
+
+func codexResponseNeedsInputNamespaceFallback(resp *xrequest.Response, requestedStream bool) (bool, error) {
+	if resp == nil || resp.RawResponse == nil {
+		return false, nil
+	}
+	status := resp.StatusCode()
+	if status >= http.StatusBadRequest && status < http.StatusInternalServerError {
+		body, err := readCodexResponseBodyForInspection(resp)
+		if err != nil {
+			return false, err
+		}
+		return codexPayloadContainsUnknownInputNamespaceError(body), nil
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return false, nil
+	}
+	if detectAndNormalizeJSONResponse(resp, requestedStream) {
+		return codexPayloadContainsUnknownInputNamespaceError(resp.Bytes()), nil
+	}
+	if !isStreamResponse(resp, requestedStream) || resp.RawResponse.Body == nil {
+		return false, nil
+	}
+	return inspectCodexSSEInputNamespaceResponse(resp)
+}
+
+func codexPayloadContainsUnknownInputNamespaceError(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	unknownParameter := strings.Contains(lower, "unknown_parameter") ||
+		strings.Contains(lower, "unknown parameter") ||
+		strings.Contains(lower, "unrecognized parameter")
+	return unknownParameter && codexInputNamespaceErrorPathPattern.Match(body)
+}
+
+func readCodexResponseBodyForInspection(resp *xrequest.Response) ([]byte, error) {
+	if resp == nil || resp.RawResponse == nil || resp.RawResponse.Body == nil {
+		return nil, nil
+	}
+	body, err := io.ReadAll(resp.RawResponse.Body)
+	if err != nil {
+		return nil, fmt.Errorf("inspect codex input namespace response: %w", err)
+	}
+	_ = resp.RawResponse.Body.Close()
+	resp.RawResponse.Body = io.NopCloser(bytes.NewReader(body))
+	return body, nil
+}
+
+func inspectCodexSSEInputNamespaceResponse(resp *xrequest.Response) (bool, error) {
+	originalBody := resp.RawResponse.Body
+	reader := bufio.NewReader(originalBody)
+	var prefix bytes.Buffer
+	replay := func() {
+		resp.RawResponse.Body = &replayResponseBody{
+			Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), reader),
+			Closer: originalBody,
+		}
+	}
+
+	for prefix.Len() <= codexHistoryPreflightMaxBytes {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			_, _ = prefix.Write(line)
+			trimmed := bytes.TrimSpace(line)
+			if bytes.HasPrefix(trimmed, []byte("data:")) {
+				payload := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
+				if codexPayloadContainsUnknownInputNamespaceError(payload) {
+					return true, nil
+				}
+				replay()
+				return false, nil
+			}
+		}
+		if prefix.Len() > codexHistoryPreflightMaxBytes {
+			replay()
+			return false, nil
+		}
+		if readErr != nil {
+			replay()
+			if readErr == io.EOF {
+				return false, nil
+			}
+			return false, fmt.Errorf("inspect codex input namespace stream: %w", readErr)
+		}
+	}
+
+	replay()
+	return false, nil
+}
+
+func logCodexInputNamespaceSanitize(providerName, action string, removed int) {
+	fmt.Printf(
+		"[Codex Input Namespace] Provider=%s action=%s removed=%d\n",
+		providerName,
+		action,
+		removed,
+	)
 }
 
 func codexErrorResponseNeedsProviderHistoryFallback(resp *xrequest.Response) (bool, string) {

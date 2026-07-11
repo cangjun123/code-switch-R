@@ -157,6 +157,48 @@ func TestDegradationNamespaceHandlerStreamingRewriteAndRetry(t *testing.T) {
 	}
 }
 
+func TestDegradationNamespaceHandlerRetriesUnknownInputNamespace(t *testing.T) {
+	var capture degradationNamespaceRequestCapture
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capture.add(body)
+		if directCodexInputNamespaceCount(body) > 0 {
+			writeCodexInputNamespaceStreamError(w)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write(degradationNamespaceSSE(800))
+	}))
+	defer upstream.Close()
+
+	providers, relay := newTestRelayService(t)
+	enableDegradationForNamespaceHandlerTest(t, relay)
+	saveDegradationNamespaceProvider(t, providers, "degradation-input-namespace", upstream.URL)
+
+	recorder := performDegradationNamespaceHandlerRequest(
+		t,
+		relay,
+		codexInputNamespaceRequest("degradation-input-namespace", false),
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	bodies := capture.snapshot()
+	if len(bodies) != 2 {
+		t.Fatalf("upstream calls=%d, want 2", len(bodies))
+	}
+	if directCodexInputNamespaceCount(bodies[0]) == 0 || directCodexInputNamespaceCount(bodies[1]) != 0 {
+		t.Fatalf("input namespace fallback bodies are incorrect: first=%s second=%s", bodies[0], bodies[1])
+	}
+	response := recorder.Body.String()
+	if strings.Contains(response, "unknown_parameter") || !strings.Contains(response, `"reasoning_tokens":800`) {
+		t.Fatalf("client received compatibility error or lost final response: %s", response)
+	}
+	if strings.Contains(response, `"namespace":"agents"`) || !strings.Contains(response, `"namespace":"collaboration"`) {
+		t.Fatalf("client namespace response rewrite failed: %s", response)
+	}
+}
+
 func TestDegradationNamespaceHandlerStreamingMislabeledAsJSON(t *testing.T) {
 	var capture degradationNamespaceRequestCapture
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
