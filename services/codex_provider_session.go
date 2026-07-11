@@ -14,7 +14,11 @@ import (
 
 const codexSessionRouteTTL = 24 * time.Hour
 
+const codexProviderCompatibilityTTL = 24 * time.Hour
+
 type codexSessionKey [sha256.Size]byte
+
+type codexProviderCompatibilityKey [sha256.Size]byte
 
 type codexSessionRouteState struct {
 	providerName   string
@@ -184,6 +188,48 @@ func cloneStringSet(source map[string]struct{}) map[string]struct{} {
 		result[value] = struct{}{}
 	}
 	return result
+}
+
+func newCodexProviderCompatibilityKey(providerName, targetURL string) codexProviderCompatibilityKey {
+	return sha256.Sum256([]byte(providerName + "\x00" + targetURL))
+}
+
+func (prs *ProviderRelayService) codexProviderRejectsInputNamespace(key codexProviderCompatibilityKey) bool {
+	prs.codexCompatibilityMu.Lock()
+	defer prs.codexCompatibilityMu.Unlock()
+	markedAt, ok := prs.codexInputNamespace[key]
+	if !ok {
+		return false
+	}
+	if time.Since(markedAt) >= codexProviderCompatibilityTTL {
+		delete(prs.codexInputNamespace, key)
+		return false
+	}
+	prs.codexInputNamespace[key] = time.Now()
+	return true
+}
+
+func (prs *ProviderRelayService) rememberCodexProviderRejectsInputNamespace(key codexProviderCompatibilityKey) {
+	prs.codexCompatibilityMu.Lock()
+	defer prs.codexCompatibilityMu.Unlock()
+	if prs.codexInputNamespace == nil {
+		prs.codexInputNamespace = make(map[codexProviderCompatibilityKey]time.Time)
+	}
+	now := time.Now()
+	if len(prs.codexInputNamespace) >= codexHistorySanitizeCacheMax {
+		for cachedKey, markedAt := range prs.codexInputNamespace {
+			if now.Sub(markedAt) >= codexProviderCompatibilityTTL {
+				delete(prs.codexInputNamespace, cachedKey)
+			}
+		}
+		if len(prs.codexInputNamespace) >= codexHistorySanitizeCacheMax {
+			for cachedKey := range prs.codexInputNamespace {
+				delete(prs.codexInputNamespace, cachedKey)
+				break
+			}
+		}
+	}
+	prs.codexInputNamespace[key] = now
 }
 
 func (prs *ProviderRelayService) preferCodexStickyProvider(

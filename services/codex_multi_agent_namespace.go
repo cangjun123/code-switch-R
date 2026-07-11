@@ -267,6 +267,43 @@ func RewriteCodexMultiAgentRequest(body []byte) ([]byte, int, error) {
 	return rewritten, modified, nil
 }
 
+// stripCodexInputNamespaces removes only direct namespace fields from replayed
+// input items. Namespace tool definitions and nested tool data stay untouched.
+func stripCodexInputNamespaces(body []byte) ([]byte, int, error) {
+	root, err := decodeJSONPreservingNumbers(body)
+	if err != nil {
+		return body, 0, err
+	}
+	object, ok := root.(map[string]any)
+	if !ok {
+		return body, 0, nil
+	}
+	input, ok := object["input"].([]any)
+	if !ok {
+		return body, 0, nil
+	}
+
+	removed := 0
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, exists := item["namespace"]; exists {
+			delete(item, "namespace")
+			removed++
+		}
+	}
+	if removed == 0 {
+		return body, 0, nil
+	}
+	rewritten, err := json.Marshal(root)
+	if err != nil {
+		return body, 0, fmt.Errorf("marshal codex input namespace fallback: %w", err)
+	}
+	return rewritten, removed, nil
+}
+
 // RewriteCodexMultiAgentResponse maps upstream tool calls back to the
 // namespace understood by the client.
 func RewriteCodexMultiAgentResponse(body []byte) ([]byte, int, error) {
