@@ -739,10 +739,9 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 	return false, fmt.Errorf("upstream status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
-const (
-	asyncImagePollInterval = 3 * time.Second  // 异步生图任务轮询间隔
-	asyncImagePollTimeout  = 30 * time.Minute // 异步生图任务最长等待时间（官方示例约 5 分钟，复杂任务/图编辑可能更久，留足余量）
-)
+const asyncImagePollTimeout = 30 * time.Minute // 异步生图任务最长等待时间（官方示例约 5 分钟，复杂任务/图编辑可能更久，留足余量）
+
+var asyncImagePollInterval = 3 * time.Second // 异步生图任务轮询间隔
 
 // handleAsyncImageResponse 处理异步生图上游的创建任务响应：
 // 读取返回的 {id}，轮询 /v1/tasks/{id} 直到完成，再把结果转成 OpenAI 图片格式返回给客户端。
@@ -938,7 +937,8 @@ func buildOpenAIImageResponseFromTask(taskBody []byte) ([]byte, error) {
 	})
 }
 
-func isOpenAIImageStreamingResponse(resp *http.Response) bool {	if resp == nil {
+func isOpenAIImageStreamingResponse(resp *http.Response) bool {
+	if resp == nil {
 		return false
 	}
 	return strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")

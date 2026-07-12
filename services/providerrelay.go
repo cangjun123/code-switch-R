@@ -64,9 +64,13 @@ const (
 	codexDegradationMaxBufferBytes = 16 * 1024 * 1024
 	codexDegradationResendInterval = 300 * time.Millisecond
 	codexHistoryPreflightMaxBytes  = 1024 * 1024
+	codexErrorBodyMaxBytes         = 64 * 1024
+	codexPreflightReadChunkBytes   = 16 * 1024
 	codexHistorySanitizeCacheMax   = 4096
 	codexHistorySanitizeCacheTTL   = 24 * time.Hour
 )
+
+var codexResponsePreflightTimeout = 2 * time.Second
 
 func isClientAbortError(ctx context.Context, err error) bool {
 	if err == nil {
@@ -1316,7 +1320,7 @@ func (prs *ProviderRelayService) forwardRequest(
 			_, copyErr := writeStreamingResponse(c.Writer, resp, requestLog, start, protocolConvertHook(sseConverter, kind, requestLog))
 			return copyErr
 		}
-		if requestNamespaceRewritten && detectAndNormalizeJSONResponse(resp, isStream) {
+		if requestNamespaceRewritten && !codexResponsePreflightFailedOpen(resp) && detectAndNormalizeJSONResponse(resp, isStream) {
 			responseObservation.observePayload(resp.Bytes())
 			return writeCodexNamespaceJSONResponse(c.Writer, resp, requestLog, provider.Name)
 		}
@@ -1405,6 +1409,7 @@ func (prs *ProviderRelayService) postCodexResponsesRequest(
 	query map[string]string,
 	headers map[string]string,
 	body []byte,
+	providerName string,
 ) (*xrequest.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -1419,16 +1424,185 @@ func (prs *ProviderRelayService) postCodexResponsesRequest(
 		req.Header.Set(key, value)
 	}
 
+	startedAt := time.Now()
 	rawResponse, err := prs.httpClient.Do(req)
+	status := 0
+	if rawResponse != nil {
+		status = rawResponse.StatusCode
+	}
+	fmt.Printf(
+		"[Codex Relay] provider=%s upstream_headers_ms=%.1f status=%d error=%t\n",
+		providerName,
+		float64(time.Since(startedAt).Microseconds())/1000,
+		status,
+		err != nil,
+	)
 	if rawResponse == nil {
 		return nil, err
 	}
-	return xrequest.NewResponse(rawResponse), err
+	resp := xrequest.NewResponse(rawResponse)
+	if rawResponse.StatusCode >= http.StatusBadRequest {
+		if inspectErr := bufferCodexErrorResponse(ctx, resp, providerName); inspectErr != nil {
+			return resp, inspectErr
+		}
+	}
+	return resp, err
 }
 
 type replayResponseBody struct {
 	io.Reader
 	io.Closer
+	failOpen bool
+}
+
+func (b *replayResponseBody) codexPreflightFailedOpen() bool {
+	return b != nil && b.failOpen
+}
+
+type codexPreflightChunk struct {
+	data []byte
+	err  error
+}
+
+// codexPreflightStream is the sole reader of the upstream body while a
+// preflight is active. Once inspection finishes, Read continues consuming the
+// same chunk channel so no second goroutine can race the upstream connection.
+type codexPreflightStream struct {
+	source    io.ReadCloser
+	chunks    chan codexPreflightChunk
+	stop      chan struct{}
+	closeOnce sync.Once
+	current   []byte
+	terminal  error
+}
+
+func newCodexPreflightStream(source io.ReadCloser) *codexPreflightStream {
+	stream := &codexPreflightStream{
+		source: source,
+		chunks: make(chan codexPreflightChunk, 4),
+		stop:   make(chan struct{}),
+	}
+	go stream.pump()
+	return stream
+}
+
+func (s *codexPreflightStream) pump() {
+	defer close(s.chunks)
+	buf := make([]byte, codexPreflightReadChunkBytes)
+	for {
+		n, err := s.source.Read(buf)
+		if n > 0 {
+			data := append([]byte(nil), buf[:n]...)
+			select {
+			case s.chunks <- codexPreflightChunk{data: data}:
+			case <-s.stop:
+				return
+			}
+		}
+		if err != nil {
+			select {
+			case s.chunks <- codexPreflightChunk{err: err}:
+			case <-s.stop:
+			}
+			return
+		}
+	}
+}
+
+func (s *codexPreflightStream) Read(p []byte) (int, error) {
+	for len(s.current) == 0 {
+		if s.terminal != nil {
+			return 0, s.terminal
+		}
+		chunk, ok := <-s.chunks
+		if !ok {
+			s.terminal = io.EOF
+			continue
+		}
+		if chunk.err != nil {
+			s.terminal = chunk.err
+			continue
+		}
+		s.current = chunk.data
+	}
+
+	n := copy(p, s.current)
+	s.current = s.current[n:]
+	return n, nil
+}
+
+func (s *codexPreflightStream) Close() error {
+	var err error
+	s.closeOnce.Do(func() {
+		close(s.stop)
+		err = s.source.Close()
+	})
+	return err
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
+}
+
+func bufferCodexErrorResponse(ctx context.Context, resp *xrequest.Response, providerName string) error {
+	if resp == nil || resp.RawResponse == nil || resp.RawResponse.Body == nil {
+		return nil
+	}
+
+	startedAt := time.Now()
+	originalBody := resp.RawResponse.Body
+	buffer := &lockedBuffer{}
+	done := make(chan error, 1)
+	go func() {
+		_, copyErr := io.Copy(buffer, io.LimitReader(originalBody, codexErrorBodyMaxBytes+1))
+		done <- copyErr
+	}()
+
+	result := "normal"
+	var readErr error
+	timer := time.NewTimer(codexResponsePreflightTimeout)
+	defer timer.Stop()
+	select {
+	case readErr = <-done:
+	case <-timer.C:
+		result = "timeout_truncated"
+		_ = originalBody.Close()
+	case <-ctx.Done():
+		result = "client_canceled"
+		_ = originalBody.Close()
+		readErr = ctx.Err()
+	}
+
+	body := buffer.Bytes()
+	if len(body) > codexErrorBodyMaxBytes {
+		body = body[:codexErrorBodyMaxBytes]
+		result = "size_truncated"
+		_ = originalBody.Close()
+	} else if result == "normal" {
+		_ = originalBody.Close()
+	}
+	resp.RawResponse.Body = io.NopCloser(bytes.NewReader(body))
+	resp.RawResponse.ContentLength = int64(len(body))
+	resp.RawResponse.Header.Del("Content-Length")
+
+	logCodexPreflight(providerName, "error_body", result, startedAt, time.Time{}, len(body))
+	if readErr != nil && result == "normal" {
+		return fmt.Errorf("read codex error response: %w", readErr)
+	}
+	return readErr
 }
 
 type codexHistorySanitizeCacheEntry struct {
@@ -1471,7 +1645,7 @@ func (prs *ProviderRelayService) postCodexResponsesRequestWithHistoryFallback(
 	if err != nil || resp == nil || namespaceStripped || !canStripInputNamespaces {
 		return resp, err
 	}
-	retryNamespace, inspectErr := codexResponseNeedsInputNamespaceFallback(resp, isStream)
+	retryNamespace, inspectErr := codexResponseNeedsInputNamespaceFallback(ctx, resp, isStream, providerName)
 	if inspectErr != nil {
 		return resp, inspectErr
 	}
@@ -1508,20 +1682,20 @@ func (prs *ProviderRelayService) postCodexResponsesRequestWithProviderHistoryFal
 	attempt *codexHistoryAttempt,
 ) (*xrequest.Response, error) {
 	if attempt != nil && (attempt.preSanitized || !attempt.inspectEmpty) {
-		return prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body)
+		return prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body, providerName)
 	}
 	currentPlan, sanitizeErr := buildCodexProviderHistorySanitizePlan(body)
 	if sanitizeErr != nil {
 		fmt.Printf("[WARN] Provider %s Codex 跨供应商历史检查失败，继续使用原请求: %v\n", providerName, sanitizeErr)
-		return prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body)
+		return prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body, providerName)
 	}
 	sanitizedBody, stats, sanitizeErr := sanitizeCodexProviderBoundHistoryWithPlan(body, currentPlan)
 	if sanitizeErr != nil {
 		fmt.Printf("[WARN] Provider %s Codex 跨供应商历史清理失败，继续使用原请求: %v\n", providerName, sanitizeErr)
-		return prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body)
+		return prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body, providerName)
 	}
 	if stats.Total() == 0 {
-		return prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body)
+		return prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body, providerName)
 	}
 
 	cacheKey := codexHistorySanitizeCacheKey(providerName, body)
@@ -1533,12 +1707,12 @@ func (prs *ProviderRelayService) postCodexResponsesRequestWithProviderHistoryFal
 			} else if cachedStats.Total() > 0 {
 				sanitizedHeaders, removedHeaders := sanitizeCodexProviderBoundHeaders(headers)
 				logCodexHistorySanitize(providerName, "cached", "", cachedStats, removedHeaders)
-				return prs.postCodexResponsesRequest(ctx, targetURL, query, sanitizedHeaders, cachedBody)
+				return prs.postCodexResponsesRequest(ctx, targetURL, query, sanitizedHeaders, cachedBody, providerName)
 			}
 		}
 	}
 
-	resp, err := prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body)
+	resp, err := prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body, providerName)
 	if err != nil || resp == nil {
 		return resp, err
 	}
@@ -1547,7 +1721,10 @@ func (prs *ProviderRelayService) postCodexResponsesRequestWithProviderHistoryFal
 		if attempt != nil && attempt.preSanitized {
 			return resp, nil
 		}
-		retry, reason := codexErrorResponseNeedsProviderHistoryFallback(resp)
+		retry, reason, inspectErr := codexErrorResponseNeedsProviderHistoryFallback(resp)
+		if inspectErr != nil {
+			return resp, inspectErr
+		}
 		if !retry {
 			return resp, nil
 		}
@@ -1557,9 +1734,9 @@ func (prs *ProviderRelayService) postCodexResponsesRequestWithProviderHistoryFal
 		prs.rememberCodexHistorySanitize(cacheKey, currentPlan)
 		sanitizedHeaders, removedHeaders := sanitizeCodexProviderBoundHeaders(headers)
 		logCodexHistorySanitize(providerName, "retry", reason, stats, removedHeaders)
-		return prs.postCodexResponsesRequest(ctx, targetURL, query, sanitizedHeaders, sanitizedBody)
+		return prs.postCodexResponsesRequest(ctx, targetURL, query, sanitizedHeaders, sanitizedBody, providerName)
 	}
-	retry, reason, inspectErr := codexResponseNeedsProviderHistoryFallback(resp, isStream)
+	retry, reason, inspectErr := codexResponseNeedsProviderHistoryFallback(ctx, resp, isStream, providerName)
 	if inspectErr != nil {
 		return resp, inspectErr
 	}
@@ -1573,13 +1750,16 @@ func (prs *ProviderRelayService) postCodexResponsesRequestWithProviderHistoryFal
 	prs.rememberCodexHistorySanitize(cacheKey, currentPlan)
 	sanitizedHeaders, removedHeaders := sanitizeCodexProviderBoundHeaders(headers)
 	logCodexHistorySanitize(providerName, "retry", reason, stats, removedHeaders)
-	return prs.postCodexResponsesRequest(ctx, targetURL, query, sanitizedHeaders, sanitizedBody)
+	return prs.postCodexResponsesRequest(ctx, targetURL, query, sanitizedHeaders, sanitizedBody, providerName)
 }
 
 var codexInputNamespaceErrorPathPattern = regexp.MustCompile(`(?i)input(?:\[[0-9]+\]|\.[0-9]+)\.namespace`)
 
-func codexResponseNeedsInputNamespaceFallback(resp *xrequest.Response, requestedStream bool) (bool, error) {
+func codexResponseNeedsInputNamespaceFallback(ctx context.Context, resp *xrequest.Response, requestedStream bool, providerName string) (bool, error) {
 	if resp == nil || resp.RawResponse == nil {
+		return false, nil
+	}
+	if codexResponsePreflightFailedOpen(resp) {
 		return false, nil
 	}
 	status := resp.StatusCode()
@@ -1593,13 +1773,22 @@ func codexResponseNeedsInputNamespaceFallback(resp *xrequest.Response, requested
 	if status < http.StatusOK || status >= http.StatusMultipleChoices {
 		return false, nil
 	}
-	if detectAndNormalizeJSONResponse(resp, requestedStream) {
-		return codexPayloadContainsUnknownInputNamespaceError(resp.Bytes()), nil
-	}
-	if !isStreamResponse(resp, requestedStream) || resp.RawResponse.Body == nil {
-		return false, nil
-	}
-	return inspectCodexSSEInputNamespaceResponse(resp)
+	retry, _, err := inspectCodexResponsePreflight(
+		ctx,
+		resp,
+		requestedStream,
+		providerName,
+		"input_namespace",
+		func(payload []byte) (bool, bool, string) {
+			return true, codexPayloadContainsUnknownInputNamespaceError(payload), "unknown_input_namespace"
+		},
+		func(body []byte) (bool, string, error) {
+			return codexPayloadContainsUnknownInputNamespaceError(body), "unknown_input_namespace", nil
+		},
+		false,
+		"",
+	)
+	return retry, err
 }
 
 func codexPayloadContainsUnknownInputNamespaceError(body []byte) bool {
@@ -1614,7 +1803,7 @@ func readCodexResponseBodyForInspection(resp *xrequest.Response) ([]byte, error)
 	if resp == nil || resp.RawResponse == nil || resp.RawResponse.Body == nil {
 		return nil, nil
 	}
-	body, err := io.ReadAll(resp.RawResponse.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.RawResponse.Body, codexErrorBodyMaxBytes))
 	if err != nil {
 		return nil, fmt.Errorf("inspect codex input namespace response: %w", err)
 	}
@@ -1623,46 +1812,251 @@ func readCodexResponseBodyForInspection(resp *xrequest.Response) ([]byte, error)
 	return body, nil
 }
 
-func inspectCodexSSEInputNamespaceResponse(resp *xrequest.Response) (bool, error) {
-	originalBody := resp.RawResponse.Body
-	reader := bufio.NewReader(originalBody)
-	var prefix bytes.Buffer
-	replay := func() {
-		resp.RawResponse.Body = &replayResponseBody{
-			Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), reader),
-			Closer: originalBody,
-		}
+type codexPreflightMode int
+
+const (
+	codexPreflightModeUnknown codexPreflightMode = iota
+	codexPreflightModeJSON
+	codexPreflightModeSSE
+)
+
+type codexSSEPreflightDecision func(payload []byte) (done bool, retry bool, reason string)
+type codexJSONPreflightDecision func(body []byte) (retry bool, reason string, err error)
+
+func inspectCodexResponsePreflight(
+	ctx context.Context,
+	resp *xrequest.Response,
+	requestedStream bool,
+	providerName string,
+	stage string,
+	inspectSSE codexSSEPreflightDecision,
+	inspectJSON codexJSONPreflightDecision,
+	eofSSERetry bool,
+	eofSSEReason string,
+) (bool, string, error) {
+	if resp == nil || resp.RawResponse == nil || resp.RawResponse.Body == nil {
+		return false, "", nil
+	}
+	if codexResponsePreflightFailedOpen(resp) {
+		return false, "", nil
 	}
 
-	for prefix.Len() <= codexHistoryPreflightMaxBytes {
-		line, readErr := reader.ReadBytes('\n')
-		if len(line) > 0 {
-			_, _ = prefix.Write(line)
-			trimmed := bytes.TrimSpace(line)
-			if bytes.HasPrefix(trimmed, []byte("data:")) {
-				payload := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
-				if codexPayloadContainsUnknownInputNamespaceError(payload) {
-					return true, nil
+	startedAt := time.Now()
+	stream := newCodexPreflightStream(resp.RawResponse.Body)
+	prefix := make([]byte, 0, 32*1024)
+	lineBuffer := make([]byte, 0, 8*1024)
+	firstEventAt := time.Time{}
+	mode := codexPreflightModeUnknown
+	defaultMode := codexPreflightModeUnknown
+	contentType := strings.ToLower(resp.RawResponse.Header.Get("Content-Type"))
+	if strings.Contains(contentType, "text/event-stream") {
+		defaultMode = codexPreflightModeSSE
+	} else if strings.Contains(contentType, "application/json") || strings.Contains(contentType, "+json") {
+		defaultMode = codexPreflightModeJSON
+	} else if requestedStream {
+		defaultMode = codexPreflightModeSSE
+	}
+
+	finishPassthrough := func(result string, failOpen bool) (bool, string, error) {
+		attachCodexPreflightReplay(resp, prefix, stream, failOpen)
+		logCodexPreflight(providerName, stage, result, startedAt, firstEventAt, len(prefix))
+		return false, "", nil
+	}
+	finishDecision := func(retry bool, reason string) (bool, string, error) {
+		if retry {
+			_ = stream.Close()
+			logCodexPreflight(providerName, stage, "matched", startedAt, firstEventAt, len(prefix))
+			return true, reason, nil
+		}
+		return finishPassthrough("normal", false)
+	}
+	inspectSSELine := func(line []byte) (bool, bool, string) {
+		payload, isData := codexSSEDataPayload(line)
+		if !isData {
+			return false, false, ""
+		}
+		if firstEventAt.IsZero() {
+			firstEventAt = time.Now()
+		}
+		if inspectSSE == nil {
+			return false, false, ""
+		}
+		return inspectSSE(payload)
+	}
+
+	timer := time.NewTimer(codexResponsePreflightTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			_ = stream.Close()
+			replaceCodexResponseBody(resp, prefix)
+			logCodexPreflight(providerName, stage, "client_canceled", startedAt, firstEventAt, len(prefix))
+			return false, "", ctx.Err()
+		case <-timer.C:
+			return finishPassthrough("timeout_passthrough", true)
+		case chunk, ok := <-stream.chunks:
+			if !ok {
+				chunk.err = io.EOF
+			}
+			if len(chunk.data) > 0 {
+				prefix = append(prefix, chunk.data...)
+				if mode == codexPreflightModeUnknown {
+					mode = sniffCodexPreflightMode(prefix, defaultMode)
+					normalizeCodexPreflightContentType(resp, mode)
 				}
-				replay()
-				return false, nil
+				if mode == codexPreflightModeSSE {
+					lineBuffer = append(lineBuffer, chunk.data...)
+					for {
+						lineEnd := bytes.IndexByte(lineBuffer, '\n')
+						if lineEnd < 0 {
+							break
+						}
+						line := lineBuffer[:lineEnd+1]
+						lineBuffer = lineBuffer[lineEnd+1:]
+						done, retry, reason := inspectSSELine(line)
+						if done {
+							return finishDecision(retry, reason)
+						}
+					}
+				}
+				if len(prefix) >= codexHistoryPreflightMaxBytes {
+					return finishPassthrough("size_passthrough", true)
+				}
 			}
-		}
-		if prefix.Len() > codexHistoryPreflightMaxBytes {
-			replay()
-			return false, nil
-		}
-		if readErr != nil {
-			replay()
-			if readErr == io.EOF {
-				return false, nil
+			if chunk.err == nil {
+				continue
 			}
-			return false, fmt.Errorf("inspect codex input namespace stream: %w", readErr)
+			if !errors.Is(chunk.err, io.EOF) {
+				_ = stream.Close()
+				replaceCodexResponseBody(resp, prefix)
+				logCodexPreflight(providerName, stage, "read_error", startedAt, firstEventAt, len(prefix))
+				return false, "", fmt.Errorf("inspect codex response preflight: %w", chunk.err)
+			}
+			if mode == codexPreflightModeUnknown {
+				mode = defaultMode
+			}
+			if mode == codexPreflightModeSSE && len(lineBuffer) > 0 {
+				done, retry, reason := inspectSSELine(lineBuffer)
+				if done {
+					return finishDecision(retry, reason)
+				}
+			}
+
+			switch mode {
+			case codexPreflightModeJSON:
+				if inspectJSON == nil {
+					return finishDecision(false, "")
+				}
+				retry, reason, inspectErr := inspectJSON(prefix)
+				if inspectErr != nil {
+					_ = stream.Close()
+					replaceCodexResponseBody(resp, prefix)
+					logCodexPreflight(providerName, stage, "inspect_error", startedAt, firstEventAt, len(prefix))
+					return false, "", inspectErr
+				}
+				return finishDecision(retry, reason)
+			case codexPreflightModeSSE:
+				return finishDecision(eofSSERetry, eofSSEReason)
+			default:
+				return finishDecision(false, "")
+			}
 		}
 	}
+}
 
-	replay()
-	return false, nil
+func sniffCodexPreflightMode(prefix []byte, fallback codexPreflightMode) codexPreflightMode {
+	for _, value := range prefix {
+		if isJSONWhitespace(value) {
+			continue
+		}
+		switch value {
+		case '{', '[':
+			return codexPreflightModeJSON
+		case ':', 'd', 'e', 'i', 'r':
+			return codexPreflightModeSSE
+		default:
+			return fallback
+		}
+	}
+	return codexPreflightModeUnknown
+}
+
+func normalizeCodexPreflightContentType(resp *xrequest.Response, mode codexPreflightMode) {
+	if resp == nil || resp.RawResponse == nil {
+		return
+	}
+	if resp.RawResponse.Header == nil {
+		resp.RawResponse.Header = make(http.Header)
+	}
+	switch mode {
+	case codexPreflightModeJSON:
+		resp.RawResponse.Header.Set("Content-Type", "application/json")
+	case codexPreflightModeSSE:
+		resp.RawResponse.Header.Set("Content-Type", "text/event-stream")
+	}
+}
+
+func codexSSEDataPayload(line []byte) ([]byte, bool) {
+	trimmed := bytes.TrimSpace(line)
+	if !bytes.HasPrefix(trimmed, []byte("data:")) {
+		return nil, false
+	}
+	return bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:"))), true
+}
+
+func attachCodexPreflightReplay(resp *xrequest.Response, prefix []byte, stream *codexPreflightStream, failOpen bool) {
+	if resp == nil || resp.RawResponse == nil {
+		_ = stream.Close()
+		return
+	}
+	resp.RawResponse.Body = &replayResponseBody{
+		Reader:   io.MultiReader(bytes.NewReader(append([]byte(nil), prefix...)), stream),
+		Closer:   stream,
+		failOpen: failOpen,
+	}
+}
+
+func replaceCodexResponseBody(resp *xrequest.Response, body []byte) {
+	if resp == nil || resp.RawResponse == nil {
+		return
+	}
+	resp.RawResponse.Body = io.NopCloser(bytes.NewReader(append([]byte(nil), body...)))
+	resp.RawResponse.ContentLength = int64(len(body))
+	resp.RawResponse.Header.Del("Content-Length")
+}
+
+func codexResponsePreflightFailedOpen(resp *xrequest.Response) bool {
+	if resp == nil || resp.RawResponse == nil || resp.RawResponse.Body == nil {
+		return false
+	}
+	return codexBodyPreflightFailedOpen(resp.RawResponse.Body)
+}
+
+func codexBodyPreflightFailedOpen(body io.Closer) bool {
+	if marker, ok := body.(interface{ codexPreflightFailedOpen() bool }); ok && marker.codexPreflightFailedOpen() {
+		return true
+	}
+	if buffered, ok := body.(*bufferedResponseBody); ok {
+		return codexBodyPreflightFailedOpen(buffered.Closer)
+	}
+	return false
+}
+
+func logCodexPreflight(providerName, stage, result string, startedAt, firstEventAt time.Time, size int) {
+	firstEventMs := float64(-1)
+	if !firstEventAt.IsZero() {
+		firstEventMs = float64(firstEventAt.Sub(startedAt).Microseconds()) / 1000
+	}
+	fmt.Printf(
+		"[Codex Preflight] provider=%s stage=%s preflight_ms=%.1f first_event_ms=%.1f result=%s bytes=%d\n",
+		providerName,
+		stage,
+		float64(time.Since(startedAt).Microseconds())/1000,
+		firstEventMs,
+		result,
+		size,
+	)
 }
 
 func logCodexInputNamespaceSanitize(providerName, action string, removed int) {
@@ -1674,15 +2068,18 @@ func logCodexInputNamespaceSanitize(providerName, action string, removed int) {
 	)
 }
 
-func codexErrorResponseNeedsProviderHistoryFallback(resp *xrequest.Response) (bool, string) {
+func codexErrorResponseNeedsProviderHistoryFallback(resp *xrequest.Response) (bool, string, error) {
 	if resp == nil || resp.RawResponse == nil {
-		return false, ""
+		return false, "", nil
 	}
-	body := resp.Bytes()
+	body, err := readCodexResponseBodyForInspection(resp)
+	if err != nil {
+		return false, "", err
+	}
 	if !codexPayloadContainsEncryptedHistoryError(body) {
-		return false, ""
+		return false, "", nil
 	}
-	return true, "encrypted_history_error"
+	return true, "encrypted_history_error", nil
 }
 
 func codexPayloadContainsEncryptedHistoryError(body []byte) bool {
@@ -1774,18 +2171,33 @@ func (prs *ProviderRelayService) rememberCodexHistorySanitize(cacheKey string, p
 	prs.codexHistorySanitize[cacheKey] = codexHistorySanitizeCacheEntry{markedAt: now, plan: plan}
 }
 
-func codexResponseNeedsProviderHistoryFallback(resp *xrequest.Response, requestedStream bool) (bool, string, error) {
+func codexResponseNeedsProviderHistoryFallback(ctx context.Context, resp *xrequest.Response, requestedStream bool, providerName string) (bool, string, error) {
 	if resp == nil || resp.RawResponse == nil {
 		return false, "", nil
 	}
-	if detectAndNormalizeJSONResponse(resp, requestedStream) {
-		body := resp.Bytes()
-		return codexJSONNeedsProviderHistoryFallback(body)
-	}
-	if !isStreamResponse(resp, requestedStream) || resp.RawResponse.Body == nil {
+	if codexResponsePreflightFailedOpen(resp) {
 		return false, "", nil
 	}
-	return inspectCodexSSEProviderHistoryResponse(resp)
+	return inspectCodexResponsePreflight(
+		ctx,
+		resp,
+		requestedStream,
+		providerName,
+		"provider_history",
+		func(payload []byte) (bool, bool, string) {
+			if !gjson.ValidBytes(payload) {
+				return false, false, ""
+			}
+			if codexPayloadHasOutput(payload) {
+				return true, false, ""
+			}
+			terminal, retry, reason := codexPayloadProviderHistoryDecision(payload)
+			return terminal, retry, reason
+		},
+		codexJSONNeedsProviderHistoryFallback,
+		true,
+		"stream_without_output",
+	)
 }
 
 func codexJSONNeedsProviderHistoryFallback(body []byte) (bool, string, error) {
@@ -1800,55 +2212,6 @@ func codexJSONNeedsProviderHistoryFallback(body []byte) (bool, string, error) {
 	if terminal {
 		return retry, reason, nil
 	}
-	return false, "", nil
-}
-
-func inspectCodexSSEProviderHistoryResponse(resp *xrequest.Response) (bool, string, error) {
-	originalBody := resp.RawResponse.Body
-	reader := bufio.NewReader(originalBody)
-	var prefix bytes.Buffer
-	replay := func() {
-		resp.RawResponse.Body = &replayResponseBody{
-			Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), reader),
-			Closer: originalBody,
-		}
-	}
-
-	for prefix.Len() <= codexHistoryPreflightMaxBytes {
-		line, readErr := reader.ReadBytes('\n')
-		if len(line) > 0 {
-			_, _ = prefix.Write(line)
-			trimmed := bytes.TrimSpace(line)
-			if bytes.HasPrefix(trimmed, []byte("data:")) {
-				payload := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
-				if gjson.ValidBytes(payload) {
-					if codexPayloadHasOutput(payload) {
-						replay()
-						return false, "", nil
-					}
-					if terminal, retry, reason := codexPayloadProviderHistoryDecision(payload); terminal {
-						if !retry {
-							replay()
-						}
-						return retry, reason, nil
-					}
-				}
-			}
-		}
-		if prefix.Len() > codexHistoryPreflightMaxBytes {
-			replay()
-			return false, "", nil
-		}
-		if readErr != nil {
-			if readErr == io.EOF {
-				return true, "stream_without_output", nil
-			}
-			replay()
-			return false, "", fmt.Errorf("inspect codex provider history response: %w", readErr)
-		}
-	}
-
-	replay()
 	return false, "", nil
 }
 
@@ -3897,7 +4260,7 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 			captureErr     error
 		)
 		streamResponse := isStreamResponse(resp, isStream)
-		if shouldRewriteNamespaceResponse && detectAndNormalizeJSONResponse(resp, isStream) {
+		if shouldRewriteNamespaceResponse && !codexResponsePreflightFailedOpen(resp) && detectAndNormalizeJSONResponse(resp, isStream) {
 			streamResponse = false
 		}
 		responseModified := 0
