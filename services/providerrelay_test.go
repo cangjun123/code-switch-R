@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -277,7 +278,7 @@ func TestCodexErrorResponseNeedsInputNamespaceFallback(t *testing.T) {
 				Header:     make(http.Header),
 				Body:       io.NopCloser(strings.NewReader(test.body)),
 			})
-			got, err := codexResponseNeedsInputNamespaceFallback(resp, true)
+			got, err := codexResponseNeedsInputNamespaceFallback(context.Background(), resp, true, "test-provider")
 			if err != nil {
 				t.Fatalf("codexResponseNeedsInputNamespaceFallback() error = %v", err)
 			}
