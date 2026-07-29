@@ -60,6 +60,23 @@ var errClientAbort = errors.New("client aborted, skip failure count")
 // errResponseTooLargeToBuffer 表示 Codex 响应超过降智检测缓冲上限，跳过检测直接返回已缓冲内容
 var errResponseTooLargeToBuffer = errors.New("codex response too large to buffer for degradation check")
 
+type codexProviderCapacityError struct {
+	Code       string
+	Message    string
+	StatusCode int
+}
+
+func (err *codexProviderCapacityError) Error() string {
+	if err == nil {
+		return "codex provider capacity error"
+	}
+	message := sanitizeCodexCapacityLogMessage(err.Message)
+	if message == "" {
+		return fmt.Sprintf("codex provider capacity error (%s)", err.Code)
+	}
+	return fmt.Sprintf("codex provider capacity error (%s): %s", err.Code, message)
+}
+
 const (
 	codexDegradationMaxBufferBytes = 16 * 1024 * 1024
 	codexDegradationResendInterval = 300 * time.Millisecond
@@ -1227,7 +1244,7 @@ func (prs *ProviderRelayService) forwardRequest(
 	var resp *xrequest.Response
 	var err error
 	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) {
-		resp, err = prs.postCodexResponsesRequestWithHistoryFallback(
+		resp, err = prs.postCodexResponsesRequestWithCapacityPreflight(
 			c.Request.Context(),
 			targetURL,
 			query,
@@ -1251,6 +1268,11 @@ func (prs *ProviderRelayService) forwardRequest(
 	// 无论成功失败，先尝试记录 HttpCode
 	if resp != nil {
 		requestLog.HttpCode = resp.StatusCode()
+	} else {
+		var capacityErr *codexProviderCapacityError
+		if errors.As(err, &capacityErr) {
+			requestLog.HttpCode = capacityErr.StatusCode
+		}
 	}
 
 	if hasWebSearchFallback && isUnsupportedWebSearchToolError(resp, err) {
@@ -1669,6 +1691,44 @@ func (prs *ProviderRelayService) postCodexResponsesRequestWithHistoryFallback(
 		providerName,
 		attempt,
 	)
+}
+
+func (prs *ProviderRelayService) postCodexResponsesRequestWithCapacityPreflight(
+	ctx context.Context,
+	targetURL string,
+	query map[string]string,
+	headers map[string]string,
+	body []byte,
+	isStream bool,
+	providerName string,
+	attempt *codexHistoryAttempt,
+) (*xrequest.Response, error) {
+	resp, err := prs.postCodexResponsesRequestWithHistoryFallback(
+		ctx,
+		targetURL,
+		query,
+		headers,
+		body,
+		isStream,
+		providerName,
+		attempt,
+	)
+	if err != nil || resp == nil {
+		return resp, err
+	}
+
+	capacityErr, inspectErr := codexResponseCapacityFailure(ctx, resp, isStream, providerName)
+	if inspectErr != nil {
+		return resp, inspectErr
+	}
+	if capacityErr == nil {
+		return resp, nil
+	}
+	if resp.RawResponse != nil && resp.RawResponse.Body != nil {
+		_ = resp.RawResponse.Body.Close()
+	}
+	logCodexCapacityFailure(providerName, capacityErr)
+	return nil, capacityErr
 }
 
 func (prs *ProviderRelayService) postCodexResponsesRequestWithProviderHistoryFallback(
@@ -2200,6 +2260,59 @@ func codexResponseNeedsProviderHistoryFallback(ctx context.Context, resp *xreque
 	)
 }
 
+func codexResponseCapacityFailure(ctx context.Context, resp *xrequest.Response, requestedStream bool, providerName string) (*codexProviderCapacityError, error) {
+	if resp == nil || resp.RawResponse == nil {
+		return nil, nil
+	}
+	status := resp.StatusCode()
+	if status != 0 && (status < http.StatusOK || status >= http.StatusMultipleChoices) {
+		return nil, nil
+	}
+
+	var matched *codexProviderCapacityError
+	retry, _, inspectErr := inspectCodexResponsePreflight(
+		ctx,
+		resp,
+		requestedStream,
+		providerName,
+		"capacity",
+		func(payload []byte) (bool, bool, string) {
+			if capacityErr := codexCapacityErrorFromPayload(payload); capacityErr != nil {
+				matched = capacityErr
+				return true, true, capacityErr.Code
+			}
+			if !gjson.ValidBytes(payload) {
+				return false, false, ""
+			}
+			if codexPayloadHasOutput(payload) {
+				return true, false, ""
+			}
+			terminal, _, _ := codexPayloadProviderHistoryDecision(payload)
+			return terminal, false, ""
+		},
+		func(body []byte) (bool, string, error) {
+			matched = codexCapacityErrorFromResponseBody(body)
+			if matched == nil {
+				return false, "", nil
+			}
+			return true, matched.Code, nil
+		},
+		false,
+		"",
+	)
+	if inspectErr != nil {
+		return nil, inspectErr
+	}
+	if !retry || matched == nil {
+		return nil, nil
+	}
+	matched.StatusCode = status
+	if matched.StatusCode == 0 {
+		matched.StatusCode = http.StatusOK
+	}
+	return matched, nil
+}
+
 func codexJSONNeedsProviderHistoryFallback(body []byte) (bool, string, error) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
@@ -2216,6 +2329,9 @@ func codexJSONNeedsProviderHistoryFallback(body []byte) (bool, string, error) {
 }
 
 func codexPayloadProviderHistoryDecision(payload []byte) (terminal bool, retry bool, reason string) {
+	if codexCapacityErrorFromPayload(payload) != nil {
+		return true, false, "capacity_failure"
+	}
 	eventType := gjson.GetBytes(payload, "type").String()
 	status := gjson.GetBytes(payload, "response.status").String()
 	if status == "" {
@@ -2243,6 +2359,75 @@ func codexPayloadProviderHistoryDecision(payload []byte) (terminal bool, retry b
 		return true, true, "incomplete_without_output_or_usage"
 	}
 	return false, false, ""
+}
+
+func codexCapacityErrorFromResponseBody(body []byte) *codexProviderCapacityError {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	if gjson.ValidBytes(trimmed) {
+		return codexCapacityErrorFromPayload(trimmed)
+	}
+	for _, line := range bytes.Split(trimmed, []byte("\n")) {
+		payload, isData := codexSSEDataPayload(line)
+		if !isData {
+			continue
+		}
+		if capacityErr := codexCapacityErrorFromPayload(payload); capacityErr != nil {
+			return capacityErr
+		}
+	}
+	return nil
+}
+
+func codexCapacityErrorFromPayload(payload []byte) *codexProviderCapacityError {
+	if !gjson.ValidBytes(payload) {
+		return nil
+	}
+	eventType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "type").String()))
+	status := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "response.status").String()))
+	if status == "" {
+		status = strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "status").String()))
+	}
+	if eventType != "response.failed" && eventType != "error" && status != "failed" {
+		return nil
+	}
+
+	for _, errorPath := range []string{"response.error", "error"} {
+		code := strings.TrimSpace(gjson.GetBytes(payload, errorPath+".code").String())
+		if code != "server_is_overloaded" && code != "slow_down" {
+			continue
+		}
+		return &codexProviderCapacityError{
+			Code:    code,
+			Message: strings.TrimSpace(gjson.GetBytes(payload, errorPath+".message").String()),
+		}
+	}
+	return nil
+}
+
+func sanitizeCodexCapacityLogMessage(message string) string {
+	message = strings.Join(strings.Fields(message), " ")
+	const maxRunes = 256
+	runes := []rune(message)
+	if len(runes) > maxRunes {
+		message = string(runes[:maxRunes]) + "..."
+	}
+	return message
+}
+
+func logCodexCapacityFailure(providerName string, capacityErr *codexProviderCapacityError) {
+	if capacityErr == nil {
+		return
+	}
+	fmt.Printf(
+		"[Codex Relay] provider=%s semantic_failure=capacity code=%s status=%d message=%s\n",
+		providerName,
+		capacityErr.Code,
+		capacityErr.StatusCode,
+		sanitizeCodexCapacityLogMessage(capacityErr.Message),
+	)
 }
 
 func codexPayloadHasOutput(payload []byte) bool {
@@ -4187,7 +4372,7 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 
 		var resp *xrequest.Response
 		var postErr error
-		resp, postErr = prs.postCodexResponsesRequestWithHistoryFallback(
+		resp, postErr = prs.postCodexResponsesRequestWithCapacityPreflight(
 			clientCtx,
 			targetURL,
 			query,
@@ -4199,6 +4384,11 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 		)
 		if resp != nil {
 			attemptLog.HttpCode = resp.StatusCode()
+		} else {
+			var capacityErr *codexProviderCapacityError
+			if errors.As(postErr, &capacityErr) {
+				attemptLog.HttpCode = capacityErr.StatusCode
+			}
 		}
 
 		// 发送阶段错误
@@ -4310,6 +4500,17 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 				return false, captureErr
 			}
 			return false, fmt.Errorf("%w: %v", errClientAbort, captureErr)
+		}
+
+		if capacityErr := codexCapacityErrorFromResponseBody(capturedBody); capacityErr != nil {
+			capacityErr.StatusCode = capturedStatus
+			if capacityErr.StatusCode == 0 {
+				capacityErr.StatusCode = http.StatusOK
+			}
+			attemptLog.IsDegraded = false
+			logCodexCapacityFailure(provider.Name, capacityErr)
+			finalize(attemptLog, attemptStart)
+			return false, capacityErr
 		}
 
 		degraded := isCodexDegradedReasoning(attemptLog.ReasoningTokens, tokens)
