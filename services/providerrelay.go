@@ -60,6 +60,29 @@ var errClientAbort = errors.New("client aborted, skip failure count")
 // errResponseTooLargeToBuffer 表示 Codex 响应超过降智检测缓冲上限，跳过检测直接返回已缓冲内容
 var errResponseTooLargeToBuffer = errors.New("codex response too large to buffer for degradation check")
 
+// errStreamTruncated 表示上游 SSE 流在收到数据事件后未出现终止事件（response.completed 等）即结束。
+// 响应已透传给客户端、无法重发（ok=true 携带），但应记为 provider 失败，
+// 让客户端（codex CLI 报 stream disconnected 自行重试）时 relay 路由到其他 provider。
+var errStreamTruncated = errors.New("codex stream ended without terminal event (truncated)")
+
+// codexStreamLacksTerminalEvent 判断 codex /responses 流式响应是否截断：
+// 收到过 JSON 数据事件（jsonPayloads > 0）但 EOF 时始终未见终止事件（terminal == false）。
+// 仅检查 codex /responses（排除 count_tokens——其响应无 status 字段，必然无终止事件）。
+// 非流式 JSON 不检测（规避部分 provider 省略 status 字段的误报）；
+// 未挂 observation hook 的路径（如协议转换）jsonPayloads == 0，自动放行（fail-open）。
+func codexStreamLacksTerminalEvent(observation *codexResponseObservation, kind, endpoint string, streamed bool) bool {
+	if !streamed || kind != ProviderKindCodex {
+		return false
+	}
+	if !isResponsesEndpoint(endpoint) || strings.HasSuffix(endpoint, "/count_tokens") {
+		return false
+	}
+	if observation == nil || observation.terminal || observation.jsonPayloads == 0 {
+		return false
+	}
+	return true
+}
+
 type codexProviderCapacityError struct {
 	Code       string
 	Message    string
@@ -747,6 +770,15 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 						duration := time.Since(startTime)
 
 						if ok {
+							// SSE 截断：响应已透传给客户端无法重发，但按 provider 失败计数，
+							// 客户端（codex CLI）自行重试时不再路由回该 provider
+							if errors.Is(err, errStreamTruncated) {
+								fmt.Printf("[INFO] ⚠️ 成功但截断: %s | 耗时: %.2fs | 记为失败\n", provider.Name, duration.Seconds())
+								if err := prs.blacklistService.RecordFailure(kind, provider.Name); err != nil {
+									fmt.Printf("[ERROR] 记录失败到黑名单失败: %v\n", err)
+								}
+								return
+							}
 							fmt.Printf("[INFO] ✓ 成功: %s | 重试 %d 次 | 耗时: %.2fs\n",
 								provider.Name, retryCount+1, duration.Seconds())
 							if err := prs.blacklistService.RecordSuccess(kind, provider.Name); err != nil {
@@ -878,6 +910,15 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 				duration := time.Since(startTime)
 
 				if ok {
+					// SSE 截断：响应已透传给客户端无法重发，但按 provider 失败计数，
+					// 客户端（codex CLI）自行重试时不再路由回该 provider
+					if errors.Is(err, errStreamTruncated) {
+						fmt.Printf("[INFO]   ⚠️ Level %d 成功但截断: %s | 耗时: %.2fs | 记为失败\n", level, provider.Name, duration.Seconds())
+						if err := prs.blacklistService.RecordFailure(kind, provider.Name); err != nil {
+							fmt.Printf("[ERROR] 记录失败到黑名单失败: %v\n", err)
+						}
+						return
+					}
 					fmt.Printf("[INFO]   ✓ Level %d 成功: %s | 耗时: %.2fs\n", level, provider.Name, duration.Seconds())
 
 					// 成功：清零连续失败计数
@@ -1384,8 +1425,14 @@ func (prs *ProviderRelayService) forwardRequest(
 	// 状态码为 0 且无错误：当作成功处理
 	if status == 0 {
 		fmt.Printf("[WARN] Provider %s 返回状态码 0，但无错误，当作成功处理\n", provider.Name)
+		streamed := isStreamResponse(resp, isStream)
 		copyErr := writeUpstreamResponse()
 		if copyErr == nil {
+			if codexStreamLacksTerminalEvent(&responseObservation, kind, endpoint, streamed) {
+				// 截断：不 commit session（避免粘连到坏 provider），记 provider 失败
+				fmt.Printf("[WARN] Provider %s Codex SSE 流截断（json_payloads=%d 无终止事件），记为失败\n", provider.Name, responseObservation.jsonPayloads)
+				return true, errStreamTruncated
+			}
 			responseObservation.commitIfSuccessful()
 		}
 		if copyErr != nil {
@@ -1400,8 +1447,14 @@ func (prs *ProviderRelayService) forwardRequest(
 	}
 
 	if status >= http.StatusOK && status < http.StatusMultipleChoices {
+		streamed := isStreamResponse(resp, isStream)
 		copyErr := writeUpstreamResponse()
 		if copyErr == nil {
+			if codexStreamLacksTerminalEvent(&responseObservation, kind, endpoint, streamed) {
+				// 截断：不 commit session（避免粘连到坏 provider），记 provider 失败
+				fmt.Printf("[WARN] Provider %s Codex SSE 流截断（json_payloads=%d 无终止事件），记为失败\n", provider.Name, responseObservation.jsonPayloads)
+				return true, errStreamTruncated
+			}
 			responseObservation.commitIfSuccessful()
 		}
 		if copyErr != nil {
@@ -4546,6 +4599,11 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 		}
 		if writeErr := writeCapturedResponse(c.Writer, capturedStatus, capturedHeader, capturedBody); writeErr != nil && isClientAbortError(clientCtx, writeErr) {
 			attemptLog.SkipLog = true
+		} else if codexStreamLacksTerminalEvent(&responseObservation, ProviderKindCodex, endpoint, streamResponse) {
+			// 截断：缓冲内容已写给客户端、无法重发；不 commit session，记 provider 失败
+			fmt.Printf("[WARN] Provider %s Codex SSE 流截断（json_payloads=%d 无终止事件），记为失败\n", provider.Name, responseObservation.jsonPayloads)
+			finalize(attemptLog, attemptStart)
+			return true, errStreamTruncated
 		} else {
 			responseObservation.commitIfSuccessful()
 		}
