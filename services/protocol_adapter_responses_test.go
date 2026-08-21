@@ -176,6 +176,38 @@ func TestConvertAnthropicToOpenAIResponsesServerToolBlocks(t *testing.T) {
 	}
 }
 
+// 未知块类型降级：历史中任何块都转文本保上下文，绝不让整个会话被 400 拒绝
+func TestConvertAnthropicToOpenAIResponsesUnknownBlocksDegradeToText(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"stream": true,
+		"messages": [
+			{"role":"assistant","content":[
+				{"type":"text","text":"before"},
+				{"type":"tool_result","tool_use_id":"orphan_1","content":"orphan tool result"},
+				{"type":"future_block_type","thinking":"future thinking"}
+			]},
+			{"role":"user","content":[
+				{"type":"another_unknown_block","data":{"foo":"bar"}}
+			]}
+		]
+	}`)
+
+	converted, _, err := ConvertAnthropicToOpenAIResponses(body)
+	if err != nil {
+		t.Fatalf("未知块类型应降级而非拒绝: %v", err)
+	}
+
+	result := gjson.ParseBytes(converted)
+	raw := result.Raw
+	if !strings.Contains(raw, "before") || !strings.Contains(raw, "orphan tool result") || !strings.Contains(raw, "future thinking") {
+		t.Fatalf("assistant 侧未知块应全部降级为文本, body=%s", raw)
+	}
+	if !strings.Contains(raw, "foo") {
+		t.Fatalf("user 侧未知块应 JSON 降级为文本, body=%s", raw)
+	}
+}
+
 func TestConvertAnthropicToOpenAIResponsesDropsEmptyContextManagement(t *testing.T) {
 	body := []byte(`{
 		"model": "gpt-5.4",

@@ -254,6 +254,46 @@ func TestConvertAnthropicToOpenAIServerToolBlocks(t *testing.T) {
 	}
 }
 
+// 未知块类型降级：历史中任何块（含 assistant 侧 tool_result 等非常规形态、
+// 未来新增的块类型）都转文本保上下文，绝不让整个会话被 400 拒绝。
+func TestConvertAnthropicToOpenAIUnknownBlocksDegradeToText(t *testing.T) {
+	body := []byte(`{
+		"model": "glm-5.2",
+		"stream": true,
+		"messages": [
+			{"role":"assistant","content":[
+				{"type":"text","text":"before"},
+				{"type":"tool_result","tool_use_id":"orphan_1","content":"orphan tool result from compressed history"},
+				{"type":"future_block_type","text":"some future block"}
+			]},
+			{"role":"user","content":[
+				{"type":"another_unknown_block","data":{"foo":"bar"}}
+			]}
+		]
+	}`)
+
+	converted, _, err := ConvertAnthropicToOpenAI(body, DefaultConvertOptions())
+	if err != nil {
+		t.Fatalf("未知块类型应降级而非拒绝: %v", err)
+	}
+
+	result := gjson.ParseBytes(converted)
+	assistantContent := result.Get("messages.0.content").String()
+	if !strings.Contains(assistantContent, "before") {
+		t.Fatalf("原 text 应保留, got %q", assistantContent)
+	}
+	if !strings.Contains(assistantContent, "orphan tool result") {
+		t.Fatalf("assistant 侧 tool_result 应降级为文本, got %q", assistantContent)
+	}
+	if !strings.Contains(assistantContent, "some future block") {
+		t.Fatalf("未知块 text 字段应降级为文本, got %q", assistantContent)
+	}
+	userContent := result.Get("messages.1.content").String()
+	if !strings.Contains(userContent, "foo") {
+		t.Fatalf("user 侧未知块应 JSON 降级为文本, got %q", userContent)
+	}
+}
+
 func TestConvertAnthropicToOpenAIStillRejectsNonStream(t *testing.T) {	body := []byte(`{"model":"m","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
 	_, _, err := ConvertAnthropicToOpenAI(body, DefaultConvertOptions())
 	if !errors.Is(err, ErrClientRequestRejected) {

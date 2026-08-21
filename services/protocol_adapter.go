@@ -220,6 +220,11 @@ func convertAnthropicMessageToOpenAI(messageIndex int, msg gjson.Result) ([]map[
 				// Chat Completions 无 thinking 重放概念，丢弃（模型自身产物）
 			case "server_tool_use":
 				// Anthropic 服务端工具（web_search 等）执行记录，上游无对应概念，丢弃
+			case "tool_result", "web_search_tool_result":
+				// 非常规形态（如压缩续传历史）：降级为文本保上下文
+				if rendered := stringifyAnthropicToolResultContent(block.Get("content").Value()); rendered != "" {
+					texts = append(texts, rendered)
+				}
 			case "tool_use":
 				arguments, err := json.Marshal(block.Get("input").Value())
 				if err != nil {
@@ -238,8 +243,10 @@ func convertAnthropicMessageToOpenAI(messageIndex int, msg gjson.Result) ([]map[
 					},
 				})
 			default:
-				return nil, NewClientRequestRejectedError(
-					fmt.Sprintf("messages[%d].content type='%s' 不支持", messageIndex, block.Get("type").String()))
+				// 未知块类型：降级为文本保上下文（历史里任何块都不应杀死整个会话）
+				if rendered := stringifyGjsonBlockAsText(block); rendered != "" {
+					texts = append(texts, rendered)
+				}
 			}
 		}
 		openAIMsg := map[string]interface{}{
@@ -289,8 +296,10 @@ func convertAnthropicMessageToOpenAI(messageIndex int, msg gjson.Result) ([]map[
 				textParts = append(textParts, rendered)
 			}
 		default:
-			return nil, NewClientRequestRejectedError(
-				fmt.Sprintf("messages[%d].content type='%s' 不支持", messageIndex, block.Get("type").String()))
+			// 未知块类型：降级为文本保上下文（历史里任何块都不应杀死整个会话）
+			if rendered := stringifyGjsonBlockAsText(block); rendered != "" {
+				textParts = append(textParts, rendered)
+			}
 		}
 	}
 
@@ -319,6 +328,30 @@ func openAIRoleForAnthropic(role string) string {
 		return "system"
 	}
 	return role
+}
+
+// stringifyGjsonBlockAsText 把未知类型的 content block 降级为文本。
+// 优先取语义字段（text/thinking/content），全无则 JSON 序列化整个块，
+// 保证历史中的任何块（现在或将来的类型）都不会让会话被拒绝。
+func stringifyGjsonBlockAsText(block gjson.Result) string {
+	for _, field := range []string{"text", "thinking", "content"} {
+		if value := block.Get(field); value.Exists() {
+			if value.Type == gjson.String {
+				if s := value.String(); s != "" {
+					return s
+				}
+			} else if value.IsArray() || value.IsObject() {
+				if rendered := stringifyAnthropicToolResultContent(value.Value()); rendered != "" && rendered != "null" && rendered != "[]" && rendered != "{}" {
+					return rendered
+				}
+			}
+		}
+	}
+	raw := strings.TrimSpace(block.Raw)
+	if raw == "" || raw == "{}" {
+		return ""
+	}
+	return raw
 }
 
 // translateAnthropicToolsToOpenAI 转换 Anthropic tools 到 OpenAI function tools
