@@ -95,6 +95,50 @@ func TestConvertAnthropicToOpenAIResponses(t *testing.T) {
 	}
 }
 
+func TestConvertAnthropicToOpenAIResponsesKeepsInlineSystemMessages(t *testing.T) {
+	// 部分客户端（如 opencode）把 system 提示内联进 messages 数组而非顶层 system 字段。
+	// Responses input 原生支持 system/developer role，应原位保留而非拒绝。
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"messages": [
+			{"role":"user","content":"first question"},
+			{"role":"system","content":[{"type":"text","text":"inline system rule"}]},
+			{"role":"developer","content":"developer note"},
+			{"role":"user","content":"second question"}
+		],
+		"stream": true
+	}`)
+
+	converted, _, err := ConvertAnthropicToOpenAIResponses(body)
+	if err != nil {
+		t.Fatalf("ConvertAnthropicToOpenAIResponses 返回错误: %v", err)
+	}
+
+	result := gjson.ParseBytes(converted)
+	if got := result.Get("input.#").Int(); got != 4 {
+		t.Fatalf("input length = %d, want 4, body = %s", got, result.Raw)
+	}
+	if got := result.Get("input.1.role").String(); got != "system" {
+		t.Fatalf("input[1].role = %q, want system", got)
+	}
+	if got := result.Get("input.1.content.0.type").String(); got != "input_text" {
+		t.Fatalf("input[1].content[0].type = %q, want input_text", got)
+	}
+	if got := result.Get("input.1.content.0.text").String(); got != "inline system rule" {
+		t.Fatalf("input[1].content[0].text = %q, want %q", got, "inline system rule")
+	}
+	if got := result.Get("input.2.role").String(); got != "developer" {
+		t.Fatalf("input[2].role = %q, want developer", got)
+	}
+	if got := result.Get("input.2.content.0.text").String(); got != "developer note" {
+		t.Fatalf("input[2].content[0].text = %q, want %q", got, "developer note")
+	}
+	// 顶层 system 字段为空时不应生成 instructions
+	if result.Get("instructions").Exists() {
+		t.Fatalf("instructions should be absent, got %q", result.Get("instructions").String())
+	}
+}
+
 func TestConvertAnthropicToOpenAIResponsesDropsEmptyContextManagement(t *testing.T) {
 	body := []byte(`{
 		"model": "gpt-5.4",

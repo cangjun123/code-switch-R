@@ -462,6 +462,16 @@ func translateAnthropicMessagesToResponsesInput(messagesValue interface{}) ([]in
 			}
 			items = append(items, assistantItems...)
 
+		case "system", "developer":
+			// 部分客户端（如 opencode）把 system 提示内联进 messages 数组而非顶层 system 字段。
+			// Responses input 原生支持 system/developer role 消息（deriveResponsesInstructionsFromInput
+			// 也按此形态解析），按原位置保留，不折叠进 instructions 以保留消息间顺序。
+			systemItems, err := translateAnthropicMessageBlocksToResponses(i, role, content)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, systemItems...)
+
 		default:
 			return nil, NewClientRequestRejectedError(
 				fmt.Sprintf("messages[%d].role='%s' 不支持", i, role))
@@ -570,6 +580,19 @@ func translateAnthropicMessageBlocksToResponses(messageIndex int, role string, c
 						"call_id":   firstNonEmpty(asString(block["id"]), asString(block["tool_use_id"])),
 						"name":      asString(block["name"]),
 						"arguments": string(arguments),
+					})
+
+				default:
+					return nil, NewClientRequestRejectedError(
+						fmt.Sprintf("messages[%d].content[%d].type='%s' 不支持", messageIndex, blockIndex, asString(block["type"])))
+				}
+
+			case "system", "developer":
+				switch asString(block["type"]) {
+				case "text":
+					currentParts = append(currentParts, map[string]interface{}{
+						"type": "input_text",
+						"text": asString(block["text"]),
 					})
 
 				default:
