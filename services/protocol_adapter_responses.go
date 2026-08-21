@@ -558,8 +558,13 @@ func translateAnthropicMessageBlocksToResponses(messageIndex int, role string, c
 					}
 
 				default:
-					return nil, NewClientRequestRejectedError(
-						fmt.Sprintf("messages[%d].content[%d].type='%s' 不支持", messageIndex, blockIndex, asString(block["type"])))
+					// 未知块类型：降级为文本保上下文（历史里任何块都不应杀死整个会话）
+					if rendered := stringifyUnknownBlockAsText(block); rendered != "" {
+						currentParts = append(currentParts, map[string]interface{}{
+							"type": "input_text",
+							"text": rendered,
+						})
+					}
 				}
 
 			case "assistant":
@@ -594,9 +599,23 @@ func translateAnthropicMessageBlocksToResponses(messageIndex int, role string, c
 				case "server_tool_use":
 					// Anthropic 服务端工具（web_search 等）执行记录，Responses 无对应概念，丢弃
 
+				case "tool_result", "web_search_tool_result":
+					// 非常规形态（如压缩续传历史）：降级为文本保上下文
+					if rendered := stringifyAnthropicToolResultContent(block["content"]); rendered != "" {
+						currentParts = append(currentParts, map[string]interface{}{
+							"type": "output_text",
+							"text": rendered,
+						})
+					}
+
 				default:
-					return nil, NewClientRequestRejectedError(
-						fmt.Sprintf("messages[%d].content[%d].type='%s' 不支持", messageIndex, blockIndex, asString(block["type"])))
+					// 未知块类型：降级为文本保上下文（历史里任何块都不应杀死整个会话）
+					if rendered := stringifyUnknownBlockAsText(block); rendered != "" {
+						currentParts = append(currentParts, map[string]interface{}{
+							"type": "output_text",
+							"text": rendered,
+						})
+					}
 				}
 
 			case "system", "developer":
@@ -608,8 +627,13 @@ func translateAnthropicMessageBlocksToResponses(messageIndex int, role string, c
 					})
 
 				default:
-					return nil, NewClientRequestRejectedError(
-						fmt.Sprintf("messages[%d].content[%d].type='%s' 不支持", messageIndex, blockIndex, asString(block["type"])))
+					// 未知块类型：降级为文本保上下文
+					if rendered := stringifyUnknownBlockAsText(block); rendered != "" {
+						currentParts = append(currentParts, map[string]interface{}{
+							"type": "input_text",
+							"text": rendered,
+						})
+					}
 				}
 			}
 		}
@@ -621,6 +645,30 @@ func translateAnthropicMessageBlocksToResponses(messageIndex int, role string, c
 		return nil, NewClientRequestRejectedError(
 			fmt.Sprintf("messages[%d].content 格式无效", messageIndex))
 	}
+}
+
+// stringifyUnknownBlockAsText 把未知类型的 content block（map 形态）降级为文本。
+// 优先取语义字段（text/thinking/content），全无则 JSON 序列化整个块。
+func stringifyUnknownBlockAsText(block map[string]interface{}) string {
+	for _, field := range []string{"text", "thinking", "content"} {
+		if value, ok := block[field]; ok {
+			switch typed := value.(type) {
+			case string:
+				if typed != "" {
+					return typed
+				}
+			case []interface{}, map[string]interface{}:
+				if rendered := stringifyAnthropicToolResultContent(value); rendered != "" && rendered != "null" && rendered != "[]" && rendered != "{}" {
+					return rendered
+				}
+			}
+		}
+	}
+	encoded, err := json.Marshal(block)
+	if err != nil || string(encoded) == "{}" {
+		return ""
+	}
+	return string(encoded)
 }
 
 func translateAnthropicImageSourceToURL(sourceValue interface{}) (string, error) {
