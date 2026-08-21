@@ -2,11 +2,18 @@ package services
 
 import (
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
 )
+
+// mustJSONStringForTest 简易 JSON 字符串编码（测试数据不含控制字符）
+func mustJSONStringForTest(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
+}
 
 // ==================== ConvertAnthropicToOpenAI ====================
 
@@ -328,8 +335,72 @@ func TestOpenAIToAnthropicSSEConverter_MultipleToolCalls(t *testing.T) {
 	}
 }
 
-func TestOpenAIToAnthropicSSEConverter_IgnoresEventLinesAndPostStop(t *testing.T) {
-	converter := NewOpenAIToAnthropicSSEConverter("m")
+// GLM/Kimi/DeepSeek 混合推理流：reasoning_content 与 content 交错到达。
+// 块 index 必须严格递增（每次类型切换关旧块开新块），Anthropic 客户端渲染器
+// 不接受 index 回跳（表现为逐词换行碎片）。
+func TestOpenAIToAnthropicSSEConverter_InterleavedReasoningKeepsSequentialBlocks(t *testing.T) {
+	seq := []struct {
+		kind string
+		text string
+	}{
+		{"reasoning_content", "let me think"},
+		{"content", "Hello!"},
+		{"reasoning_content", " more thought"},
+		{"content", " 👋"},
+		{"reasoning_content", " and more"},
+		{"content", " I'm ready"},
+	}
+	lines := []string{}
+	for _, s := range seq {
+		lines = append(lines, fmt.Sprintf(
+			`data: {"id":"c1","model":"glm-5.2","choices":[{"index":0,"delta":{"%s":%s},"finish_reason":null}]}`,
+			s.kind, mustJSONStringForTest(s.text)))
+	}
+	lines = append(lines,
+		`data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	)
+
+	output := runSSEConverter(t, lines)
+
+	// 提取全部 content_block_start 的 index，断言严格递增
+	startIdx := 0
+	indexes := []int{}
+	for {
+		pos := strings.Index(output[startIdx:], `"type":"content_block_start"`)
+		if pos < 0 {
+			break
+		}
+		lineStart := startIdx + pos
+		dataPos := strings.Index(output[lineStart:], `"index":`)
+		if dataPos < 0 {
+			t.Fatalf("content_block_start 缺 index:\n%s", output)
+		}
+		rest := output[lineStart+dataPos+8:]
+		end := strings.IndexAny(rest, ",}")
+		idx, err := strconv.Atoi(strings.TrimSpace(rest[:end]))
+		if err != nil {
+			t.Fatalf("解析 index 失败: %v\n%s", err, output)
+		}
+		indexes = append(indexes, idx)
+		startIdx = lineStart + 1
+	}
+	if len(indexes) != 6 {
+		t.Fatalf("应有 6 个顺序块（每次类型切换开新块），got %d:\n%s", len(indexes), output)
+	}
+	for i := 1; i < len(indexes); i++ {
+		if indexes[i] <= indexes[i-1] {
+			t.Fatalf("块 index 应严格递增，got %v:\n%s", indexes, output)
+		}
+	}
+
+	// 每个块都应被关闭
+	if got := strings.Count(output, "event: content_block_stop"); got != 6 {
+		t.Fatalf("应有 6 个 content_block_stop, got %d:\n%s", got, output)
+	}
+}
+
+func TestOpenAIToAnthropicSSEConverter_IgnoresEventLinesAndPostStop(t *testing.T) {	converter := NewOpenAIToAnthropicSSEConverter("m")
 	var output strings.Builder
 	output.WriteString(converter.ProcessLine(`event: ping`))
 	output.WriteString(converter.ProcessLine("")) // 空行
