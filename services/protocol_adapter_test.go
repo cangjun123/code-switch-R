@@ -3,7 +3,6 @@ package services
 import (
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -335,10 +334,10 @@ func TestOpenAIToAnthropicSSEConverter_MultipleToolCalls(t *testing.T) {
 	}
 }
 
-// GLM/Kimi/DeepSeek 混合推理流：reasoning_content 与 content 交错到达。
-// 块 index 必须严格递增（每次类型切换关旧块开新块），Anthropic 客户端渲染器
-// 不接受 index 回跳（表现为逐词换行碎片）。
-func TestOpenAIToAnthropicSSEConverter_InterleavedReasoningKeepsSequentialBlocks(t *testing.T) {
+// GLM/Kimi/DeepSeek 混合推理流：reasoning_content 与 content 逐 chunk 交错。
+// Anthropic 语义中 thinking 只在正文之前：正文开始后迟到的 reasoning 丢弃，
+// 整条流至多一个 thinking 块 + 一个 text 块（逐词碎块会导致客户端渲染异常）。
+func TestOpenAIToAnthropicSSEConverter_InterleavedReasoningSingleBlocks(t *testing.T) {
 	seq := []struct {
 		kind string
 		text string
@@ -363,40 +362,26 @@ func TestOpenAIToAnthropicSSEConverter_InterleavedReasoningKeepsSequentialBlocks
 
 	output := runSSEConverter(t, lines)
 
-	// 提取全部 content_block_start 的 index，断言严格递增
-	startIdx := 0
-	indexes := []int{}
-	for {
-		pos := strings.Index(output[startIdx:], `"type":"content_block_start"`)
-		if pos < 0 {
-			break
-		}
-		lineStart := startIdx + pos
-		dataPos := strings.Index(output[lineStart:], `"index":`)
-		if dataPos < 0 {
-			t.Fatalf("content_block_start 缺 index:\n%s", output)
-		}
-		rest := output[lineStart+dataPos+8:]
-		end := strings.IndexAny(rest, ",}")
-		idx, err := strconv.Atoi(strings.TrimSpace(rest[:end]))
-		if err != nil {
-			t.Fatalf("解析 index 失败: %v\n%s", err, output)
-		}
-		indexes = append(indexes, idx)
-		startIdx = lineStart + 1
+	// 至多 2 个块：1 thinking + 1 text
+	if got := strings.Count(output, `"type":"content_block_start"`); got != 2 {
+		t.Fatalf("交错流应收敛为 2 个块（thinking+text），got %d:\n%s", got, output)
 	}
-	if len(indexes) != 6 {
-		t.Fatalf("应有 6 个顺序块（每次类型切换开新块），got %d:\n%s", len(indexes), output)
+	if got := strings.Count(output, "event: content_block_stop"); got != 2 {
+		t.Fatalf("应有 2 个 content_block_stop, got %d:\n%s", got, output)
 	}
-	for i := 1; i < len(indexes); i++ {
-		if indexes[i] <= indexes[i-1] {
-			t.Fatalf("块 index 应严格递增，got %v:\n%s", indexes, output)
-		}
+	// 正文开始后的 reasoning 丢弃：thinking delta 只应有一次
+	if got := strings.Count(output, `"type":"thinking_delta"`); got != 1 {
+		t.Fatalf("thinking_delta 应只有 1 次（迟到 reasoning 丢弃），got %d:\n%s", got, output)
 	}
-
-	// 每个块都应被关闭
-	if got := strings.Count(output, "event: content_block_stop"); got != 6 {
-		t.Fatalf("应有 6 个 content_block_stop, got %d:\n%s", got, output)
+	// text delta 3 次合并到同一块（index 相同）
+	if got := strings.Count(output, `"type":"text_delta"`); got != 3 {
+		t.Fatalf("text_delta 应有 3 次，got %d:\n%s", got, output)
+	}
+	// thinking 块在 text 开始时关闭（顺序：thinking stop 在 text start 之前）
+	thinkStop := strings.Index(output, `"thinking"`)
+	textStart := strings.Index(output, `"type":"text"`)
+	if thinkStop < 0 || textStart < 0 {
+		t.Fatalf("应有 thinking 与 text 块:\n%s", output)
 	}
 }
 

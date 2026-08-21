@@ -433,6 +433,7 @@ type OpenAIToAnthropicSSEConverter struct {
 	blockTypes     map[int]string  // block index → text/thinking
 	toolCallBlocks map[int]int     // OpenAI tool_call index → block index
 	activeTextBlock int            // 当前活跃的文本类 block index（-1 无）
+	sawTextOrTool  bool            // 已开始正文（text/tool_call），之后的 reasoning 丢弃
 }
 
 // NewOpenAIToAnthropicSSEConverter 创建新的 SSE 转换器
@@ -477,9 +478,12 @@ func (c *OpenAIToAnthropicSSEConverter) ProcessLine(line string) string {
 		c.model = model
 	}
 
-	// 提取 usage（stream_options.include_usage 开启时，最终 chunk 的 choices 为空数组）
+	// 提取 usage（stream_options.include_usage 开启时在最终 chunk；部分兼容上游
+	// 忽略 stream_options 而是放在最后一个 choice chunk 里，两者都兼容）
 	if usage := parsed.Get("usage"); usage.Exists() && usage.IsObject() && !c.usageCaptured {
-		if usage.Get("prompt_tokens").Exists() || usage.Get("completion_tokens").Exists() {
+		prompt := usage.Get("prompt_tokens")
+		completion := usage.Get("completion_tokens")
+		if prompt.Type == gjson.Number || completion.Type == gjson.Number {
 			c.inputTokens = usage.Get("prompt_tokens").Int()
 			c.outputTokens = usage.Get("completion_tokens").Int()
 			c.cacheReadTok = usage.Get("prompt_tokens_details.cached_tokens").Int()
@@ -551,6 +555,7 @@ func (c *OpenAIToAnthropicSSEConverter) processToolCallDelta(arrayIndex int, cal
 	if !seen {
 		// tool call 到来意味着文本阶段结束，关闭仍开着的文本块
 		output.WriteString(c.closeOpenTextBlocks())
+		c.sawTextOrTool = true
 		blockIndex = c.nextBlockIndex
 		c.nextBlockIndex++
 		c.toolCallBlocks[callIndex] = blockIndex
@@ -585,27 +590,38 @@ func (c *OpenAIToAnthropicSSEConverter) processToolCallDelta(arrayIndex int, cal
 }
 
 // emitTextLikeDelta 输出文本类增量（text 或 thinking）。
-// 维护单一活跃文本块：同类 delta 追加到当前块；类型切换（如 GLM 混合推理流中
-// reasoning_content 与 content 交错）时关闭旧块、开新块——保证块 index 严格递增，
-// 符合 Anthropic 原生流的顺序块语义（客户端渲染器不接受 index 回跳）。
+// Anthropic 语义约束：thinking 块只在正文之前，text 开始后不再回头。
+// 混合推理上游（GLM/Kimi/DeepSeek）逐 chunk 交错 reasoning_content/content 时，
+// 正文开始后的 reasoning 丢弃（其内容对客户端无渲染意义），保证整条流
+// 至多一个 thinking 块 + 一个 text 块，不会逐词碎块。
 func (c *OpenAIToAnthropicSSEConverter) emitTextLikeDelta(blockType, text string) string {
 	var output strings.Builder
 
-	// 已有活跃文本块
-	if c.activeTextBlock >= 0 {
-		if c.blockTypes[c.activeTextBlock] == blockType {
-			// 同类型：直接追加 delta
-			return c.emitAnthropicSSE("content_block_delta", map[string]interface{}{
-				"type":  "content_block_delta",
-				"index": c.activeTextBlock,
-				"delta": map[string]interface{}{
-					"type":    blockType + "_delta",
-					blockType: text,
-				},
-			})
+	if blockType == "thinking" {
+		// 正文（text/tool_call）已开始：丢弃迟到的 reasoning
+		if c.sawTextOrTool {
+			return ""
 		}
-		// 类型切换：关闭旧块（新块接着开）
-		output.WriteString(c.emitContentBlockStop(c.activeTextBlock))
+	} else {
+		// text 开始：关闭仍开着的 thinking 块，进入正文阶段
+		if c.activeTextBlock >= 0 && c.blockTypes[c.activeTextBlock] == "thinking" {
+			output.WriteString(c.emitContentBlockStop(c.activeTextBlock))
+			c.activeTextBlock = -1
+		}
+		c.sawTextOrTool = true
+	}
+
+	// 同类型活跃块：直接追加 delta
+	if c.activeTextBlock >= 0 && c.blockTypes[c.activeTextBlock] == blockType {
+		output.WriteString(c.emitAnthropicSSE("content_block_delta", map[string]interface{}{
+			"type":  "content_block_delta",
+			"index": c.activeTextBlock,
+			"delta": map[string]interface{}{
+				"type":    blockType + "_delta",
+				blockType: text,
+			},
+		}))
+		return output.String()
 	}
 
 	output.WriteString(c.ensureMessageStart())
@@ -670,6 +686,9 @@ func (c *OpenAIToAnthropicSSEConverter) emitCompletion() string {
 
 	// message_delta（包含 stop_reason 和 usage）
 	stopReason := c.mapFinishReason(c.finishReason)
+	if !c.usageCaptured {
+		fmt.Printf("[WARN] [协议转换] 上游流结束但未携带 usage（上游可能不支持 stream_options.include_usage），model=%s finish=%s\n", c.model, c.finishReason)
+	}
 	usage := map[string]interface{}{
 		"input_tokens":  c.inputTokens,
 		"output_tokens": c.outputTokens,
