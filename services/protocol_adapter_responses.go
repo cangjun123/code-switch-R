@@ -548,6 +548,15 @@ func translateAnthropicMessageBlocksToResponses(messageIndex int, role string, c
 						"output":  stringifyAnthropicToolResultContent(block["content"]),
 					})
 
+				case "web_search_tool_result":
+					// 服务端搜索结果：转成文本保留上下文（其配对的 server_tool_use 已丢弃）
+					if rendered := stringifyAnthropicToolResultContent(block["content"]); rendered != "" {
+						currentParts = append(currentParts, map[string]interface{}{
+							"type": "input_text",
+							"text": rendered,
+						})
+					}
+
 				default:
 					return nil, NewClientRequestRejectedError(
 						fmt.Sprintf("messages[%d].content[%d].type='%s' 不支持", messageIndex, blockIndex, asString(block["type"])))
@@ -581,6 +590,9 @@ func translateAnthropicMessageBlocksToResponses(messageIndex int, role string, c
 						"name":      asString(block["name"]),
 						"arguments": string(arguments),
 					})
+
+				case "server_tool_use":
+					// Anthropic 服务端工具（web_search 等）执行记录，Responses 无对应概念，丢弃
 
 				default:
 					return nil, NewClientRequestRejectedError(
