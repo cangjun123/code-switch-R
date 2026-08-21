@@ -1441,7 +1441,10 @@ func (prs *ProviderRelayService) forwardRequest(
 				fmt.Printf("[INFO] Provider %s 写回客户端时连接中断，跳过 request_log\n", provider.Name)
 				return true, nil
 			}
-			fmt.Printf("[WARN] 复制响应到客户端失败（不影响provider成功判定）: %v\n", copyErr)
+			// 上游读错误（unexpected EOF 等）：流中途断开，部分响应已透传无法重发，
+			// 但必须记 provider 失败——否则客户端自行重试时会路由回同一个坏 provider。
+			fmt.Printf("[WARN] Provider %s 上游流中断（%v），部分响应已透传，记为失败\n", provider.Name, copyErr)
+			return true, fmt.Errorf("%w: %v", errStreamTruncated, copyErr)
 		}
 		return true, nil
 	}
@@ -1458,7 +1461,16 @@ func (prs *ProviderRelayService) forwardRequest(
 			responseObservation.commitIfSuccessful()
 		}
 		if copyErr != nil {
-			fmt.Printf("[WARN] 复制响应到客户端失败（不影响provider成功判定）: %v\n", copyErr)
+			if isClientAbortError(c.Request.Context(), copyErr) {
+				requestLog.SkipLog = true
+				fmt.Printf("[INFO] Provider %s 写回客户端时连接中断，跳过 request_log\n", provider.Name)
+				return true, nil
+			}
+			// 上游读错误（unexpected EOF 等）：流中途断开，部分响应已透传无法重发，
+			// 但必须记 provider 失败——否则客户端（Claude Code 报 stream disconnected）
+			// 自行重试时会路由回同一个坏 provider，反复拿到同样的断流碎片。
+			fmt.Printf("[WARN] Provider %s 上游流中断（%v），部分响应已透传，记为失败\n", provider.Name, copyErr)
+			return true, fmt.Errorf("%w: %v", errStreamTruncated, copyErr)
 		}
 		// 只要provider返回了2xx状态码，就算成功（复制失败是客户端问题，不是provider问题）
 		return true, nil
