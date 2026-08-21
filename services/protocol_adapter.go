@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -244,7 +245,7 @@ func convertAnthropicMessageToOpenAI(messageIndex int, msg gjson.Result) ([]map[
 				})
 			default:
 				// 未知块类型：降级为文本保上下文（历史里任何块都不应杀死整个会话）
-				if rendered := stringifyGjsonBlockAsText(block); rendered != "" {
+				if rendered := stringifyGjsonBlockAsText(block, messageIndex); rendered != "" {
 					texts = append(texts, rendered)
 				}
 			}
@@ -297,7 +298,7 @@ func convertAnthropicMessageToOpenAI(messageIndex int, msg gjson.Result) ([]map[
 			}
 		default:
 			// 未知块类型：降级为文本保上下文（历史里任何块都不应杀死整个会话）
-			if rendered := stringifyGjsonBlockAsText(block); rendered != "" {
+			if rendered := stringifyGjsonBlockAsText(block, messageIndex); rendered != "" {
 				textParts = append(textParts, rendered)
 			}
 		}
@@ -333,7 +334,17 @@ func openAIRoleForAnthropic(role string) string {
 // stringifyGjsonBlockAsText 把未知类型的 content block 降级为文本。
 // 优先取语义字段（text/thinking/content），全无则 JSON 序列化整个块，
 // 保证历史中的任何块（现在或将来的类型）都不会让会话被拒绝。
-func stringifyGjsonBlockAsText(block gjson.Result) string {
+func stringifyGjsonBlockAsText(block gjson.Result, messageIndex int) string {
+	text := extractGjsonBlockText(block)
+	if text == "" {
+		return ""
+	}
+	logBlockDegraded("chat_completions", block.Get("type").String(), messageIndex)
+	return text
+}
+
+// extractGjsonBlockText 提取块的文本表示（降级用），无可用内容返回空。
+func extractGjsonBlockText(block gjson.Result) string {
 	for _, field := range []string{"text", "thinking", "content"} {
 		if value := block.Get(field); value.Exists() {
 			if value.Type == gjson.String {
@@ -352,6 +363,23 @@ func stringifyGjsonBlockAsText(block gjson.Result) string {
 		return ""
 	}
 	return raw
+}
+
+// logBlockDegraded 记录块降级诊断。进程级 5 分钟去重（同类型只记一次），
+// 防止长会话重放时同一未知块类型刷屏。
+var degradedBlockLogMu sync.Mutex
+var degradedBlockLogSeen = make(map[string]time.Time)
+
+func logBlockDegraded(converter, blockType string, messageIndex int) {
+	key := converter + ":" + blockType
+	degradedBlockLogMu.Lock()
+	defer degradedBlockLogMu.Unlock()
+	if last, ok := degradedBlockLogSeen[key]; ok && time.Since(last) < 5*time.Minute {
+		return
+	}
+	degradedBlockLogSeen[key] = time.Now()
+	fmt.Printf("[协议转换] [WARN] 未知 content block 已降级为文本: converter=%s type=%s first_seen_message=%d（内容保留，结构丢失）\n",
+		converter, blockType, messageIndex)
 }
 
 // translateAnthropicToolsToOpenAI 转换 Anthropic tools 到 OpenAI function tools
