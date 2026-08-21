@@ -139,6 +139,43 @@ func TestConvertAnthropicToOpenAIResponsesKeepsInlineSystemMessages(t *testing.T
 	}
 }
 
+// 服务端工具块：assistant 的 server_tool_use 丢弃，user 的 web_search_tool_result 转文本
+func TestConvertAnthropicToOpenAIResponsesServerToolBlocks(t *testing.T) {
+	body := []byte(`{
+		"model": "gpt-5.4",
+		"stream": true,
+		"messages": [
+			{"role":"user","content":"search for latest go release"},
+			{"role":"assistant","content":[
+				{"type":"text","text":"searching"},
+				{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"go release"}}
+			]},
+			{"role":"user","content":[
+				{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result_block","title":"Go 1.24 released"}]},
+				{"type":"text","text":"summarize"}
+			]}
+		]
+	}`)
+
+	converted, _, err := ConvertAnthropicToOpenAIResponses(body)
+	if err != nil {
+		t.Fatalf("server_tool_use 会话应可转换: %v", err)
+	}
+
+	result := gjson.ParseBytes(converted)
+	// assistant 的 server_tool_use 丢弃：无 function_call item
+	if result.Get("input.#(type==\"function_call\")").Exists() {
+		t.Fatalf("server_tool_use 不应映射为 function_call")
+	}
+	// user 的搜索结果转 input_text
+	if !strings.Contains(result.Raw, "Go 1.24 released") {
+		t.Fatalf("web_search_tool_result 应转 input_text 保留内容, body=%s", result.Raw)
+	}
+	if !strings.Contains(result.Get("input.2.content.1.text").String(), "summarize") {
+		t.Fatalf("原 text 应保留, body=%s", result.Raw)
+	}
+}
+
 func TestConvertAnthropicToOpenAIResponsesDropsEmptyContextManagement(t *testing.T) {
 	body := []byte(`{
 		"model": "gpt-5.4",

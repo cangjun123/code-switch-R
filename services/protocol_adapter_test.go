@@ -212,8 +212,49 @@ func TestConvertAnthropicToOpenAIToolChoiceVariants(t *testing.T) {
 	}
 }
 
-func TestConvertAnthropicToOpenAIStillRejectsNonStream(t *testing.T) {
-	body := []byte(`{"model":"m","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+// 服务端工具块（web_search 等开启过的会话历史）：
+// assistant 的 server_tool_use 丢弃，user 的 web_search_tool_result 转文本保留上下文
+func TestConvertAnthropicToOpenAIServerToolBlocks(t *testing.T) {
+	body := []byte(`{
+		"model": "glm-5.2",
+		"stream": true,
+		"messages": [
+			{"role":"user","content":"search for latest go release"},
+			{"role":"assistant","content":[
+				{"type":"text","text":"searching"},
+				{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"go release"}}
+			]},
+			{"role":"user","content":[
+				{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result_block","title":"Go 1.24 released","url":"https://go.dev"}]},
+				{"type":"text","text":"summarize"}
+			]}
+		]
+	}`)
+
+	converted, _, err := ConvertAnthropicToOpenAI(body, DefaultConvertOptions())
+	if err != nil {
+		t.Fatalf("server_tool_use 会话应可转换: %v", err)
+	}
+
+	result := gjson.ParseBytes(converted)
+	// assistant 消息：text 保留，server_tool_use 丢弃（无 tool_calls）
+	if got := result.Get("messages.1.content").String(); got != "searching" {
+		t.Fatalf("assistant content = %q", got)
+	}
+	if result.Get("messages.1.tool_calls").Exists() {
+		t.Fatalf("server_tool_use 不应映射为 tool_calls")
+	}
+	// user 消息：搜索结果转文本 + 原 text
+	userContent := result.Get("messages.2.content").String()
+	if !strings.Contains(userContent, "Go 1.24 released") {
+		t.Fatalf("web_search_tool_result 应转文本保留, got %q", userContent)
+	}
+	if !strings.Contains(userContent, "summarize") {
+		t.Fatalf("原 text 应保留, got %q", userContent)
+	}
+}
+
+func TestConvertAnthropicToOpenAIStillRejectsNonStream(t *testing.T) {	body := []byte(`{"model":"m","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
 	_, _, err := ConvertAnthropicToOpenAI(body, DefaultConvertOptions())
 	if !errors.Is(err, ErrClientRequestRejected) {
 		t.Fatalf("stream=false 应被拒绝, err=%v", err)

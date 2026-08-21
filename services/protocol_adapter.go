@@ -218,6 +218,8 @@ func convertAnthropicMessageToOpenAI(messageIndex int, msg gjson.Result) ([]map[
 				texts = append(texts, block.Get("text").String())
 			case "thinking":
 				// Chat Completions 无 thinking 重放概念，丢弃（模型自身产物）
+			case "server_tool_use":
+				// Anthropic 服务端工具（web_search 等）执行记录，上游无对应概念，丢弃
 			case "tool_use":
 				arguments, err := json.Marshal(block.Get("input").Value())
 				if err != nil {
@@ -281,6 +283,11 @@ func convertAnthropicMessageToOpenAI(messageIndex int, msg gjson.Result) ([]map[
 				"tool_call_id": block.Get("tool_use_id").String(),
 				"content":      stringifyAnthropicToolResultContent(block.Get("content").Value()),
 			})
+		case "web_search_tool_result":
+			// 服务端搜索结果：转成文本保留上下文（其配对的 server_tool_use 已丢弃）
+			if rendered := stringifyAnthropicToolResultContent(block.Get("content").Value()); rendered != "" {
+				textParts = append(textParts, rendered)
+			}
 		default:
 			return nil, NewClientRequestRejectedError(
 				fmt.Sprintf("messages[%d].content type='%s' 不支持", messageIndex, block.Get("type").String()))
