@@ -559,7 +559,7 @@ func translateAnthropicMessageBlocksToResponses(messageIndex int, role string, c
 
 				default:
 					// 未知块类型：降级为文本保上下文（历史里任何块都不应杀死整个会话）
-					if rendered := stringifyUnknownBlockAsText(block); rendered != "" {
+					if rendered := stringifyUnknownBlockAsText(block, messageIndex); rendered != "" {
 						currentParts = append(currentParts, map[string]interface{}{
 							"type": "input_text",
 							"text": rendered,
@@ -610,7 +610,7 @@ func translateAnthropicMessageBlocksToResponses(messageIndex int, role string, c
 
 				default:
 					// 未知块类型：降级为文本保上下文（历史里任何块都不应杀死整个会话）
-					if rendered := stringifyUnknownBlockAsText(block); rendered != "" {
+					if rendered := stringifyUnknownBlockAsText(block, messageIndex); rendered != "" {
 						currentParts = append(currentParts, map[string]interface{}{
 							"type": "output_text",
 							"text": rendered,
@@ -628,7 +628,7 @@ func translateAnthropicMessageBlocksToResponses(messageIndex int, role string, c
 
 				default:
 					// 未知块类型：降级为文本保上下文
-					if rendered := stringifyUnknownBlockAsText(block); rendered != "" {
+					if rendered := stringifyUnknownBlockAsText(block, messageIndex); rendered != "" {
 						currentParts = append(currentParts, map[string]interface{}{
 							"type": "input_text",
 							"text": rendered,
@@ -649,7 +649,17 @@ func translateAnthropicMessageBlocksToResponses(messageIndex int, role string, c
 
 // stringifyUnknownBlockAsText 把未知类型的 content block（map 形态）降级为文本。
 // 优先取语义字段（text/thinking/content），全无则 JSON 序列化整个块。
-func stringifyUnknownBlockAsText(block map[string]interface{}) string {
+func stringifyUnknownBlockAsText(block map[string]interface{}, messageIndex int) string {
+	text := extractUnknownBlockText(block)
+	if text == "" {
+		return ""
+	}
+	logBlockDegraded("responses", asString(block["type"]), messageIndex)
+	return text
+}
+
+// extractUnknownBlockText 提取块的文本表示（降级用），无可用内容返回空。
+func extractUnknownBlockText(block map[string]interface{}) string {
 	for _, field := range []string{"text", "thinking", "content"} {
 		if value, ok := block[field]; ok {
 			switch typed := value.(type) {
