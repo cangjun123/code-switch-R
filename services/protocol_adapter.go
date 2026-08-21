@@ -432,17 +432,19 @@ type OpenAIToAnthropicSSEConverter struct {
 	openBlocks     map[int]struct{}
 	blockTypes     map[int]string  // block index → text/thinking
 	toolCallBlocks map[int]int     // OpenAI tool_call index → block index
+	activeTextBlock int            // 当前活跃的文本类 block index（-1 无）
 }
 
 // NewOpenAIToAnthropicSSEConverter 创建新的 SSE 转换器
 func NewOpenAIToAnthropicSSEConverter(model string) *OpenAIToAnthropicSSEConverter {
 	return &OpenAIToAnthropicSSEConverter{
-		messageID:      "msg_" + uuid.New().String()[:24],
-		model:          model,
-		nextBlockIndex: 0,
-		openBlocks:     make(map[int]struct{}),
-		blockTypes:     make(map[int]string),
-		toolCallBlocks: make(map[int]int),
+		messageID:       "msg_" + uuid.New().String()[:24],
+		model:           model,
+		nextBlockIndex:  0,
+		openBlocks:      make(map[int]struct{}),
+		blockTypes:      make(map[int]string),
+		toolCallBlocks:  make(map[int]int),
+		activeTextBlock: -1,
 	}
 }
 
@@ -582,30 +584,38 @@ func (c *OpenAIToAnthropicSSEConverter) processToolCallDelta(arrayIndex int, cal
 	return output.String()
 }
 
-// emitTextLikeDelta 输出文本类增量（text 或 thinking）。按需懒建对应 block。
+// emitTextLikeDelta 输出文本类增量（text 或 thinking）。
+// 维护单一活跃文本块：同类 delta 追加到当前块；类型切换（如 GLM 混合推理流中
+// reasoning_content 与 content 交错）时关闭旧块、开新块——保证块 index 严格递增，
+// 符合 Anthropic 原生流的顺序块语义（客户端渲染器不接受 index 回跳）。
 func (c *OpenAIToAnthropicSSEConverter) emitTextLikeDelta(blockType, text string) string {
-	// 已有同类型开着的 block：直接追加 delta
-	for index := range c.openBlocks {
-		if _, isTool := c.toolCallBlocks[index]; !isTool && c.blockTypes[index] == blockType {
+	var output strings.Builder
+
+	// 已有活跃文本块
+	if c.activeTextBlock >= 0 {
+		if c.blockTypes[c.activeTextBlock] == blockType {
+			// 同类型：直接追加 delta
 			return c.emitAnthropicSSE("content_block_delta", map[string]interface{}{
 				"type":  "content_block_delta",
-				"index": index,
+				"index": c.activeTextBlock,
 				"delta": map[string]interface{}{
 					"type":    blockType + "_delta",
 					blockType: text,
 				},
 			})
 		}
+		// 类型切换：关闭旧块（新块接着开）
+		output.WriteString(c.emitContentBlockStop(c.activeTextBlock))
 	}
 
-	// 无同类型开块：新开一个
-	var output strings.Builder
 	output.WriteString(c.ensureMessageStart())
 
+	// 开新块
 	blockIndex := c.nextBlockIndex
 	c.nextBlockIndex++
 	c.openBlocks[blockIndex] = struct{}{}
 	c.blockTypes[blockIndex] = blockType
+	c.activeTextBlock = blockIndex
 
 	contentBlock := map[string]interface{}{"type": blockType}
 	if blockType == "thinking" {
@@ -643,6 +653,7 @@ func (c *OpenAIToAnthropicSSEConverter) closeOpenTextBlocks() string {
 	for _, index := range indexes {
 		output.WriteString(c.emitContentBlockStop(index))
 	}
+	c.activeTextBlock = -1
 	return output.String()
 }
 
