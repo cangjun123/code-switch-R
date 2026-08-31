@@ -14,11 +14,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
 	codexRelayKeysFile      = "codex-relay-keys.json"
 	defaultCodexRelayKeyTag = "default"
+	maxCodexRelayKeyNameLen = 128
 )
 
 type CodexRelayKey struct {
@@ -205,6 +208,14 @@ func (s *CodexRelayKeyService) CreateKey(name string) (*CodexRelayKeyCreateResul
 		return nil, err
 	}
 
+	normalizedName := strings.TrimSpace(name)
+	if normalizedName != "" {
+		normalizedName, err = normalizeCodexRelayKeyName(normalizedName)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	value, err := generateCodexRelayKeyValue()
 	if err != nil {
 		return nil, err
@@ -212,7 +223,7 @@ func (s *CodexRelayKeyService) CreateKey(name string) (*CodexRelayKeyCreateResul
 
 	key := CodexRelayKey{
 		ID:          fmt.Sprintf("codex-key-%d", time.Now().UnixNano()),
-		Name:        strings.TrimSpace(name),
+		Name:        normalizedName,
 		Key:         value,
 		Enabled:     true,
 		CreatedAt:   time.Now().UTC(),
@@ -238,6 +249,22 @@ func (s *CodexRelayKeyService) CreateKey(name string) (*CodexRelayKeyCreateResul
 		QuotaPeriod:        normalizeRelayQuotaPeriod(key.QuotaPeriod),
 		AllowedProviderIDs: append([]int64{}, key.AllowedProviderIDs...),
 	}, nil
+}
+
+func normalizeCodexRelayKeyName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", errors.New("Key 名称不能为空")
+	}
+	if utf8.RuneCountInString(name) > maxCodexRelayKeyNameLen {
+		return "", fmt.Errorf("Key 名称不能超过 %d 个字符", maxCodexRelayKeyNameLen)
+	}
+	for _, value := range name {
+		if unicode.IsControl(value) {
+			return "", errors.New("Key 名称不能包含控制字符")
+		}
+	}
+	return name, nil
 }
 
 func (s *CodexRelayKeyService) DeleteKey(id string) error {
@@ -311,6 +338,32 @@ func (s *CodexRelayKeyService) GetKeyByID(id string) (*CodexRelayKey, error) {
 		}
 	}
 	return nil, fmt.Errorf("未找到 Codex relay key: %s", id)
+}
+
+// UpdateName changes only the human-readable label for a relay key. The key
+// secret, quota ledger and provider access configuration are left untouched.
+func (s *CodexRelayKeyService) UpdateName(id, name string) (string, error) {
+	normalized, err := normalizeCodexRelayKeyName(name)
+	if err != nil {
+		return "", err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	store, err := s.loadLocked()
+	if err != nil {
+		return "", err
+	}
+	for index := range store.Keys {
+		if store.Keys[index].ID == id {
+			store.Keys[index].Name = normalized
+			if err := s.saveLocked(store); err != nil {
+				return "", err
+			}
+			return normalized, nil
+		}
+	}
+	return "", fmt.Errorf("未找到 Codex relay key: %s", id)
 }
 
 // UpdateAllowedProviderIDs replaces the Codex provider allowlist for one key.

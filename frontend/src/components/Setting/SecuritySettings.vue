@@ -13,6 +13,7 @@ import {
   listCodexRelayUnpricedModels,
   logoutAdmin,
   resetCodexRelayKeyQuota,
+  updateCodexRelayKeyName,
   updateCodexRelayKeyProviders,
   updateCodexRelayKeyQuota,
   upsertCodexRelayModelPrice,
@@ -38,6 +39,9 @@ const credentialsBusy = ref(false)
 const keys = ref<CodexRelayKeyListItem[]>([])
 const keysLoading = ref(false)
 const keyBusyId = ref('')
+const editingNameId = ref('')
+const nameBusyId = ref('')
+const nameDrafts = ref<Record<string, string>>({})
 const createBusy = ref(false)
 const createName = ref('')
 type QuotaMode = 'usd' | 'token'
@@ -435,6 +439,55 @@ const handleCopyExistingKey = async (id: string) => {
   }
 }
 
+const beginEditKeyName = (key: CodexRelayKeyListItem) => {
+  if (nameBusyId.value) {
+    return
+  }
+  nameDrafts.value[key.id] = key.name
+  editingNameId.value = key.id
+}
+
+const cancelEditKeyName = (key: CodexRelayKeyListItem) => {
+  if (nameBusyId.value === key.id) {
+    return
+  }
+  nameDrafts.value[key.id] = key.name
+  if (editingNameId.value === key.id) {
+    editingNameId.value = ''
+  }
+}
+
+const handleUpdateKeyName = async (key: CodexRelayKeyListItem) => {
+  const name = (nameDrafts.value[key.id] ?? key.name).trim()
+  if (!name) {
+    showToast(t('auth.security.invalidKeyName'), 'error')
+    return
+  }
+  if (name === key.name) {
+    cancelEditKeyName(key)
+    return
+  }
+
+  nameBusyId.value = key.id
+  try {
+    const updatedName = await updateCodexRelayKeyName(key.id, name)
+    const index = keys.value.findIndex((item) => item.id === key.id)
+    if (index >= 0) {
+      keys.value[index] = { ...keys.value[index], name: updatedName }
+    }
+    if (createdKey.value?.id === key.id) {
+      createdKey.value = { ...createdKey.value, name: updatedName }
+    }
+    nameDrafts.value[key.id] = updatedName
+    editingNameId.value = ''
+    showToast(t('auth.security.keyNameUpdated'), 'success')
+  } catch (error) {
+    showToast(extractErrorMessage(error, t('auth.security.keyNameUpdateFailed')), 'error')
+  } finally {
+    nameBusyId.value = ''
+  }
+}
+
 const handleDeleteKey = async (key: CodexRelayKeyListItem) => {
   if (!window.confirm(t('auth.security.deleteConfirm', { name: key.name }))) {
     return
@@ -550,6 +603,7 @@ onMounted(async () => {
             v-model="createName"
             class="base-input"
             type="text"
+            maxlength="128"
             :placeholder="t('auth.security.createPlaceholder')"
             :disabled="createBusy"
             @keyup.enter="handleCreateKey"
@@ -637,21 +691,45 @@ onMounted(async () => {
       <div v-else class="security-key-list">
         <article v-for="key in keys" :key="key.id" class="security-key-row">
           <div class="security-key-meta">
-            <strong>{{ key.name }}</strong>
+            <div v-if="editingNameId === key.id" class="key-name-editor">
+              <input
+                v-model="nameDrafts[key.id]"
+                class="base-input"
+                type="text"
+                maxlength="128"
+                autofocus
+                :aria-label="t('auth.security.keyName')"
+                :disabled="nameBusyId === key.id"
+                @keyup.enter="handleUpdateKeyName(key)"
+                @keyup.esc="cancelEditKeyName(key)"
+              />
+              <button class="security-btn secondary key-name-button" :disabled="nameBusyId === key.id" @click="handleUpdateKeyName(key)">
+                {{ nameBusyId === key.id ? t('auth.security.savingKeyName') : t('auth.security.saveKeyName') }}
+              </button>
+              <button class="security-btn secondary key-name-button" :disabled="nameBusyId === key.id" @click="cancelEditKeyName(key)">
+                {{ t('common.cancel') }}
+              </button>
+            </div>
+            <div v-else class="key-name-display">
+              <strong>{{ key.name }}</strong>
+              <button class="security-btn secondary key-name-button" :disabled="keyBusyId === key.id || nameBusyId !== ''" @click="beginEditKeyName(key)">
+                {{ t('auth.security.editKeyName') }}
+              </button>
+            </div>
             <span>{{ formatDateTime(key.createdAt) }}</span>
           </div>
           <code class="security-key-value">{{ key.maskedKey }}</code>
           <div class="security-key-actions">
             <button
               class="security-btn secondary"
-              :disabled="keyBusyId === key.id"
+              :disabled="keyBusyId === key.id || nameBusyId === key.id"
               @click="handleCopyExistingKey(key.id)"
             >
               {{ t('auth.security.copy') }}
             </button>
             <button
               class="security-btn danger"
-              :disabled="keyBusyId === key.id"
+              :disabled="keyBusyId === key.id || nameBusyId === key.id"
               @click="handleDeleteKey(key)"
             >
               {{ t('auth.security.delete') }}
@@ -1241,6 +1319,34 @@ onMounted(async () => {
 .security-key-meta {
   display: grid;
   gap: 4px;
+}
+
+.key-name-display,
+.key-name-editor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.key-name-display strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.key-name-editor .base-input {
+  width: min(240px, 100%);
+  height: 34px;
+  box-sizing: border-box;
+  padding: 0 10px;
+}
+
+.key-name-button {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 0.76rem;
 }
 
 .security-key-meta span {

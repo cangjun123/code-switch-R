@@ -270,6 +270,14 @@ export async function getCodexRelayKeySecret(id: string): Promise<string> {
   return response.key ?? ''
 }
 
+export async function updateCodexRelayKeyName(id: string, name: string): Promise<string> {
+  const response = await adminRequest<{ name?: string }>(`/api/admin/codex-keys/${encodeURIComponent(id)}/name`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  })
+  return response.name ?? name
+}
+
 export async function deleteCodexRelayKey(id: string): Promise<void> {
   await adminRequest<void>(`/api/admin/codex-keys/${encodeURIComponent(id)}`, {
     method: 'DELETE',
