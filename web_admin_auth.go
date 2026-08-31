@@ -91,6 +91,10 @@ type codexRelayKeyProviderAccessRequest struct {
 	AllowedProviderIDsSnake []int64 `json:"allowed_provider_ids"`
 }
 
+type codexRelayKeyNameRequest struct {
+	Name string `json:"name"`
+}
+
 type codexRelayProviderOption struct {
 	ID      int64  `json:"id"`
 	Name    string `json:"name"`
@@ -587,6 +591,27 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 		}
 		c.JSON(http.StatusOK, gin.H{"key": secret})
 	})
+
+	updateKeyName := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		var request codexRelayKeyNameRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_request", Message: err.Error()}})
+			return
+		}
+		name, err := rt.codexRelayKeys.UpdateName(c.Param("id"), request.Name)
+		if err != nil {
+			status := http.StatusBadRequest
+			if strings.Contains(err.Error(), "未找到") {
+				status = http.StatusNotFound
+			}
+			c.JSON(status, apiErrorResponse{Error: apiError{Code: "update_key_name_failed", Message: err.Error()}})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"id": c.Param("id"), "name": name})
+	}
+	router.PATCH("/api/admin/codex-keys/:id/name", originRequired, authRequired, updateKeyName)
+	router.PUT("/api/admin/codex-keys/:id/name", originRequired, authRequired, updateKeyName)
 
 	// Quota status is exposed separately so clients can refresh it without
 	// retrieving key secrets.

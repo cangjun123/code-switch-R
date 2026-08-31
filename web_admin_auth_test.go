@@ -206,6 +206,27 @@ func TestAdminServerInitializeAndManageCodexKeys(t *testing.T) {
 		t.Fatal("expected create first key response to include secret")
 	}
 
+	rename := performRequest(t, server.Handler, http.MethodPatch, "/api/admin/codex-keys/"+firstKey.ID+"/name", map[string]string{
+		"name": "renamed-local-dev",
+	}, adminCookie)
+	if rename.Code != http.StatusOK {
+		t.Fatalf("expected rename key 200, got %d: %s", rename.Code, rename.Body.String())
+	}
+	renamePayload := decodeJSON[map[string]string](t, rename)
+	if renamePayload["name"] != "renamed-local-dev" {
+		t.Fatalf("unexpected rename response: %+v", renamePayload)
+	}
+	renamedKey, err := rt.codexRelayKeys.GetKeyByID(firstKey.ID)
+	if err != nil || renamedKey.Name != "renamed-local-dev" || renamedKey.Key != firstKey.Key {
+		t.Fatalf("rename did not preserve key secret: key=%+v err=%v", renamedKey, err)
+	}
+	blankRename := performRequest(t, server.Handler, http.MethodPatch, "/api/admin/codex-keys/"+firstKey.ID+"/name", map[string]string{
+		"name": " ",
+	}, adminCookie)
+	if blankRename.Code != http.StatusBadRequest || !strings.Contains(blankRename.Body.String(), "update_key_name_failed") {
+		t.Fatalf("expected blank rename 400, got %d: %s", blankRename.Code, blankRename.Body.String())
+	}
+
 	secret := performRequest(t, server.Handler, http.MethodGet, "/api/admin/codex-keys/"+firstKey.ID+"/secret", nil, adminCookie)
 	if secret.Code != http.StatusOK {
 		t.Fatalf("expected get key secret 200, got %d: %s", secret.Code, secret.Body.String())

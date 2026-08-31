@@ -79,6 +79,44 @@ func TestCodexRelayKeyQuotaJSONAcceptsNumericLimitsAndPeriodAlias(t *testing.T) 
 	}
 }
 
+func TestCodexRelayKeyNameCanBeUpdatedWithoutChangingConfiguration(t *testing.T) {
+	service := &CodexRelayKeyService{path: t.TempDir() + "/keys.json"}
+	created, err := service.CreateKey("before")
+	if err != nil {
+		t.Fatalf("CreateKey() failed: %v", err)
+	}
+	if err := service.UpdateQuotaConfig(created.ID, 0, "5", RelayQuotaPeriodWeekly); err != nil {
+		t.Fatalf("configure quota: %v", err)
+	}
+	if err := service.UpdateAllowedProviderIDs(created.ID, []int64{3, 7}); err != nil {
+		t.Fatalf("configure providers: %v", err)
+	}
+
+	updated, err := service.UpdateName(created.ID, "  after  ")
+	if err != nil {
+		t.Fatalf("UpdateName() failed: %v", err)
+	}
+	if updated != "after" {
+		t.Fatalf("updated name = %q, want after", updated)
+	}
+	key, err := service.GetKeyByID(created.ID)
+	if err != nil {
+		t.Fatalf("GetKeyByID() failed: %v", err)
+	}
+	if key.Name != "after" || key.Key != created.Key || key.TokenLimit != 0 || key.USDLimit != "5" || key.QuotaPeriod != RelayQuotaPeriodWeekly || !equalInt64Slices(key.AllowedProviderIDs, []int64{3, 7}) {
+		t.Fatalf("rename changed key configuration: %+v", key)
+	}
+	if _, err := service.UpdateName(created.ID, "   "); err == nil {
+		t.Fatal("blank key name should be rejected")
+	}
+	if _, err := service.UpdateName(created.ID, "bad\nname"); err == nil {
+		t.Fatal("control characters in key name should be rejected")
+	}
+	if _, err := service.UpdateName("missing", "name"); err == nil {
+		t.Fatal("missing key should be rejected")
+	}
+}
+
 func TestCodexRelayKeyProviderAccessPersistsAndEmptyMeansUnrestricted(t *testing.T) {
 	service := &CodexRelayKeyService{path: t.TempDir() + "/keys.json"}
 	created, err := service.CreateKey("provider-access")
