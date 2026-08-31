@@ -431,6 +431,14 @@ chmod +x codeswitch-web
 sudo systemctl restart codeswitch
 ```
 
+`codeswitch-web` 已在 deploy 分支中记录为可执行文件。旧版部署如果曾因权限位显示本地修改，可先执行一次：
+
+```bash
+git -c core.fileMode=false pull origin deploy
+```
+
+之后使用仓库根目录的 `./update.sh` 即可正常更新。
+
 服务器更新时不要删除或覆盖 `~/.code-switch/`。
 
 ### 本地发布 deploy 分支

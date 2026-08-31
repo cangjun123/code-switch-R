@@ -25,7 +25,11 @@ if [ "$BRANCH" != "deploy" ]; then
 fi
 
 echo "==> 拉取最新代码（origin/deploy）..."
-git pull origin deploy
+# deploy contains a tracked executable.  Older checkouts may still have the
+# legacy 0644 index entry while chmod +x left the worktree at 0755.  Ignore
+# permission-only differences for this pull so the one-time mode fix can be
+# delivered; content changes are still checked by Git as usual.
+git -c core.fileMode=false pull origin deploy
 
 echo "==> 赋予 codeswitch-web 可执行权限..."
 chmod +x ./codeswitch-web
