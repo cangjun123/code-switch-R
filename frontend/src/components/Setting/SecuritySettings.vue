@@ -5,6 +5,7 @@ import {
   createCodexRelayKey,
   deleteCodexRelayModelPrice,
   deleteCodexRelayKey,
+  getCodexRelayKeyQuota,
   getCodexRelayKeySecret,
   listCodexRelayKeys,
   listCodexRelayModelPrices,
@@ -52,6 +53,7 @@ const createAllowedProviderIds = ref<number[]>([])
 const createdKey = ref<CodexRelayKeyCreateResult | null>(null)
 const quotaDrafts = ref<Record<string, QuotaDraft>>({})
 const quotaBusyId = ref('')
+const quotaRefreshBusyId = ref('')
 const providers = ref<CodexRelayProviderOption[]>([])
 const providersLoading = ref(false)
 const accessDrafts = ref<Record<string, { restricted: boolean; allowedProviderIds: number[] }>>({})
@@ -333,6 +335,25 @@ const handleResetQuota = async (key: CodexRelayKeyListItem) => {
     showToast(extractErrorMessage(error, t('auth.security.quotaResetFailed')), 'error')
   } finally {
     quotaBusyId.value = ''
+  }
+}
+
+const handleRefreshQuota = async (key: CodexRelayKeyListItem) => {
+  if (quotaRefreshBusyId.value || quotaBusyId.value === key.id) {
+    return
+  }
+  quotaRefreshBusyId.value = key.id
+  try {
+    const quota = await getCodexRelayKeyQuota(key.id)
+    const index = keys.value.findIndex((item) => item.id === key.id)
+    if (index >= 0) {
+      keys.value[index] = { ...keys.value[index], quota }
+    }
+    showToast(t('auth.security.quotaRefreshed'), 'success')
+  } catch (error) {
+    showToast(extractErrorMessage(error, t('auth.security.quotaRefreshFailed')), 'error')
+  } finally {
+    quotaRefreshBusyId.value = ''
   }
 }
 
@@ -663,8 +684,15 @@ onMounted(async () => {
                 <option value="weekly">{{ t('auth.security.periodWeekly') }}</option>
                 <option value="monthly">{{ t('auth.security.periodMonthly') }}</option>
               </select>
-              <button class="security-btn secondary" :disabled="quotaBusyId === key.id" @click="handleUpdateQuota(key)">{{ t('auth.security.saveQuota') }}</button>
-              <button class="security-btn secondary" :disabled="quotaBusyId === key.id" @click="handleResetQuota(key)">{{ t('auth.security.resetQuota') }}</button>
+              <button
+                class="security-btn secondary"
+                :disabled="quotaBusyId === key.id || quotaRefreshBusyId !== ''"
+                @click="handleRefreshQuota(key)"
+              >
+                {{ quotaRefreshBusyId === key.id ? t('auth.security.refreshingQuota') : t('auth.security.refreshQuota') }}
+              </button>
+              <button class="security-btn secondary" :disabled="quotaBusyId === key.id || quotaRefreshBusyId === key.id" @click="handleUpdateQuota(key)">{{ t('auth.security.saveQuota') }}</button>
+              <button class="security-btn secondary" :disabled="quotaBusyId === key.id || quotaRefreshBusyId === key.id" @click="handleResetQuota(key)">{{ t('auth.security.resetQuota') }}</button>
             </div>
           </div>
           <fieldset class="provider-access-editor" :aria-label="t('auth.security.providerAccess')">
