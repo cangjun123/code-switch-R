@@ -34,6 +34,10 @@ export type CodexRelayKeyListItem = {
   maskedKey: string
   enabled: boolean
   createdAt: string
+  tokenLimit: number
+  usdLimit: string
+  quotaPeriod: 'once' | 'daily' | 'weekly' | 'monthly'
+  quota?: CodexRelayQuotaStatus
 }
 
 export type CodexRelayKeyCreateResult = {
@@ -42,6 +46,42 @@ export type CodexRelayKeyCreateResult = {
   key: string
   enabled: boolean
   createdAt: string
+  tokenLimit: number
+  usdLimit: string
+  quotaPeriod: 'once' | 'daily' | 'weekly' | 'monthly'
+}
+
+export type CodexRelayQuotaStatus = {
+  tokenLimit: number
+  tokenUsed: number
+  tokenRemaining: number | null
+  usdLimit: string
+  usdUsed: string
+  usdRemaining: string | null
+  period: 'once' | 'daily' | 'weekly' | 'monthly'
+  windowStartedAt?: string
+  resetAt?: string
+  serverTimezone: string
+  trackingStarted: boolean
+  tokenExhausted: boolean
+  usdExhausted: boolean
+  blocked: boolean
+}
+
+export type CodexRelayModelPrice = {
+  model: string
+  input: string
+  cachedInput: string
+  output: string
+  reasoningOutput: string
+  updatedAt?: string
+}
+
+export type CodexRelayUnpricedModel = {
+  model: string
+  firstSeenAt: string
+  lastSeenAt: string
+  callCount: number
 }
 
 type AdminAuthState = {
@@ -200,10 +240,13 @@ export async function listCodexRelayKeys(): Promise<CodexRelayKeyListItem[]> {
   return response.keys ?? []
 }
 
-export async function createCodexRelayKey(name: string): Promise<CodexRelayKeyCreateResult> {
+export async function createCodexRelayKey(
+  name: string,
+  quota?: { tokenLimit?: number; usdLimit?: string; period?: string },
+): Promise<CodexRelayKeyCreateResult> {
   return adminRequest<CodexRelayKeyCreateResult>('/api/admin/codex-keys', {
     method: 'POST',
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, ...(quota ?? {}) }),
   })
 }
 
@@ -216,6 +259,51 @@ export async function deleteCodexRelayKey(id: string): Promise<void> {
   await adminRequest<void>(`/api/admin/codex-keys/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   })
+}
+
+export async function getCodexRelayKeyQuota(id: string): Promise<CodexRelayQuotaStatus> {
+  return adminRequest<CodexRelayQuotaStatus>(`/api/admin/codex-keys/${encodeURIComponent(id)}/quota`)
+}
+
+export async function updateCodexRelayKeyQuota(
+  id: string,
+  quota: { tokenLimit: number; usdLimit: string; period: string },
+): Promise<CodexRelayQuotaStatus> {
+  return adminRequest<CodexRelayQuotaStatus>(`/api/admin/codex-keys/${encodeURIComponent(id)}/quota`, {
+    method: 'PATCH',
+    body: JSON.stringify(quota),
+  })
+}
+
+export async function resetCodexRelayKeyQuota(id: string): Promise<CodexRelayQuotaStatus> {
+  return adminRequest<CodexRelayQuotaStatus>(`/api/admin/codex-keys/${encodeURIComponent(id)}/reset-quota`, {
+    method: 'POST',
+  })
+}
+
+export async function listCodexRelayModelPrices(): Promise<CodexRelayModelPrice[]> {
+  const response = await adminRequest<{ prices?: CodexRelayModelPrice[] }>('/api/admin/relay-model-prices')
+  return response.prices ?? []
+}
+
+export async function upsertCodexRelayModelPrice(price: CodexRelayModelPrice): Promise<CodexRelayModelPrice> {
+  return adminRequest<CodexRelayModelPrice>('/api/admin/relay-model-prices', {
+    method: 'POST',
+    body: JSON.stringify(price),
+  })
+}
+
+export async function deleteCodexRelayModelPrice(model: string): Promise<void> {
+  // Use the query form so model identifiers containing '/' remain routable by
+  // Gin's path parameter matcher.
+  await adminRequest<void>(`/api/admin/relay-model-prices?model=${encodeURIComponent(model)}`, {
+    method: 'DELETE',
+  })
+}
+
+export async function listCodexRelayUnpricedModels(): Promise<CodexRelayUnpricedModel[]> {
+  const response = await adminRequest<{ models?: CodexRelayUnpricedModel[] }>('/api/admin/relay-model-prices/unpriced')
+  return response.models ?? []
 }
 
 if (typeof window !== 'undefined') {

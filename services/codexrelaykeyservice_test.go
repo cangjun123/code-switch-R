@@ -1,6 +1,9 @@
 package services
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestCodexRelayKeyServiceCreateCopyAndDelete(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -53,5 +56,25 @@ func TestCodexRelayKeyServiceCreateCopyAndDelete(t *testing.T) {
 	}
 	if len(list) != 1 || list[0].ID != secondKey.ID {
 		t.Fatalf("expected remaining key %q, got %+v", secondKey.ID, list)
+	}
+}
+
+func TestCodexRelayKeyQuotaJSONSnakeCaseCompatibility(t *testing.T) {
+	var key CodexRelayKey
+	if err := json.Unmarshal([]byte(`{"id":"k","key":"csk_test","enabled":true,"token_limit":123,"usd_limit":"4.5","quota_period":"monthly"}`), &key); err != nil {
+		t.Fatalf("unmarshal key: %v", err)
+	}
+	if key.TokenLimit != 123 || key.USDLimit != "4.5" || key.QuotaPeriod != "monthly" {
+		t.Fatalf("unexpected key quota fields: %+v", key)
+	}
+}
+
+func TestCodexRelayKeyQuotaJSONAcceptsNumericLimitsAndPeriodAlias(t *testing.T) {
+	var key CodexRelayKey
+	if err := json.Unmarshal([]byte(`{"id":"k","key":"csk_test","enabled":true,"tokenLimit":"123","usdLimit":4.5,"period":"daily"}`), &key); err != nil {
+		t.Fatalf("unmarshal numeric key: %v", err)
+	}
+	if key.TokenLimit != 123 || key.USDLimit != "4.5" || key.QuotaPeriod != "daily" {
+		t.Fatalf("unexpected numeric key quota fields: %+v", key)
 	}
 }

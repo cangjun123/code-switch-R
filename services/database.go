@@ -66,6 +66,9 @@ func InitDatabase() error {
 	if err := ensureBlacklistTables(); err != nil {
 		return fmt.Errorf("初始化黑名单表失败: %w", err)
 	}
+	if err := ensureRelayQuotaTables(); err != nil {
+		return fmt.Errorf("初始化 relay quota 表失败: %w", err)
+	}
 
 	// 5. 预热连接池：强制建立数据库连接，避免首次写入时失败
 	var count int

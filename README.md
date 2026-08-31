@@ -310,6 +310,12 @@ curl http://127.0.0.1:18100/responses \
   -d '{"model":"gpt-5-codex","input":"hello"}'
 ```
 
+### Codex Key 额度
+
+在安全设置中可以为每个 `csk_...` key 配置 Token 上限和美元上限；任一上限设为 `0` 表示不限。周期支持一次性、每天、每周一和每月 1 日，日历边界按服务器 `time.Local` 时区计算。额度在真实上游响应完成后结算，宽松模式允许并发请求在结算前产生少量超额。
+
+美元价格在安全设置中统一按模型配置，单位为美元 / 100 万 Token，分别填写普通输入、缓存输入、普通输出和推理输出价格。未配置价格的模型按免费处理并在管理页提示，不会阻断请求。额度耗尽时，Codex Responses 和 Chat Completions 入口返回 OpenAI 兼容的 `429` / `insufficient_quota` 响应；周期额度同时返回 `Retry-After` 和 `X-Quota-Reset`。
+
 ## 日志与数据库维护
 
 请求日志写入 SQLite 的 `request_log` 表。服务启动时会自动确保表结构和索引存在：

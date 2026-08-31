@@ -20,6 +20,7 @@ import (
 	"github.com/daodao97/xgo/xdb"
 	"github.com/daodao97/xgo/xrequest"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -36,6 +37,7 @@ type ProviderRelayService struct {
 	providerService      *ProviderService
 	geminiService        *GeminiService
 	codexRelayKeys       *CodexRelayKeyService
+	relayQuota           *RelayQuotaService
 	blacklistService     *BlacklistService
 	notificationService  *NotificationService
 	appSettings          *AppSettingsService // 应用设置服务（用于获取轮询开关状态）
@@ -171,12 +173,16 @@ func markFirstTokenDuration(requestLog *ReqeustLog, start time.Time) {
 	defaultActiveRequestTracker.Update(requestLog.ActiveRequestID, requestLog)
 }
 
-func NewProviderRelayService(providerService *ProviderService, geminiService *GeminiService, codexRelayKeys *CodexRelayKeyService, blacklistService *BlacklistService, notificationService *NotificationService, appSettings *AppSettingsService, addr string) *ProviderRelayService {
+func NewProviderRelayService(providerService *ProviderService, geminiService *GeminiService, codexRelayKeys *CodexRelayKeyService, blacklistService *BlacklistService, notificationService *NotificationService, appSettings *AppSettingsService, addr string, quotaServices ...*RelayQuotaService) *ProviderRelayService {
 	if addr == "" {
 		addr = DefaultRelayBindAddr
 	}
 	if codexRelayKeys == nil {
 		codexRelayKeys = NewCodexRelayKeyService()
+	}
+	quotaService := NewRelayQuotaService()
+	if len(quotaServices) > 0 && quotaServices[0] != nil {
+		quotaService = quotaServices[0]
 	}
 
 	// 【修复】数据库初始化已移至 main.go 的 InitDatabase()
@@ -186,6 +192,7 @@ func NewProviderRelayService(providerService *ProviderService, geminiService *Ge
 		providerService:     providerService,
 		geminiService:       geminiService,
 		codexRelayKeys:      codexRelayKeys,
+		relayQuota:          quotaService,
 		blacklistService:    blacklistService,
 		notificationService: notificationService,
 		appSettings:         appSettings,
@@ -201,6 +208,16 @@ func NewProviderRelayService(providerService *ProviderService, geminiService *Ge
 		codexSessionRoutes:   make(map[codexSessionKey]codexSessionRouteState),
 		codexInputNamespace:  make(map[codexProviderCompatibilityKey]time.Time),
 	}
+}
+
+func (prs *ProviderRelayService) SetRelayQuotaService(service *RelayQuotaService) {
+	if prs != nil && service != nil {
+		prs.relayQuota = service
+	}
+}
+
+func newRelayAttemptID() string {
+	return uuid.NewString()
 }
 
 func newRelayHTTPClient() *http.Client {
@@ -475,12 +492,13 @@ func (prs *ProviderRelayService) Addr() string {
 func (prs *ProviderRelayService) registerRoutes(router gin.IRouter) {
 	claudeAuth := prs.claudeRelayAuthMiddleware()
 	codexAuth := prs.codexRelayAuthMiddleware()
+	codexQuota := prs.codexQuotaMiddleware()
 
 	router.POST("/v1/messages", claudeAuth, prs.proxyHandler("claude", "/v1/messages"))
 	router.POST("/v1/messages/count_tokens", claudeAuth, prs.proxyHandler("claude", "/v1/messages/count_tokens"))
-	router.POST("/responses", codexAuth, prs.proxyHandler("codex", "/responses"))
+	router.POST("/responses", codexAuth, codexQuota, prs.proxyHandler("codex", "/responses"))
 	router.OPTIONS("/v1/chat/completions", prs.openAIChatCompletionsOptionsHandler())
-	router.POST("/v1/chat/completions", prs.openAIChatCompletionsCORSMiddleware(), codexAuth, prs.proxyHandler("codex", "/v1/chat/completions"))
+	router.POST("/v1/chat/completions", prs.openAIChatCompletionsCORSMiddleware(), codexAuth, codexQuota, prs.proxyHandler("codex", "/v1/chat/completions"))
 	router.OPTIONS("/v1/images/generations", prs.openAIImagesOptionsHandler())
 	router.OPTIONS("/v1/images/edits", prs.openAIImagesOptionsHandler())
 	router.POST("/v1/images/generations", prs.openAIImagesCORSMiddleware(), codexAuth, prs.openAIImagesProxyHandler("/v1/images/generations"))
@@ -563,6 +581,9 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 		}
 
 		isStream := gjson.GetBytes(bodyBytes, "stream").Bool()
+		if kind == ProviderKindCodex && strings.EqualFold(endpoint, "/v1/chat/completions") && isStream {
+			bodyBytes = ensureChatCompletionUsageOption(bodyBytes)
+		}
 		requestedModel := gjson.GetBytes(bodyBytes, "model").String()
 		clientHeaders := cloneHeaders(c.Request.Header)
 		codexSessionRequest := prs.attachCodexSessionRequest(c, kind, endpoint, bodyBytes, clientHeaders)
@@ -1155,9 +1176,11 @@ func (prs *ProviderRelayService) forwardRequest(
 			}
 		}
 	}
-	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) {
-		// Let net/http negotiate gzip itself so RawResponse.Body is decompressed
-		// before the history/session and namespace JSON/SSE hooks inspect it.
+	if kind == ProviderKindCodex {
+		// Let net/http negotiate compression itself so RawResponse.Body is
+		// transparently decompressed before quota usage parsing and the various
+		// Responses/Chat compatibility hooks inspect it.  Keeping a client-sent
+		// Accept-Encoding header would disable Go's automatic decompression.
 		deleteHeaderCaseInsensitive(headers, "accept-encoding")
 	}
 
@@ -1216,11 +1239,12 @@ func (prs *ProviderRelayService) forwardRequest(
 	}
 
 	requestLog := &ReqeustLog{
-		Platform: kind,
-		Provider: provider.Name,
-		Model:    model,
-		IsStream: isStream,
-		ClientIP: clientIPFromRequest(c.Request),
+		Platform:   kind,
+		Provider:   provider.Name,
+		Model:      model,
+		IsStream:   isStream,
+		RelayKeyID: relayKeyIDFromContext(c),
+		ClientIP:   clientIPFromRequest(c.Request),
 	}
 	start := time.Now()
 	activeRequestID := defaultActiveRequestTracker.Start(requestLog, start)
@@ -1243,16 +1267,17 @@ func (prs *ProviderRelayService) forwardRequest(
 		defer cancel()
 
 		err := GlobalDBQueueLogs.ExecBatchCtx(ctx, `
-			INSERT INTO request_log (
-				platform, model, provider, http_code,
+		 INSERT INTO request_log (
+				platform, model, provider, relay_key_id, http_code,
 				input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
 				reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
 				is_degraded, resend_count
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			requestLog.Platform,
 			requestLog.Model,
 			requestLog.Provider,
+			requestLog.RelayKeyID,
 			requestLog.HttpCode,
 			requestLog.InputTokens,
 			requestLog.OutputTokens,
@@ -1284,9 +1309,15 @@ func (prs *ProviderRelayService) forwardRequest(
 
 	var resp *xrequest.Response
 	var err error
+	requestCtx := c.Request.Context()
+	if kind == ProviderKindCodex && prs.relayQuota != nil && relayKeyIDFromContext(c) != "" {
+		requestCtx = withCodexQuotaAttemptTracker(requestCtx, &codexQuotaAttemptTracker{
+			service: prs, keyID: relayKeyIDFromContext(c), provider: provider.Name, model: model,
+		})
+	}
 	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) {
 		resp, err = prs.postCodexResponsesRequestWithCapacityPreflight(
-			c.Request.Context(),
+			requestCtx,
 			targetURL,
 			query,
 			headers,
@@ -1295,13 +1326,15 @@ func (prs *ProviderRelayService) forwardRequest(
 			provider.Name,
 			historyAttempt,
 		)
+	} else if kind == ProviderKindCodex {
+		resp, err = prs.postCodexResponsesRequest(requestCtx, targetURL, query, headers, bodyBytes, provider.Name)
 	} else {
 		req := xrequest.New().
 			SetHeaders(headers).
 			SetQueryParams(query).
 			SetRetry(1, 500*time.Millisecond).
 			SetClient(prs.httpClient).
-			WithContext(c.Request.Context()).
+			WithContext(requestCtx).
 			SetBody(bytes.NewReader(bodyBytes))
 		resp, err = req.Post(targetURL)
 	}
@@ -1335,6 +1368,9 @@ func (prs *ProviderRelayService) forwardRequest(
 		// 尝试从响应体提取供应商原始错误信息
 		if resp != nil {
 			if upstreamBody := extractUpstreamError(resp); upstreamBody != "" {
+				if kind == ProviderKindCodex {
+					CodexParseTokenUsageFromResponse(resp.String(), requestLog)
+				}
 				return false, fmt.Errorf("upstream status %d: %s", resp.StatusCode(), upstreamBody)
 			}
 		}
@@ -1366,6 +1402,9 @@ func (prs *ProviderRelayService) forwardRequest(
 			}
 		}
 		if errMsg != "" {
+			if kind == ProviderKindCodex {
+				CodexParseTokenUsageFromResponse(resp.String(), requestLog)
+			}
 			return false, fmt.Errorf("upstream status %d: %s", status, errMsg)
 		}
 		return false, fmt.Errorf("upstream status %d", status)
@@ -1385,6 +1424,9 @@ func (prs *ProviderRelayService) forwardRequest(
 		}
 		if requestNamespaceRewritten && !codexResponsePreflightFailedOpen(resp) && detectAndNormalizeJSONResponse(resp, isStream) {
 			responseObservation.observePayload(resp.Bytes())
+			if kind == ProviderKindCodex {
+				CodexParseTokenUsageFromResponse(string(resp.Bytes()), requestLog)
+			}
 			return writeCodexNamespaceJSONResponse(c.Writer, resp, requestLog, provider.Name)
 		}
 		if isStreamResponse(resp, isStream) {
@@ -1409,6 +1451,9 @@ func (prs *ProviderRelayService) forwardRequest(
 		}
 		if requestNamespaceRewritten {
 			responseObservation.observePayload(resp.Bytes())
+			if kind == ProviderKindCodex {
+				CodexParseTokenUsageFromResponse(string(resp.Bytes()), requestLog)
+			}
 			return writeCodexNamespaceJSONResponse(c.Writer, resp, requestLog, provider.Name)
 		}
 		hooks := []xrequest.ResponseHook{ReqeustLogHook(c, kind, requestLog)}
@@ -1478,6 +1523,9 @@ func (prs *ProviderRelayService) forwardRequest(
 
 	// 尝试从响应体提取供应商原始错误信息
 	if upstreamBody := extractUpstreamError(resp); upstreamBody != "" {
+		if kind == ProviderKindCodex {
+			CodexParseTokenUsageFromResponse(resp.String(), requestLog)
+		}
 		return false, fmt.Errorf("upstream status %d: %s", status, upstreamBody)
 	}
 	return false, fmt.Errorf("upstream status %d", status)
@@ -1498,8 +1546,13 @@ func (prs *ProviderRelayService) postCodexResponsesRequest(
 	body []byte,
 	providerName string,
 ) (*xrequest.Response, error) {
+	tracker := codexQuotaTrackerFromContext(ctx)
+	attemptID := newRelayAttemptID()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
+		if tracker != nil {
+			tracker.settle(attemptID, nil)
+		}
 		return nil, err
 	}
 	queryValues := req.URL.Query()
@@ -1508,6 +1561,9 @@ func (prs *ProviderRelayService) postCodexResponsesRequest(
 	}
 	req.URL.RawQuery = queryValues.Encode()
 	for key, value := range headers {
+		if strings.EqualFold(key, "content-length") || strings.EqualFold(key, "transfer-encoding") {
+			continue
+		}
 		req.Header.Set(key, value)
 	}
 
@@ -1525,9 +1581,15 @@ func (prs *ProviderRelayService) postCodexResponsesRequest(
 		err != nil,
 	)
 	if rawResponse == nil {
+		if tracker != nil {
+			tracker.settle(attemptID, nil)
+		}
 		return nil, err
 	}
 	resp := xrequest.NewResponse(rawResponse)
+	if tracker != nil {
+		tracker.attachResponse(resp, attemptID)
+	}
 	if rawResponse.StatusCode >= http.StatusBadRequest {
 		if inspectErr := bufferCodexErrorResponse(ctx, resp, providerName); inspectErr != nil {
 			return resp, inspectErr
@@ -2838,6 +2900,34 @@ func flattenQuery(values map[string][]string) map[string]string {
 	return query
 }
 
+// ensureChatCompletionUsageOption asks OpenAI-compatible providers to append
+// one final usage chunk for streamed Chat Completions. Existing stream_options
+// are preserved and only include_usage is forced on.
+func ensureChatCompletionUsageOption(body []byte) []byte {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(body, &root); err != nil {
+		return body
+	}
+	if stream, ok := root["stream"]; !ok || !gjson.ParseBytes(stream).Bool() {
+		return body
+	}
+	options := make(map[string]json.RawMessage)
+	if raw, ok := root["stream_options"]; ok && len(raw) > 0 && string(raw) != "null" {
+		_ = json.Unmarshal(raw, &options)
+	}
+	options["include_usage"] = json.RawMessage("true")
+	encodedOptions, err := json.Marshal(options)
+	if err != nil {
+		return body
+	}
+	root["stream_options"] = encodedOptions
+	encoded, err := json.Marshal(root)
+	if err != nil {
+		return body
+	}
+	return encoded
+}
+
 func joinURL(base string, endpoint string) string {
 	base = strings.TrimSuffix(base, "/")
 	endpoint = "/" + strings.TrimPrefix(endpoint, "/")
@@ -2880,6 +2970,7 @@ func ensureRequestLogTableWithDB(db *sql.DB) error {
 		platform TEXT,
 		model TEXT,
 		provider TEXT,
+		relay_key_id TEXT,
 		http_code INTEGER,
 		input_tokens INTEGER,
 		output_tokens INTEGER,
@@ -2906,6 +2997,7 @@ func ensureRequestLogTableWithDB(db *sql.DB) error {
 		{name: "platform", definition: "TEXT"},
 		{name: "model", definition: "TEXT"},
 		{name: "provider", definition: "TEXT"},
+		{name: "relay_key_id", definition: "TEXT"},
 		{name: "http_code", definition: "INTEGER"},
 		{name: "input_tokens", definition: "INTEGER DEFAULT 0"},
 		{name: "output_tokens", definition: "INTEGER DEFAULT 0"},
@@ -2939,6 +3031,7 @@ func ensureRequestLogIndexes(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_request_log_platform_created_at ON request_log(platform, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_log_platform_provider_id ON request_log(platform, provider, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_log_provider_id ON request_log(provider, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_request_log_relay_key_id ON request_log(relay_key_id, id DESC)`,
 	}
 	for _, query := range indexes {
 		if _, err := db.Exec(query); err != nil {
@@ -3052,10 +3145,19 @@ func (diagnostics *codexStreamDiagnostics) LogZeroUsage(providerName string, usa
 
 func parseEventPayload(payload string, parser func(string, *ReqeustLog), usage *ReqeustLog) {
 	lines := strings.Split(payload, "\n")
+	foundData := false
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "data:") {
+			foundData = true
 			parser(strings.TrimSpace(strings.TrimPrefix(line, "data:")), usage)
+		}
+	}
+	// Non-streaming responses are plain JSON rather than SSE records.
+	if !foundData {
+		trimmed := strings.TrimSpace(payload)
+		if trimmed != "" {
+			parser(trimmed, usage)
 		}
 	}
 }
@@ -3065,6 +3167,7 @@ type ReqeustLog struct {
 	Platform              string  `json:"platform"` // claude、codex 或 gemini
 	Model                 string  `json:"model"`
 	Provider              string  `json:"provider"` // provider name
+	RelayKeyID            string  `json:"relay_key_id,omitempty"`
 	HttpCode              int     `json:"http_code"`
 	InputTokens           int     `json:"input_tokens"`
 	OutputTokens          int     `json:"output_tokens"`
@@ -3112,16 +3215,43 @@ func ClaudeCodeParseTokenUsageFromResponse(data string, usage *ReqeustLog) {
 
 // codex usage parser
 func CodexParseTokenUsageFromResponse(data string, usage *ReqeustLog) {
-	usagePath := "response.usage"
-	if !gjson.Get(data, usagePath).Exists() {
-		// Some Responses-compatible relays put usage directly on the completed
-		// event instead of nesting it under response.
-		usagePath = "usage"
+	if usage == nil {
+		return
 	}
-	usage.InputTokens += int(gjson.Get(data, usagePath+".input_tokens").Int())
-	usage.OutputTokens += int(gjson.Get(data, usagePath+".output_tokens").Int())
-	usage.CacheReadTokens += int(gjson.Get(data, usagePath+".input_tokens_details.cached_tokens").Int())
-	usage.ReasoningTokens += int(gjson.Get(data, usagePath+".output_tokens_details.reasoning_tokens").Int())
+	// Responses streams may emit cumulative usage more than once.  Always keep
+	// the largest observed value so the final event is counted exactly once.
+	usageCandidates := []string{"response.usage", "usage"}
+	for _, usagePath := range usageCandidates {
+		value := gjson.Get(data, usagePath)
+		if !value.Exists() || !value.IsObject() {
+			continue
+		}
+		setMaxInt(&usage.InputTokens, int(value.Get("input_tokens").Int()))
+		setMaxInt(&usage.OutputTokens, int(value.Get("output_tokens").Int()))
+		setMaxInt(&usage.CacheReadTokens, int(value.Get("input_tokens_details.cached_tokens").Int()))
+		setMaxInt(&usage.CacheReadTokens, int(value.Get("input_tokens_details.cache_read_input_tokens").Int()))
+		setMaxInt(&usage.CacheReadTokens, int(value.Get("cache_read_input_tokens").Int()))
+		setMaxInt(&usage.CacheReadTokens, int(value.Get("cached_input_tokens").Int()))
+		setMaxInt(&usage.ReasoningTokens, int(value.Get("output_tokens_details.reasoning_tokens").Int()))
+		setMaxInt(&usage.ReasoningTokens, int(value.Get("reasoning_tokens").Int()))
+	}
+	// Some OpenAI-compatible Chat Completions providers expose usage with
+	// prompt_tokens/completion_tokens instead of Responses names.
+	chatUsage := gjson.Get(data, "usage")
+	if chatUsage.Exists() && chatUsage.IsObject() {
+		setMaxInt(&usage.InputTokens, int(chatUsage.Get("prompt_tokens").Int()))
+		setMaxInt(&usage.OutputTokens, int(chatUsage.Get("completion_tokens").Int()))
+		setMaxInt(&usage.CacheReadTokens, int(chatUsage.Get("prompt_tokens_details.cached_tokens").Int()))
+		setMaxInt(&usage.CacheReadTokens, int(chatUsage.Get("cache_read_input_tokens").Int()))
+		setMaxInt(&usage.ReasoningTokens, int(chatUsage.Get("completion_tokens_details.reasoning_tokens").Int()))
+		setMaxInt(&usage.ReasoningTokens, int(chatUsage.Get("reasoning_tokens").Int()))
+	}
+}
+
+func setMaxInt(dst *int, value int) {
+	if dst != nil && value > *dst {
+		*dst = value
+	}
 }
 
 // gemini usage parser (流式响应专用)
@@ -3374,13 +3504,13 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 			defer cancel()
 			_ = GlobalDBQueueLogs.ExecBatchCtx(ctx, `
 				INSERT INTO request_log (
-					platform, model, provider, http_code,
+					platform, model, provider, relay_key_id, http_code,
 					input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
 					reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
 					is_degraded, resend_count
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`,
-				requestLog.Platform, requestLog.Model, requestLog.Provider, requestLog.HttpCode,
+				requestLog.Platform, requestLog.Model, requestLog.Provider, requestLog.RelayKeyID, requestLog.HttpCode,
 				requestLog.InputTokens, requestLog.OutputTokens, requestLog.CacheCreateTokens,
 				requestLog.CacheReadTokens, requestLog.ReasoningTokens,
 				boolToInt(requestLog.IsStream), requestLog.DurationSec, requestLog.FirstTokenDurationSec, requestLog.ClientIP,
@@ -4400,6 +4530,13 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 
 	var activeID int64
 	activeStarted := false
+	keyID := relayKeyIDFromContext(c)
+	requestCtx := clientCtx
+	if prs.relayQuota != nil && keyID != "" {
+		requestCtx = withCodexQuotaAttemptTracker(clientCtx, &codexQuotaAttemptTracker{
+			service: prs, keyID: keyID, provider: provider.Name, model: model,
+		})
+	}
 	defer func() {
 		if activeStarted {
 			defaultActiveRequestTracker.Finish(activeID)
@@ -4420,6 +4557,7 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 			Provider:    provider.Name,
 			Model:       model,
 			IsStream:    isStream,
+			RelayKeyID:  keyID,
 			ClientIP:    clientIP,
 			ResendCount: attempt,
 		}
@@ -4438,7 +4576,7 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 		var resp *xrequest.Response
 		var postErr error
 		resp, postErr = prs.postCodexResponsesRequestWithCapacityPreflight(
-			clientCtx,
+			requestCtx,
 			targetURL,
 			query,
 			headers,
@@ -4465,6 +4603,7 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 			}
 			if resp != nil {
 				if upstreamBody := extractUpstreamError(resp); upstreamBody != "" {
+					CodexParseTokenUsageFromResponse(resp.String(), attemptLog)
 					finalize(attemptLog, attemptStart)
 					return false, fmt.Errorf("upstream status %d: %s", resp.StatusCode(), upstreamBody)
 				}
@@ -4490,6 +4629,7 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 					errMsg = upstreamBody
 				}
 			}
+			CodexParseTokenUsageFromResponse(resp.String(), attemptLog)
 			finalize(attemptLog, attemptStart)
 			if errMsg != "" {
 				return false, fmt.Errorf("upstream status %d: %s", status, errMsg)
@@ -4500,6 +4640,7 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 		// 非 2xx：上游失败，交回外层调度（不在此拉黑）
 		if status != 0 && (status < http.StatusOK || status >= http.StatusMultipleChoices) {
 			if upstreamBody := extractUpstreamError(resp); upstreamBody != "" {
+				CodexParseTokenUsageFromResponse(resp.String(), attemptLog)
 				finalize(attemptLog, attemptStart)
 				return false, fmt.Errorf("upstream status %d: %s", status, upstreamBody)
 			}
@@ -4708,7 +4849,7 @@ func captureCodexStreamingResponse(
 }
 
 // captureCodexNonStreamingResponse 缓冲 codex 非流式 JSON 响应。
-// 注意：非流式 /responses 响应 usage 在顶层 usage.*（无 response. 前缀），故用 ClaudeCodeParse 解析器。
+// 非流式 Responses usage 可能位于顶层或 response.usage，统一使用 Codex 解析器。
 func captureCodexNonStreamingResponse(resp *xrequest.Response, attemptLog *ReqeustLog) (int, http.Header, []byte, error) {
 	if resp == nil || resp.RawResponse == nil {
 		return 0, nil, nil, fmt.Errorf("empty upstream response")
@@ -4724,7 +4865,7 @@ func captureCodexNonStreamingResponse(resp *xrequest.Response, attemptLog *Reqeu
 	}
 	capturedHeader := http.Header{}
 	copyStreamingResponseHeaders(capturedHeader, raw.Header)
-	ClaudeCodeParseTokenUsageFromResponse(string(body), attemptLog)
+	CodexParseTokenUsageFromResponse(string(body), attemptLog)
 	return status, capturedHeader, body, nil
 }
 
@@ -4766,13 +4907,13 @@ func writeAttemptLog(log *ReqeustLog, start time.Time) {
 	defer cancel()
 	err := GlobalDBQueueLogs.ExecBatchCtx(ctx, `
 		INSERT INTO request_log (
-			platform, model, provider, http_code,
+			platform, model, provider, relay_key_id, http_code,
 			input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
 			reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
 			is_degraded, resend_count
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
-		log.Platform, log.Model, log.Provider, log.HttpCode,
+		log.Platform, log.Model, log.Provider, log.RelayKeyID, log.HttpCode,
 		log.InputTokens, log.OutputTokens, log.CacheCreateTokens, log.CacheReadTokens,
 		log.ReasoningTokens, boolToInt(log.IsStream), log.DurationSec, log.FirstTokenDurationSec, log.ClientIP,
 		boolToInt(log.IsDegraded), log.ResendCount,
