@@ -4,6 +4,8 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -11,10 +13,20 @@ import (
 //go:embed model_prices_and_context_window.json
 var pricingFile []byte
 
+// openai_model_prices.json supplements the bundled LiteLLM snapshot with the
+// newer OpenAI/Codex aliases published by EasyCLIProxyAPI. Keeping the data in
+// the binary makes quota enforcement independent of network availability.
+//
+//go:embed openai_model_prices.json
+var openAIPriceFile []byte
+
 var (
 	defaultOnce    sync.Once
 	defaultService *Service
 	defaultErr     error
+	openAIOnce     sync.Once
+	openAIPrices   []KnownModelPrice
+	openAIErr      error
 	nameReplacer   = strings.NewReplacer("-", "", "_", "", ".", "", ":", "", "/", "", " ", "")
 )
 
@@ -38,6 +50,100 @@ type PricingEntry struct {
 	InputCostPerTokenAbove200k          float64 `json:"input_cost_per_token_above_200k_tokens"`
 	InputCostPerTokenAbove128k          float64 `json:"input_cost_per_token_above_128k_tokens"`
 	OutputCostPerTokenAbove200k         float64 `json:"output_cost_per_token_above_200k_tokens"`
+	LiteLLMProvider                     string  `json:"litellm_provider"`
+	Mode                                string  `json:"mode"`
+}
+
+// KnownModelPrice is a bundled OpenAI model price expressed in USD per one
+// million tokens. Decimal strings avoid introducing floating-point values at
+// the quota accounting boundary.
+type KnownModelPrice struct {
+	Model           string
+	Input           string
+	CachedInput     string
+	Output          string
+	ReasoningOutput string
+}
+
+type bundledOpenAIPrice struct {
+	Input           string `json:"input"`
+	CachedInput     string `json:"cachedInput"`
+	Output          string `json:"output"`
+	ReasoningOutput string `json:"reasoningOutput"`
+}
+
+type bundledOpenAIPriceFile struct {
+	Models map[string]bundledOpenAIPrice `json:"models"`
+}
+
+// KnownOpenAIModelPrices returns all OpenAI chat/response prices known by the
+// local LiteLLM snapshot, overlaid with the newer bundled Codex price source.
+func KnownOpenAIModelPrices() ([]KnownModelPrice, error) {
+	openAIOnce.Do(loadKnownOpenAIModelPrices)
+	if openAIErr != nil {
+		return nil, openAIErr
+	}
+	result := make([]KnownModelPrice, len(openAIPrices))
+	copy(result, openAIPrices)
+	return result, nil
+}
+
+func loadKnownOpenAIModelPrices() {
+	raw := make(map[string]PricingEntry)
+	if err := json.Unmarshal(pricingFile, &raw); err != nil {
+		openAIErr = fmt.Errorf("parse pricing file for OpenAI prices: %w", err)
+		return
+	}
+	merged := make(map[string]KnownModelPrice)
+	for model, entry := range raw {
+		if entry.LiteLLMProvider != "openai" || (entry.Mode != "chat" && entry.Mode != "responses") {
+			continue
+		}
+		output := perTokenPriceToMillion(entry.OutputCostPerToken)
+		reasoning := perTokenPriceToMillion(entry.OutputCostPerReasoningToken)
+		if reasoning == "0" {
+			reasoning = output
+		}
+		merged[model] = KnownModelPrice{
+			Model: model, Input: perTokenPriceToMillion(entry.InputCostPerToken),
+			CachedInput: perTokenPriceToMillion(entry.CacheReadInputTokenCost),
+			Output:      output, ReasoningOutput: reasoning,
+		}
+	}
+
+	var supplemental bundledOpenAIPriceFile
+	if err := json.Unmarshal(openAIPriceFile, &supplemental); err != nil {
+		openAIErr = fmt.Errorf("parse bundled OpenAI pricing file: %w", err)
+		return
+	}
+	for model, price := range supplemental.Models {
+		reasoning := price.ReasoningOutput
+		if reasoning == "" {
+			reasoning = price.Output
+		}
+		merged[model] = KnownModelPrice{
+			Model: model, Input: price.Input, CachedInput: price.CachedInput,
+			Output: price.Output, ReasoningOutput: reasoning,
+		}
+	}
+
+	openAIPrices = make([]KnownModelPrice, 0, len(merged))
+	for _, price := range merged {
+		openAIPrices = append(openAIPrices, price)
+	}
+	sort.Slice(openAIPrices, func(i, j int) bool { return openAIPrices[i].Model < openAIPrices[j].Model })
+}
+
+func perTokenPriceToMillion(value float64) string {
+	if value <= 0 {
+		return "0"
+	}
+	text := strconv.FormatFloat(value*1_000_000, 'f', 9, 64)
+	text = strings.TrimRight(strings.TrimRight(text, "0"), ".")
+	if text == "" {
+		return "0"
+	}
+	return text
 }
 
 // UsageSnapshot 描述一次请求的 token 用量。

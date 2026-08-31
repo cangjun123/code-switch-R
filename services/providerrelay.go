@@ -499,6 +499,8 @@ func (prs *ProviderRelayService) registerRoutes(router gin.IRouter) {
 	router.POST("/responses", codexAuth, codexQuota, prs.proxyHandler("codex", "/responses"))
 	router.OPTIONS("/v1/chat/completions", prs.openAIChatCompletionsOptionsHandler())
 	router.POST("/v1/chat/completions", prs.openAIChatCompletionsCORSMiddleware(), codexAuth, codexQuota, prs.proxyHandler("codex", "/v1/chat/completions"))
+	router.OPTIONS("/v1/quota", prs.codexQuotaOptionsHandler())
+	router.GET("/v1/quota", prs.codexQuotaCORSMiddleware(), codexAuth, prs.codexQuotaStatusHandler())
 	router.OPTIONS("/v1/images/generations", prs.openAIImagesOptionsHandler())
 	router.OPTIONS("/v1/images/edits", prs.openAIImagesOptionsHandler())
 	router.POST("/v1/images/generations", prs.openAIImagesCORSMiddleware(), codexAuth, prs.openAIImagesProxyHandler("/v1/images/generations"))
@@ -518,6 +520,34 @@ func (prs *ProviderRelayService) registerRoutes(router gin.IRouter) {
 
 	// 自定义 CLI 工具的 /v1/models 端点
 	router.GET("/custom/:toolId/v1/models", prs.customModelsHandler())
+}
+
+func (prs *ProviderRelayService) codexQuotaOptionsHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		applyCodexQuotaCORS(c)
+		c.Status(http.StatusNoContent)
+	}
+}
+
+func (prs *ProviderRelayService) codexQuotaCORSMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		applyCodexQuotaCORS(c)
+		c.Next()
+	}
+}
+
+func applyCodexQuotaCORS(c *gin.Context) {
+	origin := strings.TrimSpace(c.GetHeader("Origin"))
+	if origin == "" {
+		origin = "*"
+	}
+	c.Header("Access-Control-Allow-Origin", origin)
+	c.Header("Access-Control-Allow-Headers", "Authorization, Accept, Cache-Control, X-Code-Switch-Key, X-API-Key")
+	c.Header("Access-Control-Allow-Methods", "GET, OPTIONS")
+	c.Header("Access-Control-Max-Age", "86400")
+	if origin != "*" {
+		c.Header("Vary", "Origin")
+	}
 }
 
 func (prs *ProviderRelayService) openAIChatCompletionsOptionsHandler() gin.HandlerFunc {
@@ -598,6 +628,22 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load providers"})
 			return
 		}
+		accessSkippedCount := 0
+		if kind == ProviderKindCodex {
+			relayKey, keyErr := prs.relayKeyForRequest(c)
+			if keyErr != nil {
+				writeOpenAIQuotaServiceError(c, http.StatusUnauthorized, "relay_key_not_found", "relay key no longer exists")
+				return
+			}
+			providers, accessSkippedCount = filterCodexProvidersForRelayKey(relayKey, providers)
+			if relayKey != nil && len(relayKey.AllowedProviderIDs) > 0 && len(providers) == 0 {
+				writeOpenAIProviderAccessDenied(c)
+				return
+			}
+			if accessSkippedCount > 0 {
+				fmt.Printf("[INFO] Codex relay key provider 白名单已过滤 %d 个 provider\n", accessSkippedCount)
+			}
+		}
 
 		codexNamespaceConflict := false
 		codexNamespaceConflictInspected := false
@@ -612,7 +658,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 		}
 
 		active := make([]Provider, 0, len(providers))
-		skippedCount := 0
+		skippedCount := accessSkippedCount
 		for _, provider := range providers {
 			// 基础过滤：enabled、URL、APIKey
 			if !provider.Enabled || provider.APIURL == "" || provider.APIKey == "" {

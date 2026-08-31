@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,14 +22,15 @@ const (
 )
 
 type CodexRelayKey struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Key         string    `json:"key"`
-	Enabled     bool      `json:"enabled"`
-	CreatedAt   time.Time `json:"createdAt"`
-	TokenLimit  int64     `json:"tokenLimit"`
-	USDLimit    string    `json:"usdLimit"`
-	QuotaPeriod string    `json:"quotaPeriod"`
+	ID                 string    `json:"id"`
+	Name               string    `json:"name"`
+	Key                string    `json:"key"`
+	Enabled            bool      `json:"enabled"`
+	CreatedAt          time.Time `json:"createdAt"`
+	TokenLimit         int64     `json:"tokenLimit"`
+	USDLimit           string    `json:"usdLimit"`
+	QuotaPeriod        string    `json:"quotaPeriod"`
+	AllowedProviderIDs []int64   `json:"allowedProviderIds,omitempty"`
 }
 
 // UnmarshalJSON accepts both the current camelCase representation and the
@@ -47,6 +49,8 @@ func (key *CodexRelayKey) UnmarshalJSON(data []byte) error {
 		QuotaPeriod      string          `json:"quotaPeriod"`
 		Period           string          `json:"period"`
 		QuotaPeriodSnake string          `json:"quota_period"`
+		AllowedProviders []int64         `json:"allowedProviderIds"`
+		AllowedSnake     []int64         `json:"allowed_provider_ids"`
 	}
 	if err := json.Unmarshal(data, &value); err != nil {
 		return err
@@ -101,30 +105,41 @@ func (key *CodexRelayKey) UnmarshalJSON(data []byte) error {
 	if key.QuotaPeriod == "" {
 		key.QuotaPeriod = strings.TrimSpace(value.QuotaPeriodSnake)
 	}
+	key.AllowedProviderIDs = value.AllowedProviders
+	if key.AllowedProviderIDs == nil {
+		key.AllowedProviderIDs = value.AllowedSnake
+	}
+	var err error
+	key.AllowedProviderIDs, err = NormalizeCodexAllowedProviderIDs(key.AllowedProviderIDs)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
 type CodexRelayKeyListItem struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	MaskedKey   string            `json:"maskedKey"`
-	Enabled     bool              `json:"enabled"`
-	CreatedAt   time.Time         `json:"createdAt"`
-	TokenLimit  int64             `json:"tokenLimit"`
-	USDLimit    string            `json:"usdLimit"`
-	QuotaPeriod string            `json:"quotaPeriod"`
-	Quota       *RelayQuotaStatus `json:"quota,omitempty"`
+	ID                 string            `json:"id"`
+	Name               string            `json:"name"`
+	MaskedKey          string            `json:"maskedKey"`
+	Enabled            bool              `json:"enabled"`
+	CreatedAt          time.Time         `json:"createdAt"`
+	TokenLimit         int64             `json:"tokenLimit"`
+	USDLimit           string            `json:"usdLimit"`
+	QuotaPeriod        string            `json:"quotaPeriod"`
+	AllowedProviderIDs []int64           `json:"allowedProviderIds"`
+	Quota              *RelayQuotaStatus `json:"quota,omitempty"`
 }
 
 type CodexRelayKeyCreateResult struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Key         string    `json:"key"`
-	Enabled     bool      `json:"enabled"`
-	CreatedAt   time.Time `json:"createdAt"`
-	TokenLimit  int64     `json:"tokenLimit"`
-	USDLimit    string    `json:"usdLimit"`
-	QuotaPeriod string    `json:"quotaPeriod"`
+	ID                 string    `json:"id"`
+	Name               string    `json:"name"`
+	Key                string    `json:"key"`
+	Enabled            bool      `json:"enabled"`
+	CreatedAt          time.Time `json:"createdAt"`
+	TokenLimit         int64     `json:"tokenLimit"`
+	USDLimit           string    `json:"usdLimit"`
+	QuotaPeriod        string    `json:"quotaPeriod"`
+	AllowedProviderIDs []int64   `json:"allowedProviderIds"`
 }
 
 // CodexRelayKeyMatch is the minimal authentication result retained for
@@ -166,14 +181,15 @@ func (s *CodexRelayKeyService) ListKeys() ([]CodexRelayKeyListItem, error) {
 	keys := make([]CodexRelayKeyListItem, 0, len(store.Keys))
 	for _, key := range store.Keys {
 		keys = append(keys, CodexRelayKeyListItem{
-			ID:          key.ID,
-			Name:        key.Name,
-			MaskedKey:   maskCodexRelayKey(key.Key),
-			Enabled:     key.Enabled,
-			CreatedAt:   key.CreatedAt,
-			TokenLimit:  key.TokenLimit,
-			USDLimit:    normalizedKeyUSD(key.USDLimit),
-			QuotaPeriod: normalizeRelayQuotaPeriod(key.QuotaPeriod),
+			ID:                 key.ID,
+			Name:               key.Name,
+			MaskedKey:          maskCodexRelayKey(key.Key),
+			Enabled:            key.Enabled,
+			CreatedAt:          key.CreatedAt,
+			TokenLimit:         key.TokenLimit,
+			USDLimit:           normalizedKeyUSD(key.USDLimit),
+			QuotaPeriod:        normalizeRelayQuotaPeriod(key.QuotaPeriod),
+			AllowedProviderIDs: append([]int64{}, key.AllowedProviderIDs...),
 		})
 	}
 
@@ -212,14 +228,15 @@ func (s *CodexRelayKeyService) CreateKey(name string) (*CodexRelayKeyCreateResul
 	}
 
 	return &CodexRelayKeyCreateResult{
-		ID:          key.ID,
-		Name:        key.Name,
-		Key:         key.Key,
-		Enabled:     key.Enabled,
-		CreatedAt:   key.CreatedAt,
-		TokenLimit:  key.TokenLimit,
-		USDLimit:    normalizedKeyUSD(key.USDLimit),
-		QuotaPeriod: normalizeRelayQuotaPeriod(key.QuotaPeriod),
+		ID:                 key.ID,
+		Name:               key.Name,
+		Key:                key.Key,
+		Enabled:            key.Enabled,
+		CreatedAt:          key.CreatedAt,
+		TokenLimit:         key.TokenLimit,
+		USDLimit:           normalizedKeyUSD(key.USDLimit),
+		QuotaPeriod:        normalizeRelayQuotaPeriod(key.QuotaPeriod),
+		AllowedProviderIDs: append([]int64{}, key.AllowedProviderIDs...),
 	}, nil
 }
 
@@ -272,7 +289,9 @@ func (s *CodexRelayKeyService) ListKeyRecords() ([]CodexRelayKey, error) {
 		return nil, err
 	}
 	result := make([]CodexRelayKey, len(store.Keys))
-	copy(result, store.Keys)
+	for index := range store.Keys {
+		result[index] = cloneCodexRelayKey(store.Keys[index])
+	}
 	return result, nil
 }
 
@@ -286,7 +305,7 @@ func (s *CodexRelayKeyService) GetKeyByID(id string) (*CodexRelayKey, error) {
 	}
 	for _, key := range store.Keys {
 		if key.ID == id {
-			copyKey := key
+			copyKey := cloneCodexRelayKey(key)
 			copyKey.QuotaPeriod = normalizeRelayQuotaPeriod(copyKey.QuotaPeriod)
 			return &copyKey, nil
 		}
@@ -294,16 +313,37 @@ func (s *CodexRelayKeyService) GetKeyByID(id string) (*CodexRelayKey, error) {
 	return nil, fmt.Errorf("未找到 Codex relay key: %s", id)
 }
 
+// UpdateAllowedProviderIDs replaces the Codex provider allowlist for one key.
+// An empty list means unrestricted access, preserving the behavior of keys
+// created before provider access controls were introduced.
+func (s *CodexRelayKeyService) UpdateAllowedProviderIDs(id string, providerIDs []int64) error {
+	normalized, err := NormalizeCodexAllowedProviderIDs(providerIDs)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	store, err := s.loadLocked()
+	if err != nil {
+		return err
+	}
+	for index := range store.Keys {
+		if store.Keys[index].ID == id {
+			store.Keys[index].AllowedProviderIDs = normalized
+			return s.saveLocked(store)
+		}
+	}
+	return fmt.Errorf("未找到 Codex relay key: %s", id)
+}
+
 // UpdateQuotaConfig 更新额度配置。修改配置不会清除已累计用量；状态服务会在下一次访问时同步周期变化。
 func (s *CodexRelayKeyService) UpdateQuotaConfig(id string, tokenLimit int64, usdLimit string, period string) error {
-	if tokenLimit < 0 {
-		return errors.New("Token 额度不能为负数")
-	}
 	canonicalPeriod, err := validateRelayQuotaPeriod(period)
 	if err != nil {
 		return err
 	}
-	canonicalUSD, err := normalizeRelayUSDLimit(usdLimit)
+	canonicalUSD, err := ValidateRelayQuotaLimits(tokenLimit, usdLimit)
 	if err != nil {
 		return err
 	}
@@ -354,7 +394,7 @@ func (s *CodexRelayKeyService) EnsureDefaultKey() (*CodexRelayKey, error) {
 
 	for _, key := range store.Keys {
 		if key.Enabled {
-			copyKey := key
+			copyKey := cloneCodexRelayKey(key)
 			return &copyKey, nil
 		}
 	}
@@ -413,7 +453,7 @@ func (s *CodexRelayKeyService) FindKey(candidate string) (*CodexRelayKey, error)
 			continue
 		}
 		if subtle.ConstantTimeCompare([]byte(candidate), []byte(key.Key)) == 1 {
-			copyKey := key
+			copyKey := cloneCodexRelayKey(key)
 			copyKey.QuotaPeriod = normalizeRelayQuotaPeriod(copyKey.QuotaPeriod)
 			return &copyKey, nil
 		}
@@ -470,6 +510,14 @@ func (s *CodexRelayKeyService) loadLocked() (*codexRelayKeyStore, error) {
 			key.QuotaPeriod = canonicalPeriod
 			changed = true
 		}
+		normalizedProviders, err := NormalizeCodexAllowedProviderIDs(key.AllowedProviderIDs)
+		if err != nil {
+			return nil, fmt.Errorf("Codex relay key %q provider access is invalid: %w", key.ID, err)
+		}
+		if !equalInt64Slices(key.AllowedProviderIDs, normalizedProviders) {
+			key.AllowedProviderIDs = normalizedProviders
+			changed = true
+		}
 	}
 	if changed {
 		if err := s.saveLocked(store); err != nil {
@@ -478,6 +526,45 @@ func (s *CodexRelayKeyService) loadLocked() (*codexRelayKeyStore, error) {
 	}
 
 	return store, nil
+}
+
+// NormalizeCodexAllowedProviderIDs validates, deduplicates, and sorts provider
+// IDs. Empty means all Codex providers are allowed.
+func NormalizeCodexAllowedProviderIDs(providerIDs []int64) ([]int64, error) {
+	if len(providerIDs) == 0 {
+		return nil, nil
+	}
+	seen := make(map[int64]struct{}, len(providerIDs))
+	result := make([]int64, 0, len(providerIDs))
+	for _, providerID := range providerIDs {
+		if providerID < 0 {
+			return nil, fmt.Errorf("provider ID 不能为负数: %d", providerID)
+		}
+		if _, exists := seen[providerID]; exists {
+			continue
+		}
+		seen[providerID] = struct{}{}
+		result = append(result, providerID)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result, nil
+}
+
+func cloneCodexRelayKey(key CodexRelayKey) CodexRelayKey {
+	key.AllowedProviderIDs = append([]int64(nil), key.AllowedProviderIDs...)
+	return key
+}
+
+func equalInt64Slices(left, right []int64) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *CodexRelayKeyService) saveLocked(store *codexRelayKeyStore) error {

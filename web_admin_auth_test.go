@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -22,14 +23,15 @@ func newTestWebRuntime(t *testing.T) *appRuntime {
 	}
 
 	return &appRuntime{
-		adminAddr:      "127.0.0.1:0",
-		staticDir:      t.TempDir(),
-		eventHub:       services.NewEventHub(),
-		appService:     &AppService{},
-		appSettings:    appSettings,
-		adminAuth:      services.NewAdminAuthService(appSettings),
-		adminSecurity:  adminSecurity,
-		codexRelayKeys: services.NewCodexRelayKeyService(),
+		adminAddr:       "127.0.0.1:0",
+		staticDir:       t.TempDir(),
+		eventHub:        services.NewEventHub(),
+		appService:      &AppService{},
+		providerService: services.NewProviderService(),
+		appSettings:     appSettings,
+		adminAuth:       services.NewAdminAuthService(appSettings),
+		adminSecurity:   adminSecurity,
+		codexRelayKeys:  services.NewCodexRelayKeyService(),
 	}
 }
 
@@ -173,6 +175,13 @@ func TestAdminServerInitializeAndManageCodexKeys(t *testing.T) {
 	}
 	adminCookie := cookies[0]
 
+	invalidQuota := performRequest(t, server.Handler, http.MethodPost, "/api/admin/codex-keys", map[string]any{
+		"name": "invalid-quota", "tokenLimit": 100, "usdLimit": "1",
+	}, adminCookie)
+	if invalidQuota.Code != http.StatusBadRequest || !strings.Contains(invalidQuota.Body.String(), "invalid_quota") {
+		t.Fatalf("expected simultaneous quotas to return 400, got %d: %s", invalidQuota.Code, invalidQuota.Body.String())
+	}
+
 	wailsCall := performRequest(t, server.Handler, http.MethodPost, "/api/wails/call", map[string]any{
 		"name": "codeswitch/services.AppSettingsService.GetAppSettings",
 		"args": []any{},
@@ -238,6 +247,79 @@ func TestAdminServerInitializeAndManageCodexKeys(t *testing.T) {
 	}
 	if listPayload.Keys[0].ID == firstKey.ID {
 		t.Fatalf("expected deleted key %q to be absent from list", firstKey.ID)
+	}
+}
+
+func TestAdminServerManagesCodexKeyProviderAccess(t *testing.T) {
+	rt := newTestWebRuntime(t)
+	if err := rt.providerService.SaveProviders(services.ProviderKindCodex, []services.Provider{
+		{ID: 11, Name: "primary", APIURL: "https://primary.example", APIKey: "primary-key", Enabled: true},
+		{ID: 22, Name: "standby", APIURL: "https://standby.example", APIKey: "standby-key", Enabled: false},
+	}); err != nil {
+		t.Fatalf("save Codex providers: %v", err)
+	}
+	server := newAdminServer(rt)
+	initialize := performRequest(t, server.Handler, http.MethodPost, "/api/admin/initialize", map[string]string{
+		"username": "admin",
+		"password": "password123",
+	})
+	if initialize.Code != http.StatusOK {
+		t.Fatalf("initialize status=%d body=%s", initialize.Code, initialize.Body.String())
+	}
+	adminCookie := initialize.Result().Cookies()[0]
+
+	providers := performRequest(t, server.Handler, http.MethodGet, "/api/admin/codex-providers", nil, adminCookie)
+	if providers.Code != http.StatusOK {
+		t.Fatalf("list providers status=%d body=%s", providers.Code, providers.Body.String())
+	}
+	providerPayload := decodeJSON[struct {
+		Providers []codexRelayProviderOption `json:"providers"`
+	}](t, providers)
+	if len(providerPayload.Providers) != 2 || providerPayload.Providers[1].ID != 22 || providerPayload.Providers[1].Enabled {
+		t.Fatalf("unexpected provider options: %+v", providerPayload.Providers)
+	}
+
+	create := performRequest(t, server.Handler, http.MethodPost, "/api/admin/codex-keys", map[string]any{
+		"name":               "restricted",
+		"allowedProviderIds": []int64{22},
+	}, adminCookie)
+	if create.Code != http.StatusOK {
+		t.Fatalf("create restricted key status=%d body=%s", create.Code, create.Body.String())
+	}
+	created := decodeJSON[services.CodexRelayKeyCreateResult](t, create)
+	if len(created.AllowedProviderIDs) != 1 || created.AllowedProviderIDs[0] != 22 {
+		t.Fatalf("unexpected created provider access: %+v", created)
+	}
+
+	update := performRequest(t, server.Handler, http.MethodPatch, "/api/admin/codex-keys/"+created.ID+"/providers", map[string]any{
+		"allowedProviderIds": []int64{11},
+	}, adminCookie)
+	if update.Code != http.StatusOK {
+		t.Fatalf("update provider access status=%d body=%s", update.Code, update.Body.String())
+	}
+	updated := decodeJSON[struct {
+		AllowedProviderIDs []int64 `json:"allowedProviderIds"`
+	}](t, update)
+	if len(updated.AllowedProviderIDs) != 1 || updated.AllowedProviderIDs[0] != 11 {
+		t.Fatalf("unexpected updated provider access: %+v", updated)
+	}
+
+	invalid := performRequest(t, server.Handler, http.MethodPatch, "/api/admin/codex-keys/"+created.ID+"/providers", map[string]any{
+		"allowedProviderIds": []int64{999},
+	}, adminCookie)
+	if invalid.Code != http.StatusBadRequest || !strings.Contains(invalid.Body.String(), "invalid_provider_access") {
+		t.Fatalf("invalid provider status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+
+	list := performRequest(t, server.Handler, http.MethodGet, "/api/admin/codex-keys", nil, adminCookie)
+	if list.Code != http.StatusOK {
+		t.Fatalf("list keys status=%d body=%s", list.Code, list.Body.String())
+	}
+	listed := decodeJSON[struct {
+		Keys []services.CodexRelayKeyListItem `json:"keys"`
+	}](t, list)
+	if len(listed.Keys) != 1 || len(listed.Keys[0].AllowedProviderIDs) != 1 || listed.Keys[0].AllowedProviderIDs[0] != 11 {
+		t.Fatalf("unexpected listed provider access: %+v", listed.Keys)
 	}
 }
 
@@ -478,10 +560,10 @@ func TestAdminServerStillRejectsPublicHTTPWithTrustedNet(t *testing.T) {
 
 func TestQuotaAdminRequestsAcceptNumericAndStringForms(t *testing.T) {
 	var create codexRelayKeyCreateRequest
-	if err := json.Unmarshal([]byte(`{"name":"k","tokenLimit":"123","usdLimit":4.5,"period":"daily"}`), &create); err != nil {
+	if err := json.Unmarshal([]byte(`{"name":"k","tokenLimit":"123","usdLimit":4.5,"period":"daily","allowed_provider_ids":[3,1]}`), &create); err != nil {
 		t.Fatalf("decode create request: %v", err)
 	}
-	if create.TokenLimit != 123 || string(create.USDLimit) != "4.5" || create.Period != "daily" {
+	if create.TokenLimit != 123 || string(create.USDLimit) != "4.5" || create.Period != "daily" || len(create.AllowedProviderIDsSnake) != 2 {
 		t.Fatalf("unexpected create request: %+v", create)
 	}
 

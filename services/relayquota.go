@@ -8,6 +8,7 @@ package services
 // quota enforcement.
 
 import (
+	modelpricing "codeswitch/resources/model-pricing"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"math"
 	"math/big"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -102,6 +104,8 @@ type RelayModelPrice struct {
 	Output          string `json:"output"`
 	ReasoningOutput string `json:"reasoningOutput"`
 	UpdatedAt       string `json:"updatedAt,omitempty"`
+	Source          string `json:"source"`
+	CanRestore      bool   `json:"canRestoreDefault"`
 }
 
 type relayModelPriceRecord struct {
@@ -111,6 +115,61 @@ type relayModelPriceRecord struct {
 	OutputNano      int64
 	ReasoningNano   int64
 	UpdatedAt       time.Time
+}
+
+var (
+	relayBuiltinPricesOnce sync.Once
+	relayBuiltinPrices     map[string]relayModelPriceRecord
+	relayBuiltinPricesErr  error
+)
+
+func builtinRelayModelPrices() (map[string]relayModelPriceRecord, error) {
+	relayBuiltinPricesOnce.Do(func() {
+		known, err := modelpricing.KnownOpenAIModelPrices()
+		if err != nil {
+			relayBuiltinPricesErr = err
+			return
+		}
+		relayBuiltinPrices = make(map[string]relayModelPriceRecord, len(known))
+		for _, price := range known {
+			values := []string{price.Input, price.CachedInput, price.Output, price.ReasoningOutput}
+			parsed := make([]int64, len(values))
+			for i, value := range values {
+				parsed[i], err = parseRelayDecimalNano(value)
+				if err != nil {
+					relayBuiltinPricesErr = fmt.Errorf("invalid built-in price for %s: %w", price.Model, err)
+					return
+				}
+			}
+			relayBuiltinPrices[price.Model] = relayModelPriceRecord{
+				Model: price.Model, InputNano: parsed[0], CachedInputNano: parsed[1],
+				OutputNano: parsed[2], ReasoningNano: parsed[3],
+			}
+		}
+	})
+	return relayBuiltinPrices, relayBuiltinPricesErr
+}
+
+func lookupBuiltinRelayModelPrice(model string) (*relayModelPriceRecord, bool, error) {
+	prices, err := builtinRelayModelPrices()
+	if err != nil {
+		return nil, false, err
+	}
+	price, ok := prices[strings.TrimSpace(model)]
+	if !ok {
+		return nil, false, nil
+	}
+	copyPrice := price
+	return &copyPrice, true, nil
+}
+
+func relayModelPriceResponse(price relayModelPriceRecord, source string, canRestore bool, loc *time.Location) RelayModelPrice {
+	return RelayModelPrice{
+		Model: price.Model, Input: formatRelayNanoUSD(price.InputNano),
+		CachedInput: formatRelayNanoUSD(price.CachedInputNano), Output: formatRelayNanoUSD(price.OutputNano),
+		ReasoningOutput: formatRelayNanoUSD(price.ReasoningNano),
+		UpdatedAt:       formatRelayTime(price.UpdatedAt.Unix(), loc), Source: source, CanRestore: canRestore,
+	}
 }
 
 type relayQuotaState struct {
@@ -235,6 +294,27 @@ func normalizeRelayUSDLimit(value string) (string, error) {
 		return "", err
 	}
 	return formatRelayNanoUSD(nano), nil
+}
+
+// ValidateRelayQuotaLimits canonicalizes the USD value and enforces the
+// single active quota dimension used by the admin API. Zero still means
+// unlimited for the selected dimension.
+func ValidateRelayQuotaLimits(tokenLimit int64, usdLimit string) (string, error) {
+	if tokenLimit < 0 {
+		return "", errors.New("Token 额度不能为负数")
+	}
+	canonicalUSD, err := normalizeRelayUSDLimit(usdLimit)
+	if err != nil {
+		return "", err
+	}
+	usdNano, err := parseRelayDecimalNano(canonicalUSD)
+	if err != nil {
+		return "", err
+	}
+	if tokenLimit > 0 && usdNano > 0 {
+		return "", errors.New("Token 额度和美元额度只能选择一种")
+	}
+	return canonicalUSD, nil
 }
 
 func parseRelayDecimalNano(value string) (int64, error) {
@@ -742,7 +822,7 @@ func (s *RelayQuotaService) lookupModelPrice(model string) (*relayModelPriceReco
 		&price.Model, &price.InputNano, &price.CachedInputNano, &price.OutputNano,
 		&price.ReasoningNano, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false, nil
+		return lookupBuiltinRelayModelPrice(model)
 	}
 	if err != nil {
 		return nil, false, err
@@ -1067,6 +1147,10 @@ func (s *RelayQuotaService) UpsertModelPrice(input RelayModelPrice) (*RelayModel
 	if err := ensureRelayQuotaTables(); err != nil {
 		return nil, err
 	}
+	_, canRestore, err := lookupBuiltinRelayModelPrice(model)
+	if err != nil {
+		return nil, err
+	}
 	now := s.currentTime().In(s.currentLocation())
 	db, err := xdb.DB("default")
 	if err != nil {
@@ -1089,7 +1173,7 @@ func (s *RelayQuotaService) UpsertModelPrice(input RelayModelPrice) (*RelayModel
 	result := RelayModelPrice{
 		Model: model, Input: formatRelayNanoUSD(parsed[0]), CachedInput: formatRelayNanoUSD(parsed[1]),
 		Output: formatRelayNanoUSD(parsed[2]), ReasoningOutput: formatRelayNanoUSD(parsed[3]),
-		UpdatedAt: now.Format(time.RFC3339),
+		UpdatedAt: now.Format(time.RFC3339), Source: "custom", CanRestore: canRestore,
 	}
 	return &result, nil
 }
@@ -1107,25 +1191,39 @@ func (s *RelayQuotaService) ListModelPrices() ([]RelayModelPrice, error) {
 	if err != nil {
 		return nil, err
 	}
+	builtin, err := builtinRelayModelPrices()
+	if err != nil {
+		return nil, err
+	}
+	merged := make(map[string]RelayModelPrice, len(builtin))
+	for model, price := range builtin {
+		merged[model] = relayModelPriceResponse(price, "builtin", false, s.currentLocation())
+	}
+
 	rows, err := db.Query(`SELECT model, input_price_nano, cached_input_price_nano, output_price_nano, reasoning_output_price_nano, updated_at FROM relay_model_price ORDER BY model`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	prices := make([]RelayModelPrice, 0)
 	for rows.Next() {
-		var model string
-		var input, cached, output, reasoning, updated int64
-		if err := rows.Scan(&model, &input, &cached, &output, &reasoning, &updated); err != nil {
+		var price relayModelPriceRecord
+		var updated int64
+		if err := rows.Scan(&price.Model, &price.InputNano, &price.CachedInputNano, &price.OutputNano, &price.ReasoningNano, &updated); err != nil {
 			return nil, err
 		}
-		prices = append(prices, RelayModelPrice{
-			Model: model, Input: formatRelayNanoUSD(input), CachedInput: formatRelayNanoUSD(cached),
-			Output: formatRelayNanoUSD(output), ReasoningOutput: formatRelayNanoUSD(reasoning),
-			UpdatedAt: formatRelayTime(updated, s.currentLocation()),
-		})
+		price.UpdatedAt = time.Unix(updated, 0)
+		_, canRestore := builtin[price.Model]
+		merged[price.Model] = relayModelPriceResponse(price, "custom", canRestore, s.currentLocation())
 	}
-	return prices, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	prices := make([]RelayModelPrice, 0, len(merged))
+	for _, price := range merged {
+		prices = append(prices, price)
+	}
+	sort.Slice(prices, func(i, j int) bool { return prices[i].Model < prices[j].Model })
+	return prices, nil
 }
 
 func (s *RelayQuotaService) DeleteModelPrice(model string) error {
@@ -1169,6 +1267,10 @@ func (s *RelayQuotaService) ListUnpricedModels() ([]RelayUnpricedModel, error) {
 	if err != nil {
 		return nil, err
 	}
+	builtin, err := builtinRelayModelPrices()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := db.Query(`
 		SELECT seen.model, seen.first_seen_at, seen.last_seen_at, seen.call_count
 		FROM relay_unpriced_model_seen AS seen
@@ -1185,6 +1287,9 @@ func (s *RelayQuotaService) ListUnpricedModels() ([]RelayUnpricedModel, error) {
 		var first, last, count int64
 		if err := rows.Scan(&model, &first, &last, &count); err != nil {
 			return nil, err
+		}
+		if _, priced := builtin[model]; priced {
+			continue
 		}
 		result = append(result, RelayUnpricedModel{
 			Model:       model,
