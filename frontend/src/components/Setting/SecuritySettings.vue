@@ -8,9 +8,11 @@ import {
   getCodexRelayKeySecret,
   listCodexRelayKeys,
   listCodexRelayModelPrices,
+  listCodexRelayProviders,
   listCodexRelayUnpricedModels,
   logoutAdmin,
   resetCodexRelayKeyQuota,
+  updateCodexRelayKeyProviders,
   updateCodexRelayKeyQuota,
   upsertCodexRelayModelPrice,
   updateAdminCredentials,
@@ -18,6 +20,7 @@ import {
   type CodexRelayKeyCreateResult,
   type CodexRelayKeyListItem,
   type CodexRelayModelPrice,
+  type CodexRelayProviderOption,
   type CodexRelayUnpricedModel,
 } from '../../services/adminAuth'
 import { extractErrorMessage } from '../../utils/error'
@@ -36,12 +39,23 @@ const keysLoading = ref(false)
 const keyBusyId = ref('')
 const createBusy = ref(false)
 const createName = ref('')
+type QuotaMode = 'usd' | 'token'
+type QuotaPeriod = 'once' | 'daily' | 'weekly' | 'monthly'
+type QuotaDraft = { mode: QuotaMode; tokenLimit: string; usdLimit: string; period: QuotaPeriod }
+
+const createQuotaMode = ref<QuotaMode>('usd')
 const createTokenLimit = ref('0')
 const createUsdLimit = ref('0')
-const createPeriod = ref<'once' | 'daily' | 'weekly' | 'monthly'>('once')
+const createPeriod = ref<QuotaPeriod>('once')
+const createRestrictProviders = ref(false)
+const createAllowedProviderIds = ref<number[]>([])
 const createdKey = ref<CodexRelayKeyCreateResult | null>(null)
-const quotaDrafts = ref<Record<string, { tokenLimit: string; usdLimit: string; period: 'once' | 'daily' | 'weekly' | 'monthly' }>>({})
+const quotaDrafts = ref<Record<string, QuotaDraft>>({})
 const quotaBusyId = ref('')
+const providers = ref<CodexRelayProviderOption[]>([])
+const providersLoading = ref(false)
+const accessDrafts = ref<Record<string, { restricted: boolean; allowedProviderIds: number[] }>>({})
+const accessBusyId = ref('')
 const modelPrices = ref<CodexRelayModelPrice[]>([])
 const unpricedModels = ref<CodexRelayUnpricedModel[]>([])
 const pricesLoading = ref(false)
@@ -94,15 +108,48 @@ const loadKeys = async () => {
   }
 }
 
+const loadProviders = async () => {
+  providersLoading.value = true
+  try {
+    providers.value = await listCodexRelayProviders()
+  } catch (error) {
+    showToast(extractErrorMessage(error, t('auth.security.loadProvidersFailed')), 'error')
+  } finally {
+    providersLoading.value = false
+  }
+}
+
 const draftForKey = (key: CodexRelayKeyListItem) => {
   if (!quotaDrafts.value[key.id]) {
     quotaDrafts.value[key.id] = {
+      mode: (key.tokenLimit ?? 0) > 0 && (key.usdLimit || '0') === '0' ? 'token' : 'usd',
       tokenLimit: String(key.tokenLimit ?? 0),
       usdLimit: key.usdLimit || '0',
       period: key.quotaPeriod || 'once',
     }
   }
   return quotaDrafts.value[key.id]
+}
+
+const accessDraftForKey = (key: CodexRelayKeyListItem) => {
+  if (!accessDrafts.value[key.id]) {
+    const allowedProviderIds = [...(key.allowedProviderIds ?? [])]
+    accessDrafts.value[key.id] = {
+      restricted: allowedProviderIds.length > 0,
+      allowedProviderIds,
+    }
+  }
+  return accessDrafts.value[key.id]
+}
+
+type ProviderOptionView = CodexRelayProviderOption & { unavailable?: boolean }
+
+const providerOptionsForKey = (key: CodexRelayKeyListItem): ProviderOptionView[] => {
+  const knownIDs = new Set(providers.value.map((provider) => provider.id))
+  const unavailable = (key.allowedProviderIds ?? [])
+    .filter((providerID) => !knownIDs.has(providerID))
+    .map((providerID) => ({ id: providerID, name: `#${providerID}`, enabled: false, unavailable: true }))
+  return [...providers.value, ...unavailable]
 }
 
 const loadPrices = async () => {
@@ -167,24 +214,36 @@ const handleCreateKey = async () => {
 
   createBusy.value = true
   try {
-    const tokenText = createTokenLimit.value.trim() || '0'
-    const tokenLimit = Number.parseInt(tokenText, 10)
-    if (!/^\d+$/.test(tokenText) || !Number.isSafeInteger(tokenLimit) || tokenLimit < 0) {
-      throw new Error(t('auth.security.invalidTokenLimit'))
+    let tokenLimit = 0
+    let usdLimit = '0'
+    if (createQuotaMode.value === 'token') {
+      const tokenText = createTokenLimit.value.trim() || '0'
+      tokenLimit = Number.parseInt(tokenText, 10)
+      if (!/^\d+$/.test(tokenText) || !Number.isSafeInteger(tokenLimit) || tokenLimit < 0) {
+        throw new Error(t('auth.security.invalidTokenLimit'))
+      }
+    } else {
+      usdLimit = createUsdLimit.value.trim() || '0'
+      if (!/^\d+(\.\d{1,9})?$/.test(usdLimit)) {
+        throw new Error(t('auth.security.invalidUsdLimit'))
+      }
     }
-    const usdLimit = createUsdLimit.value.trim() || '0'
-    if (!/^\d+(\.\d{1,9})?$/.test(usdLimit)) {
-      throw new Error(t('auth.security.invalidUsdLimit'))
+    if (createRestrictProviders.value && createAllowedProviderIds.value.length === 0) {
+      throw new Error(t('auth.security.selectProviderRequired'))
     }
     createdKey.value = await createCodexRelayKey(createName.value.trim(), {
       tokenLimit,
       usdLimit,
       period: createPeriod.value,
+      allowedProviderIds: createRestrictProviders.value ? [...createAllowedProviderIds.value] : [],
     })
     createName.value = ''
+    createQuotaMode.value = 'usd'
     createTokenLimit.value = '0'
     createUsdLimit.value = '0'
     createPeriod.value = 'once'
+    createRestrictProviders.value = false
+    createAllowedProviderIds.value = []
     await loadKeys()
     showToast(t('auth.security.createSuccess'), 'success')
   } catch (error) {
@@ -194,29 +253,60 @@ const handleCreateKey = async () => {
   }
 }
 
-const handleUpdateQuota = async (key: CodexRelayKeyListItem) => {
-  const draft = draftForKey(key)
-  const tokenText = draft.tokenLimit.trim() || '0'
-  const tokenLimit = Number.parseInt(tokenText, 10)
-  if (!/^\d+$/.test(tokenText) || !Number.isSafeInteger(tokenLimit) || tokenLimit < 0) {
-    showToast(t('auth.security.invalidTokenLimit'), 'error')
+const handleUpdateProviderAccess = async (key: CodexRelayKeyListItem) => {
+  const draft = accessDraftForKey(key)
+  if (draft.restricted && draft.allowedProviderIds.length === 0) {
+    showToast(t('auth.security.selectProviderRequired'), 'error')
     return
   }
-  if (!/^\d+(\.\d{1,9})?$/.test(draft.usdLimit.trim() || '0')) {
-    showToast(t('auth.security.invalidUsdLimit'), 'error')
-    return
+  accessBusyId.value = key.id
+  try {
+    await updateCodexRelayKeyProviders(key.id, draft.restricted ? [...draft.allowedProviderIds] : [])
+    await loadKeys()
+    const refreshed = keys.value.find((item) => item.id === key.id)
+    const allowedProviderIds = [...(refreshed?.allowedProviderIds ?? [])]
+    accessDrafts.value[key.id] = {
+      restricted: allowedProviderIds.length > 0,
+      allowedProviderIds,
+    }
+    showToast(t('auth.security.providerAccessUpdated'), 'success')
+  } catch (error) {
+    showToast(extractErrorMessage(error, t('auth.security.providerAccessUpdateFailed')), 'error')
+  } finally {
+    accessBusyId.value = ''
+  }
+}
+
+const handleUpdateQuota = async (key: CodexRelayKeyListItem) => {
+  const draft = draftForKey(key)
+  let tokenLimit = 0
+  let usdLimit = '0'
+  if (draft.mode === 'token') {
+    const tokenText = draft.tokenLimit.trim() || '0'
+    tokenLimit = Number.parseInt(tokenText, 10)
+    if (!/^\d+$/.test(tokenText) || !Number.isSafeInteger(tokenLimit) || tokenLimit < 0) {
+      showToast(t('auth.security.invalidTokenLimit'), 'error')
+      return
+    }
+  } else {
+    usdLimit = draft.usdLimit.trim() || '0'
+    if (!/^\d+(\.\d{1,9})?$/.test(usdLimit)) {
+      showToast(t('auth.security.invalidUsdLimit'), 'error')
+      return
+    }
   }
   quotaBusyId.value = key.id
   try {
     await updateCodexRelayKeyQuota(key.id, {
       tokenLimit,
-      usdLimit: draft.usdLimit.trim() || '0',
+      usdLimit,
       period: draft.period,
     })
     await loadKeys()
     const refreshed = keys.value.find((item) => item.id === key.id)
     if (refreshed) {
       quotaDrafts.value[key.id] = {
+        mode: (refreshed.tokenLimit ?? 0) > 0 && (refreshed.usdLimit || '0') === '0' ? 'token' : 'usd',
         tokenLimit: String(refreshed.tokenLimit ?? 0),
         usdLimit: refreshed.usdLimit || '0',
         period: refreshed.quotaPeriod || 'once',
@@ -247,7 +337,13 @@ const handleResetQuota = async (key: CodexRelayKeyListItem) => {
 }
 
 const editPrice = (price: CodexRelayModelPrice) => {
-  priceDraft.value = { ...price }
+  priceDraft.value = {
+    model: price.model,
+    input: price.input,
+    cachedInput: price.cachedInput,
+    output: price.output,
+    reasoningOutput: price.reasoningOutput,
+  }
 }
 
 const clearPriceDraft = () => {
@@ -274,7 +370,9 @@ const handleSavePrice = async () => {
 }
 
 const handleDeletePrice = async (price: CodexRelayModelPrice) => {
-  if (!window.confirm(t('auth.security.deletePriceConfirm', { model: price.model }))) {
+  const restoreDefault = !!price.canRestoreDefault
+  const confirmKey = restoreDefault ? 'auth.security.restorePriceConfirm' : 'auth.security.deletePriceConfirm'
+  if (!window.confirm(t(confirmKey, { model: price.model }))) {
     return
   }
   priceBusyModel.value = price.model
@@ -282,7 +380,7 @@ const handleDeletePrice = async (price: CodexRelayModelPrice) => {
     await deleteCodexRelayModelPrice(price.model)
     if (priceDraft.value.model === price.model) clearPriceDraft()
     await loadPrices()
-    showToast(t('auth.security.priceDeleted'), 'success')
+    showToast(t(restoreDefault ? 'auth.security.priceRestored' : 'auth.security.priceDeleted'), 'success')
   } catch (error) {
     showToast(extractErrorMessage(error, t('auth.security.priceDeleteFailed')), 'error')
   } finally {
@@ -337,8 +435,7 @@ const handleDeleteKey = async (key: CodexRelayKeyListItem) => {
 }
 
 onMounted(async () => {
-  await loadKeys()
-  await loadPrices()
+  await Promise.all([loadKeys(), loadProviders(), loadPrices()])
 })
 </script>
 
@@ -437,13 +534,26 @@ onMounted(async () => {
             @keyup.enter="handleCreateKey"
           />
         </label>
-        <label class="security-field quota-create-field">
-          <span>{{ t('auth.security.tokenLimit') }}</span>
-          <input v-model="createTokenLimit" class="base-input" type="number" min="0" step="1" :disabled="createBusy" />
-        </label>
-        <label class="security-field quota-create-field">
+        <fieldset class="security-field quota-mode-field">
+          <legend>{{ t('auth.security.quotaType') }}</legend>
+          <div class="quota-mode-toggle" role="radiogroup" :aria-label="t('auth.security.quotaType')">
+            <label :class="{ active: createQuotaMode === 'usd' }">
+              <input v-model="createQuotaMode" type="radio" value="usd" :disabled="createBusy" />
+              <span>{{ t('auth.security.quotaTypeUsd') }}</span>
+            </label>
+            <label :class="{ active: createQuotaMode === 'token' }">
+              <input v-model="createQuotaMode" type="radio" value="token" :disabled="createBusy" />
+              <span>{{ t('auth.security.quotaTypeToken') }}</span>
+            </label>
+          </div>
+        </fieldset>
+        <label v-if="createQuotaMode === 'usd'" class="security-field quota-create-field">
           <span>{{ t('auth.security.usdLimit') }}</span>
           <input v-model="createUsdLimit" class="base-input" inputmode="decimal" :disabled="createBusy" />
+        </label>
+        <label v-else class="security-field quota-create-field">
+          <span>{{ t('auth.security.tokenLimit') }}</span>
+          <input v-model="createTokenLimit" class="base-input" type="number" min="0" step="1" :disabled="createBusy" />
         </label>
         <label class="security-field quota-create-field">
           <span>{{ t('auth.security.period') }}</span>
@@ -458,6 +568,31 @@ onMounted(async () => {
           {{ createBusy ? t('auth.security.creating') : t('auth.security.create') }}
         </button>
       </div>
+
+      <fieldset class="provider-access-control" :aria-label="t('auth.security.providerAccess')">
+        <div class="provider-access-header">
+          <label class="provider-access-toggle">
+            <input
+              v-model="createRestrictProviders"
+              type="checkbox"
+              :disabled="createBusy || providersLoading || providers.length === 0"
+            />
+            <span>{{ t('auth.security.restrictProviders') }}</span>
+          </label>
+          <span class="provider-access-state">
+            {{ createRestrictProviders ? t('auth.security.selectedProviders') : t('auth.security.allProviders') }}
+          </span>
+        </div>
+        <div v-if="createRestrictProviders" class="provider-options">
+          <label v-for="provider in providers" :key="provider.id" class="provider-option">
+            <input v-model="createAllowedProviderIds" type="checkbox" :value="provider.id" :disabled="createBusy" />
+            <span>{{ provider.name }}</span>
+            <small v-if="!provider.enabled">{{ t('auth.security.providerDisabled') }}</small>
+          </label>
+        </div>
+        <span v-else-if="providersLoading" class="provider-access-empty">{{ t('auth.security.loadingProviders') }}</span>
+        <span v-else-if="providers.length === 0" class="provider-access-empty">{{ t('auth.security.noProviders') }}</span>
+      </fieldset>
 
       <div v-if="createdKey" class="security-created">
         <div class="security-created-header">
@@ -503,15 +638,25 @@ onMounted(async () => {
           </div>
           <div class="quota-editor">
             <div class="quota-summary">
-              <span>{{ t('auth.security.tokenUsage') }}: {{ key.quota?.tokenUsed ?? 0 }} / {{ key.tokenLimit || t('auth.security.unlimited') }}</span>
-              <span>{{ t('auth.security.usdUsage') }}: ${{ key.quota?.usdUsed ?? '0' }} / {{ key.usdLimit === '0' ? t('auth.security.unlimited') : `$${key.usdLimit}` }}</span>
+              <span v-if="draftForKey(key).mode === 'token'">{{ t('auth.security.tokenUsage') }}: {{ key.quota?.tokenUsed ?? 0 }} / {{ key.tokenLimit || t('auth.security.unlimited') }}</span>
+              <span v-else>{{ t('auth.security.usdUsage') }}: ${{ key.quota?.usdUsed ?? '0' }} / {{ key.usdLimit === '0' ? t('auth.security.unlimited') : `$${key.usdLimit}` }}</span>
               <span>{{ t('auth.security.period') }}: {{ t(`auth.security.period${(key.quotaPeriod || 'once').charAt(0).toUpperCase()}${(key.quotaPeriod || 'once').slice(1)}`) }}</span>
               <span v-if="key.quota?.resetAt">{{ t('auth.security.nextReset') }}: {{ formatDateTime(key.quota.resetAt) }} ({{ key.quota.serverTimezone }})</span>
               <strong v-if="key.quota?.blocked" class="quota-blocked">{{ t('auth.security.quotaBlocked') }}</strong>
             </div>
             <div class="quota-edit-fields">
-              <input v-model="draftForKey(key).tokenLimit" class="base-input" type="number" min="0" step="1" :aria-label="t('auth.security.tokenLimit')" />
-              <input v-model="draftForKey(key).usdLimit" class="base-input" inputmode="decimal" :aria-label="t('auth.security.usdLimit')" />
+              <div class="quota-mode-toggle" role="radiogroup" :aria-label="t('auth.security.quotaType')">
+                <label :class="{ active: draftForKey(key).mode === 'usd' }">
+                  <input v-model="draftForKey(key).mode" type="radio" value="usd" />
+                  <span>{{ t('auth.security.quotaTypeUsd') }}</span>
+                </label>
+                <label :class="{ active: draftForKey(key).mode === 'token' }">
+                  <input v-model="draftForKey(key).mode" type="radio" value="token" />
+                  <span>{{ t('auth.security.quotaTypeToken') }}</span>
+                </label>
+              </div>
+              <input v-if="draftForKey(key).mode === 'token'" v-model="draftForKey(key).tokenLimit" class="base-input" type="number" min="0" step="1" :aria-label="t('auth.security.tokenLimit')" />
+              <input v-else v-model="draftForKey(key).usdLimit" class="base-input" inputmode="decimal" :aria-label="t('auth.security.usdLimit')" />
               <select v-model="draftForKey(key).period" class="base-input" :aria-label="t('auth.security.period')">
                 <option value="once">{{ t('auth.security.periodOnce') }}</option>
                 <option value="daily">{{ t('auth.security.periodDaily') }}</option>
@@ -522,6 +667,44 @@ onMounted(async () => {
               <button class="security-btn secondary" :disabled="quotaBusyId === key.id" @click="handleResetQuota(key)">{{ t('auth.security.resetQuota') }}</button>
             </div>
           </div>
+          <fieldset class="provider-access-editor" :aria-label="t('auth.security.providerAccess')">
+            <div class="provider-access-header">
+              <label class="provider-access-toggle">
+                <input
+                  v-model="accessDraftForKey(key).restricted"
+                  type="checkbox"
+                  :disabled="accessBusyId === key.id"
+                />
+                <span>{{ t('auth.security.restrictProviders') }}</span>
+              </label>
+              <span class="provider-access-state">
+                {{ accessDraftForKey(key).restricted ? t('auth.security.selectedProviders') : t('auth.security.allProviders') }}
+              </span>
+            </div>
+            <div v-if="accessDraftForKey(key).restricted" class="provider-options">
+              <label v-for="provider in providerOptionsForKey(key)" :key="provider.id" class="provider-option">
+                <input
+                  v-model="accessDraftForKey(key).allowedProviderIds"
+                  type="checkbox"
+                  :value="provider.id"
+                  :disabled="accessBusyId === key.id"
+                />
+                <span>{{ provider.name }}</span>
+                <small v-if="provider.unavailable">{{ t('auth.security.providerUnavailable') }}</small>
+                <small v-else-if="!provider.enabled">{{ t('auth.security.providerDisabled') }}</small>
+              </label>
+              <span v-if="providerOptionsForKey(key).length === 0" class="provider-access-empty">{{ t('auth.security.noProviders') }}</span>
+            </div>
+            <div class="provider-access-actions">
+              <button
+                class="security-btn secondary"
+                :disabled="accessBusyId === key.id"
+                @click="handleUpdateProviderAccess(key)"
+              >
+                {{ t('auth.security.saveProviderAccess') }}
+              </button>
+            </div>
+          </fieldset>
         </article>
       </div>
     </div>
@@ -550,14 +733,17 @@ onMounted(async () => {
       <div v-else-if="modelPrices.length === 0" class="security-empty">{{ t('auth.security.emptyPrices') }}</div>
       <div v-else class="price-list">
         <article v-for="price in modelPrices" :key="price.model" class="price-row">
-          <strong>{{ price.model }}</strong>
+          <div class="price-model">
+            <strong>{{ price.model }}</strong>
+            <span class="price-source" :class="price.source">{{ t(price.source === 'custom' ? 'auth.security.priceSourceCustom' : 'auth.security.priceSourceBuiltin') }}</span>
+          </div>
           <span>{{ t('auth.security.inputShort') }} {{ price.input }}</span>
           <span>{{ t('auth.security.cachedShort') }} {{ price.cachedInput }}</span>
           <span>{{ t('auth.security.outputShort') }} {{ price.output }}</span>
           <span>{{ t('auth.security.reasoningShort') }} {{ price.reasoningOutput }}</span>
           <div class="security-key-actions">
             <button class="security-btn secondary" @click="editPrice(price)">{{ t('auth.security.editPrice') }}</button>
-            <button class="security-btn danger" :disabled="priceBusyModel === price.model" @click="handleDeletePrice(price)">{{ t('auth.security.deletePrice') }}</button>
+            <button v-if="price.source === 'custom'" class="security-btn danger" :disabled="priceBusyModel === price.model" @click="handleDeletePrice(price)">{{ t(price.canRestoreDefault ? 'auth.security.restorePrice' : 'auth.security.deletePrice') }}</button>
           </div>
         </article>
       </div>
@@ -622,6 +808,12 @@ onMounted(async () => {
   box-sizing: border-box;
 }
 
+.security-field select.base-input {
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: normal;
+}
+
 .security-field span {
   font-size: 0.9rem;
   font-weight: 600;
@@ -663,6 +855,69 @@ onMounted(async () => {
 
 .quota-create-field {
   min-width: 130px;
+}
+
+.quota-mode-field {
+  min-width: 176px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.quota-mode-field legend {
+  margin-bottom: 8px;
+  padding: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.quota-mode-toggle {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(70px, 1fr));
+  align-items: stretch;
+  min-height: 38px;
+  box-sizing: border-box;
+  padding: 3px;
+  border: 1px solid var(--mac-border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--mac-text) 5%, var(--mac-surface));
+}
+
+.quota-mode-field .quota-mode-toggle {
+  min-height: 42px;
+}
+
+.quota-mode-toggle label {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 10px;
+  border-radius: 5px;
+  color: var(--mac-text-secondary);
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.quota-mode-toggle label.active {
+  background: var(--mac-surface);
+  color: var(--mac-text);
+  box-shadow: 0 1px 3px color-mix(in srgb, #000 16%, transparent);
+}
+
+.quota-mode-toggle label:has(input:focus-visible) {
+  outline: 2px solid var(--mac-accent);
+  outline-offset: -2px;
+}
+
+.quota-mode-toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .security-btn {
@@ -754,6 +1009,101 @@ onMounted(async () => {
   border-top: 1px solid color-mix(in srgb, var(--mac-border) 70%, transparent);
 }
 
+.provider-access-control,
+.provider-access-editor {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+}
+
+.provider-access-control {
+  padding: 12px 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--mac-border) 70%, transparent);
+}
+
+.provider-access-editor {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  padding: 10px 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--mac-border) 70%, transparent);
+}
+
+.provider-access-header,
+.provider-access-toggle,
+.provider-access-actions {
+  display: flex;
+  align-items: center;
+}
+
+.provider-access-header {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.provider-access-toggle {
+  gap: 8px;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.provider-access-toggle input,
+.provider-option input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--mac-accent);
+}
+
+.provider-access-state {
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--mac-text) 10%, var(--mac-surface));
+  color: var(--mac-text-secondary);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.provider-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+}
+
+.provider-option {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 9px;
+  border: 1px solid color-mix(in srgb, var(--mac-border) 75%, transparent);
+  border-radius: 6px;
+  color: var(--mac-text);
+  font-size: 0.82rem;
+}
+
+.provider-option span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.provider-option small,
+.provider-access-empty {
+  color: var(--mac-text-secondary);
+  font-size: 0.74rem;
+}
+
+.provider-access-actions {
+  justify-content: flex-end;
+}
+
+.provider-access-actions .security-btn {
+  min-height: 36px;
+  border-radius: 6px;
+  padding: 0 12px;
+}
+
 .quota-summary,
 .quota-edit-fields,
 .price-editor,
@@ -771,7 +1121,11 @@ onMounted(async () => {
 
 .quota-edit-fields .base-input {
   min-width: 120px;
-  height: 36px;
+  height: 38px;
+  box-sizing: border-box;
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: normal;
 }
 
 .quota-edit-fields .security-btn,
@@ -812,6 +1166,28 @@ onMounted(async () => {
 .price-row strong {
   color: var(--mac-text);
   min-width: 180px;
+}
+
+.price-model {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 230px;
+}
+
+.price-source {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--mac-text) 9%, transparent);
+  color: var(--mac-text-secondary);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.price-source.custom {
+  background: color-mix(in srgb, #0a84ff 14%, transparent);
+  color: #0a6ed1;
 }
 
 .unpriced-warning {
@@ -864,6 +1240,12 @@ onMounted(async () => {
   .security-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .provider-access-header,
+  .provider-access-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .security-badge {

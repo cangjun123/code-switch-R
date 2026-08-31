@@ -312,9 +312,24 @@ curl http://127.0.0.1:18100/responses \
 
 ### Codex Key 额度
 
-在安全设置中可以为每个 `csk_...` key 配置 Token 上限和美元上限；任一上限设为 `0` 表示不限。周期支持一次性、每天、每周一和每月 1 日，日历边界按服务器 `time.Local` 时区计算。额度在真实上游响应完成后结算，宽松模式允许并发请求在结算前产生少量超额。
+在安全设置中可以为每个 `csk_...` key 选择 Token 或美元作为额度类型，只配置一个上限；`0` 表示不限。周期支持一次性、每天、每周一和每月 1 日，日历边界按服务器 `time.Local` 时区计算。额度在真实上游响应完成后结算，宽松模式允许并发请求在结算前产生少量超额。
 
-美元价格在安全设置中统一按模型配置，单位为美元 / 100 万 Token，分别填写普通输入、缓存输入、普通输出和推理输出价格。未配置价格的模型按免费处理并在管理页提示，不会阻断请求。额度耗尽时，Codex Responses 和 Chat Completions 入口返回 OpenAI 兼容的 `429` / `insufficient_quota` 响应；周期额度同时返回 `Retry-After` 和 `X-Quota-Reset`。
+美元价格在安全设置中统一按模型配置，单位为美元 / 100 万 Token，分别填写普通输入、缓存输入、普通输出和推理输出价格。程序随包内置 LiteLLM 与 EasyCLIProxyAPI 已知的 OpenAI/Codex 模型价格；管理员自定义价格优先，删除自定义覆盖后恢复内置默认。仍未识别的模型按免费处理并在管理页提示，不会阻断请求。额度耗尽时，Codex Responses 和 Chat Completions 入口返回 OpenAI 兼容的 `429` / `insufficient_quota` 响应；周期额度同时返回 `Retry-After` 和 `X-Quota-Reset`。
+
+### Codex Key Provider 访问范围
+
+安全设置可以把每个 `csk_...` key 限制到一个或多个 Codex Provider。未启用限制时可访问全部 Codex Provider，兼容升级前创建的 key；启用后，模型筛选、粘性会话、轮询、重试和故障切换都只会在已选择的 Provider 内进行。已选择的 Provider 被停用或删除时不会自动放宽权限。
+
+### 查询当前 Key 剩余额度
+
+请求者可以用自己的 `csk_...` key 调用只读接口，无需管理员会话：
+
+```bash
+curl http://127.0.0.1:18100/v1/quota \
+  -H "Authorization: Bearer csk_xxx"
+```
+
+响应包含 `tokenRemaining`、`usdRemaining`、`resetAt`、`serverTimezone` 和 `blocked` 等字段。未限制的额度对应剩余值为 `null`。该接口不消耗额度，即使 key 已因额度耗尽而返回 `429`，仍可查询当前状态。
 
 ## 日志与数据库维护
 

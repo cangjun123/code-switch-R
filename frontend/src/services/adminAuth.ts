@@ -37,6 +37,7 @@ export type CodexRelayKeyListItem = {
   tokenLimit: number
   usdLimit: string
   quotaPeriod: 'once' | 'daily' | 'weekly' | 'monthly'
+  allowedProviderIds: number[]
   quota?: CodexRelayQuotaStatus
 }
 
@@ -49,6 +50,13 @@ export type CodexRelayKeyCreateResult = {
   tokenLimit: number
   usdLimit: string
   quotaPeriod: 'once' | 'daily' | 'weekly' | 'monthly'
+  allowedProviderIds: number[]
+}
+
+export type CodexRelayProviderOption = {
+  id: number
+  name: string
+  enabled: boolean
 }
 
 export type CodexRelayQuotaStatus = {
@@ -75,6 +83,8 @@ export type CodexRelayModelPrice = {
   output: string
   reasoningOutput: string
   updatedAt?: string
+  source?: 'builtin' | 'custom'
+  canRestoreDefault?: boolean
 }
 
 export type CodexRelayUnpricedModel = {
@@ -240,13 +250,18 @@ export async function listCodexRelayKeys(): Promise<CodexRelayKeyListItem[]> {
   return response.keys ?? []
 }
 
+export async function listCodexRelayProviders(): Promise<CodexRelayProviderOption[]> {
+  const response = await adminRequest<{ providers?: CodexRelayProviderOption[] }>('/api/admin/codex-providers')
+  return response.providers ?? []
+}
+
 export async function createCodexRelayKey(
   name: string,
-  quota?: { tokenLimit?: number; usdLimit?: string; period?: string },
+  config?: { tokenLimit?: number; usdLimit?: string; period?: string; allowedProviderIds?: number[] },
 ): Promise<CodexRelayKeyCreateResult> {
   return adminRequest<CodexRelayKeyCreateResult>('/api/admin/codex-keys', {
     method: 'POST',
-    body: JSON.stringify({ name, ...(quota ?? {}) }),
+    body: JSON.stringify({ name, ...(config ?? {}) }),
   })
 }
 
@@ -279,6 +294,14 @@ export async function resetCodexRelayKeyQuota(id: string): Promise<CodexRelayQuo
   return adminRequest<CodexRelayQuotaStatus>(`/api/admin/codex-keys/${encodeURIComponent(id)}/reset-quota`, {
     method: 'POST',
   })
+}
+
+export async function updateCodexRelayKeyProviders(id: string, allowedProviderIds: number[]): Promise<number[]> {
+  const response = await adminRequest<{ allowedProviderIds?: number[] }>(`/api/admin/codex-keys/${encodeURIComponent(id)}/providers`, {
+    method: 'PATCH',
+    body: JSON.stringify({ allowedProviderIds }),
+  })
+  return response.allowedProviderIds ?? []
 }
 
 export async function listCodexRelayModelPrices(): Promise<CodexRelayModelPrice[]> {

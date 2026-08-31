@@ -35,14 +35,16 @@ type adminUpdateCredentialsRequest struct {
 }
 
 type codexRelayKeyCreateRequest struct {
-	Name            string          `json:"name"`
-	TokenLimit      int64           `json:"tokenLimit"`
-	TokenLimitSnake *int64          `json:"token_limit"`
-	USDLimit        json.RawMessage `json:"usdLimit"`
-	USDLimitSnake   json.RawMessage `json:"usd_limit"`
-	Period          string          `json:"period"`
-	QuotaPeriod     string          `json:"quotaPeriod"`
-	PeriodSnake     string          `json:"quota_period"`
+	Name                    string          `json:"name"`
+	TokenLimit              int64           `json:"tokenLimit"`
+	TokenLimitSnake         *int64          `json:"token_limit"`
+	USDLimit                json.RawMessage `json:"usdLimit"`
+	USDLimitSnake           json.RawMessage `json:"usd_limit"`
+	Period                  string          `json:"period"`
+	QuotaPeriod             string          `json:"quotaPeriod"`
+	PeriodSnake             string          `json:"quota_period"`
+	AllowedProviderIDs      []int64         `json:"allowedProviderIds"`
+	AllowedProviderIDsSnake []int64         `json:"allowed_provider_ids"`
 }
 
 // UnmarshalJSON keeps the admin endpoint tolerant of clients that encode an
@@ -50,14 +52,16 @@ type codexRelayKeyCreateRequest struct {
 // sends numbers, while older scripts commonly persisted strings.
 func (r *codexRelayKeyCreateRequest) UnmarshalJSON(data []byte) error {
 	type rawRequest struct {
-		Name            string          `json:"name"`
-		TokenLimit      json.RawMessage `json:"tokenLimit"`
-		TokenLimitSnake json.RawMessage `json:"token_limit"`
-		USDLimit        json.RawMessage `json:"usdLimit"`
-		USDLimitSnake   json.RawMessage `json:"usd_limit"`
-		Period          string          `json:"period"`
-		QuotaPeriod     string          `json:"quotaPeriod"`
-		PeriodSnake     string          `json:"quota_period"`
+		Name                    string          `json:"name"`
+		TokenLimit              json.RawMessage `json:"tokenLimit"`
+		TokenLimitSnake         json.RawMessage `json:"token_limit"`
+		USDLimit                json.RawMessage `json:"usdLimit"`
+		USDLimitSnake           json.RawMessage `json:"usd_limit"`
+		Period                  string          `json:"period"`
+		QuotaPeriod             string          `json:"quotaPeriod"`
+		PeriodSnake             string          `json:"quota_period"`
+		AllowedProviderIDs      []int64         `json:"allowedProviderIds"`
+		AllowedProviderIDsSnake []int64         `json:"allowed_provider_ids"`
 	}
 	var raw rawRequest
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -66,6 +70,7 @@ func (r *codexRelayKeyCreateRequest) UnmarshalJSON(data []byte) error {
 	*r = codexRelayKeyCreateRequest{
 		Name: raw.Name, USDLimit: raw.USDLimit, USDLimitSnake: raw.USDLimitSnake,
 		Period: raw.Period, QuotaPeriod: raw.QuotaPeriod, PeriodSnake: raw.PeriodSnake,
+		AllowedProviderIDs: raw.AllowedProviderIDs, AllowedProviderIDsSnake: raw.AllowedProviderIDsSnake,
 	}
 	tokenRaw := raw.TokenLimit
 	if len(tokenRaw) == 0 {
@@ -79,6 +84,17 @@ func (r *codexRelayKeyCreateRequest) UnmarshalJSON(data []byte) error {
 		r.TokenLimit = value
 	}
 	return nil
+}
+
+type codexRelayKeyProviderAccessRequest struct {
+	AllowedProviderIDs      []int64 `json:"allowedProviderIds"`
+	AllowedProviderIDsSnake []int64 `json:"allowed_provider_ids"`
+}
+
+type codexRelayProviderOption struct {
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
 }
 
 type codexRelayKeyQuotaRequest struct {
@@ -294,6 +310,41 @@ func requestQuotaPeriod(primary, quotaPeriod, snake string) string {
 	return primary
 }
 
+func requestAllowedProviderIDs(primary, snake []int64) []int64 {
+	if primary != nil {
+		return primary
+	}
+	return snake
+}
+
+func validateCodexAllowedProviderIDs(rt *appRuntime, requested []int64) ([]int64, error) {
+	normalized, err := services.NormalizeCodexAllowedProviderIDs(requested)
+	if err != nil || len(normalized) == 0 {
+		return normalized, err
+	}
+	if rt == nil || rt.providerService == nil {
+		return nil, errors.New("Codex provider service is unavailable")
+	}
+	providers, err := rt.providerService.LoadProviders(services.ProviderKindCodex)
+	if err != nil {
+		return nil, fmt.Errorf("读取 Codex provider 失败: %w", err)
+	}
+	configured := make(map[int64]struct{}, len(providers))
+	for _, provider := range providers {
+		configured[provider.ID] = struct{}{}
+	}
+	missing := make([]int64, 0)
+	for _, providerID := range normalized {
+		if _, exists := configured[providerID]; !exists {
+			missing = append(missing, providerID)
+		}
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("Codex provider 不存在: %v", missing)
+	}
+	return normalized, nil
+}
+
 func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 	authRequired := requireAdminSession(rt.adminAuth, rt.adminSecurity)
 	originRequired := requireTrustedOrigin(rt.adminSecurity)
@@ -421,6 +472,24 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 		c.JSON(http.StatusOK, status)
 	})
 
+	router.GET("/api/admin/codex-providers", authRequired, func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		if rt.providerService == nil {
+			c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Error: apiError{Code: "provider_service_unavailable", Message: "Codex provider service is unavailable"}})
+			return
+		}
+		providers, err := rt.providerService.LoadProviders(services.ProviderKindCodex)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, apiErrorResponse{Error: apiError{Code: "list_providers_failed", Message: err.Error()}})
+			return
+		}
+		options := make([]codexRelayProviderOption, 0, len(providers))
+		for _, provider := range providers {
+			options = append(options, codexRelayProviderOption{ID: provider.ID, Name: provider.Name, Enabled: provider.Enabled})
+		}
+		c.JSON(http.StatusOK, gin.H{"providers": options})
+	})
+
 	router.GET("/api/admin/codex-keys", authRequired, func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 		keys, err := rt.codexRelayKeys.ListKeys()
@@ -463,16 +532,22 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_quota", Message: usdErr.Error()}})
 			return
 		}
-		period := requestQuotaPeriod(request.Period, request.QuotaPeriod, request.PeriodSnake)
-		if tokenLimit < 0 {
-			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_quota", Message: "Token 额度不能为负数"}})
+		usdLimit, quotaErr := services.ValidateRelayQuotaLimits(tokenLimit, usdLimit)
+		if quotaErr != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_quota", Message: quotaErr.Error()}})
 			return
 		}
+		period := requestQuotaPeriod(request.Period, request.QuotaPeriod, request.PeriodSnake)
 		if strings.TrimSpace(period) != "" {
 			if _, err := services.ValidateRelayQuotaPeriod(period); err != nil {
 				c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_quota", Message: err.Error()}})
 				return
 			}
+		}
+		allowedProviderIDs, accessErr := validateCodexAllowedProviderIDs(rt, requestAllowedProviderIDs(request.AllowedProviderIDs, request.AllowedProviderIDsSnake))
+		if accessErr != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: accessErr.Error()}})
+			return
 		}
 
 		result, err := rt.codexRelayKeys.CreateKey(request.Name)
@@ -493,6 +568,11 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 				result.QuotaPeriod = services.NormalizeRelayQuotaPeriod(period)
 			}
 		}
+		if err := rt.codexRelayKeys.UpdateAllowedProviderIDs(result.ID, allowedProviderIDs); err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: err.Error()}})
+			return
+		}
+		result.AllowedProviderIDs = append([]int64{}, allowedProviderIDs...)
 		c.JSON(http.StatusOK, result)
 	})
 
@@ -566,6 +646,11 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_quota", Message: usdErr.Error()}})
 			return
 		}
+		usdLimit, quotaErr := services.ValidateRelayQuotaLimits(tokenLimit, usdLimit)
+		if quotaErr != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_quota", Message: quotaErr.Error()}})
+			return
+		}
 		period := requestQuotaPeriod(request.Period, request.QuotaPeriod, request.PeriodSnake)
 		if strings.TrimSpace(period) == "" {
 			key, keyErr := rt.codexRelayKeys.GetKeyByID(c.Param("id"))
@@ -598,6 +683,35 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 	router.PATCH("/api/admin/codex-keys/:id/quota", originRequired, authRequired, updateQuota)
 	router.PUT("/api/admin/codex-keys/:id/quota", originRequired, authRequired, updateQuota)
 	router.PATCH("/api/admin/codex-keys/:id", originRequired, authRequired, updateQuota)
+
+	updateProviderAccess := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		var request codexRelayKeyProviderAccessRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_request", Message: err.Error()}})
+			return
+		}
+		if request.AllowedProviderIDs == nil && request.AllowedProviderIDsSnake == nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_request", Message: "allowedProviderIds is required"}})
+			return
+		}
+		providerIDs, err := validateCodexAllowedProviderIDs(rt, requestAllowedProviderIDs(request.AllowedProviderIDs, request.AllowedProviderIDsSnake))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: err.Error()}})
+			return
+		}
+		if err := rt.codexRelayKeys.UpdateAllowedProviderIDs(c.Param("id"), providerIDs); err != nil {
+			status := http.StatusBadRequest
+			if strings.Contains(err.Error(), "未找到") {
+				status = http.StatusNotFound
+			}
+			c.JSON(status, apiErrorResponse{Error: apiError{Code: "update_provider_access_failed", Message: err.Error()}})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"allowedProviderIds": append([]int64{}, providerIDs...)})
+	}
+	router.PATCH("/api/admin/codex-keys/:id/providers", originRequired, authRequired, updateProviderAccess)
+	router.PUT("/api/admin/codex-keys/:id/providers", originRequired, authRequired, updateProviderAccess)
 
 	resetQuota := func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")

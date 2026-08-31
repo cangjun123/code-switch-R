@@ -11,6 +11,7 @@ import (
 
 const codexRelayKeyHeader = "X-Code-Switch-Key"
 const relayKeyIDContextKey = "relay_key_id"
+const relayKeyContextKey = "relay_key"
 
 func (prs *ProviderRelayService) claudeRelayAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -41,7 +42,7 @@ func (prs *ProviderRelayService) claudeRelayAuthMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		c.Set(relayKeyIDContextKey, key.ID)
+		setRelayKeyContext(c, key)
 
 		// 清理客户端传来的认证头，避免泄漏 relay key 给上游
 		c.Request.Header.Del("Authorization")
@@ -100,7 +101,7 @@ func (prs *ProviderRelayService) codexRelayAuthMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		c.Set(relayKeyIDContextKey, key.ID)
+		setRelayKeyContext(c, key)
 
 		// 上游认证由 provider 配置重新注入，避免把客户端传来的 relay key 转发出去。
 		c.Request.Header.Del("Authorization")
@@ -127,6 +128,45 @@ func relayKeyIDFromContext(c *gin.Context) string {
 	return strings.TrimSpace(text)
 }
 
+func setRelayKeyContext(c *gin.Context, key *CodexRelayKey) {
+	if c == nil || key == nil {
+		return
+	}
+	copyKey := cloneCodexRelayKey(*key)
+	c.Set(relayKeyIDContextKey, copyKey.ID)
+	c.Set(relayKeyContextKey, &copyKey)
+}
+
+func relayKeyFromContext(c *gin.Context) *CodexRelayKey {
+	if c == nil {
+		return nil
+	}
+	value, ok := c.Get(relayKeyContextKey)
+	if !ok {
+		return nil
+	}
+	key, _ := value.(*CodexRelayKey)
+	if key == nil {
+		return nil
+	}
+	copyKey := cloneCodexRelayKey(*key)
+	return &copyKey
+}
+
+func (prs *ProviderRelayService) relayKeyForRequest(c *gin.Context) (*CodexRelayKey, error) {
+	if key := relayKeyFromContext(c); key != nil {
+		return key, nil
+	}
+	if prs == nil || prs.codexRelayKeys == nil {
+		return nil, nil
+	}
+	keyID := relayKeyIDFromContext(c)
+	if keyID == "" {
+		return nil, nil
+	}
+	return prs.codexRelayKeys.GetKeyByID(keyID)
+}
+
 // codexQuotaMiddleware is mounted only on inference routes.  Authentication is
 // shared by images and /v1/models, but those endpoints must never be blocked by
 // Codex token/cost quotas.
@@ -141,7 +181,7 @@ func (prs *ProviderRelayService) codexQuotaMiddleware() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		key, err := prs.codexRelayKeys.GetKeyByID(keyID)
+		key, err := prs.relayKeyForRequest(c)
 		if err != nil {
 			writeOpenAIQuotaServiceError(c, http.StatusUnauthorized, "relay_key_not_found", "relay key no longer exists")
 			c.Abort()
@@ -160,6 +200,55 @@ func (prs *ProviderRelayService) codexQuotaMiddleware() gin.HandlerFunc {
 		writeOpenAIQuotaExceeded(c, decision)
 		c.Abort()
 	}
+}
+
+func (prs *ProviderRelayService) codexQuotaStatusHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		if prs.relayQuota == nil || prs.codexRelayKeys == nil {
+			writeOpenAIQuotaServiceError(c, http.StatusServiceUnavailable, "quota_service_unavailable", "relay quota service is temporarily unavailable")
+			return
+		}
+		key, err := prs.relayKeyForRequest(c)
+		if err != nil || key == nil {
+			writeOpenAIQuotaServiceError(c, http.StatusUnauthorized, "relay_key_not_found", "relay key no longer exists")
+			return
+		}
+		status, err := prs.relayQuota.Status(key)
+		if err != nil {
+			writeOpenAIQuotaServiceError(c, http.StatusServiceUnavailable, "quota_service_unavailable", "relay quota service is temporarily unavailable")
+			return
+		}
+		c.JSON(http.StatusOK, status)
+	}
+}
+
+func filterCodexProvidersForRelayKey(key *CodexRelayKey, providers []Provider) ([]Provider, int) {
+	if key == nil || len(key.AllowedProviderIDs) == 0 {
+		return providers, 0
+	}
+	allowed := make(map[int64]struct{}, len(key.AllowedProviderIDs))
+	for _, providerID := range key.AllowedProviderIDs {
+		allowed[providerID] = struct{}{}
+	}
+	filtered := make([]Provider, 0, len(providers))
+	for _, provider := range providers {
+		if _, ok := allowed[provider.ID]; ok {
+			filtered = append(filtered, provider)
+		}
+	}
+	return filtered, len(providers) - len(filtered)
+}
+
+func writeOpenAIProviderAccessDenied(c *gin.Context) {
+	c.JSON(http.StatusForbidden, gin.H{
+		"error": gin.H{
+			"message": "Relay key is not allowed to access any configured Codex provider",
+			"type":    "invalid_request_error",
+			"param":   nil,
+			"code":    "provider_access_denied",
+		},
+	})
 }
 
 func writeOpenAIQuotaServiceError(c *gin.Context, status int, code, message string) {
