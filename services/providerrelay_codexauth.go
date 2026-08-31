@@ -2,12 +2,15 @@ package services
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
 const codexRelayKeyHeader = "X-Code-Switch-Key"
+const relayKeyIDContextKey = "relay_key_id"
 
 func (prs *ProviderRelayService) claudeRelayAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -24,13 +27,13 @@ func (prs *ProviderRelayService) claudeRelayAuthMiddleware() gin.HandlerFunc {
 		}
 
 		candidate := extractClaudeRelayKey(c.Request)
-		ok, err := prs.codexRelayKeys.ValidateKey(candidate)
+		key, err := prs.codexRelayKeys.FindKey(candidate)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to validate relay key"})
 			c.Abort()
 			return
 		}
-		if !ok {
+		if key == nil {
 			c.Header("WWW-Authenticate", "Bearer realm=\"code-switch-claude\"")
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": "invalid claude relay api key",
@@ -38,6 +41,7 @@ func (prs *ProviderRelayService) claudeRelayAuthMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		c.Set(relayKeyIDContextKey, key.ID)
 
 		// 清理客户端传来的认证头，避免泄漏 relay key 给上游
 		c.Request.Header.Del("Authorization")
@@ -82,13 +86,13 @@ func (prs *ProviderRelayService) codexRelayAuthMiddleware() gin.HandlerFunc {
 		}
 
 		candidate := extractCodexRelayKey(c.Request)
-		ok, err := prs.codexRelayKeys.ValidateKey(candidate)
+		key, err := prs.codexRelayKeys.FindKey(candidate)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to validate codex relay key"})
 			c.Abort()
 			return
 		}
-		if !ok {
+		if key == nil {
 			c.Header("WWW-Authenticate", "Bearer realm=\"code-switch-codex\"")
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": "invalid codex relay api key",
@@ -96,6 +100,7 @@ func (prs *ProviderRelayService) codexRelayAuthMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		c.Set(relayKeyIDContextKey, key.ID)
 
 		// 上游认证由 provider 配置重新注入，避免把客户端传来的 relay key 转发出去。
 		c.Request.Header.Del("Authorization")
@@ -105,6 +110,105 @@ func (prs *ProviderRelayService) codexRelayAuthMiddleware() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+func relayKeyIDFromContext(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	value, ok := c.Get(relayKeyIDContextKey)
+	if !ok {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(text)
+}
+
+// codexQuotaMiddleware is mounted only on inference routes.  Authentication is
+// shared by images and /v1/models, but those endpoints must never be blocked by
+// Codex token/cost quotas.
+func (prs *ProviderRelayService) codexQuotaMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if prs.relayQuota == nil || prs.codexRelayKeys == nil {
+			c.Next()
+			return
+		}
+		keyID := relayKeyIDFromContext(c)
+		if keyID == "" {
+			c.Next()
+			return
+		}
+		key, err := prs.codexRelayKeys.GetKeyByID(keyID)
+		if err != nil {
+			writeOpenAIQuotaServiceError(c, http.StatusUnauthorized, "relay_key_not_found", "relay key no longer exists")
+			c.Abort()
+			return
+		}
+		decision, err := prs.relayQuota.Check(key)
+		if err != nil {
+			writeOpenAIQuotaServiceError(c, http.StatusServiceUnavailable, "quota_service_unavailable", "relay quota service is temporarily unavailable")
+			c.Abort()
+			return
+		}
+		if decision.Allowed {
+			c.Next()
+			return
+		}
+		writeOpenAIQuotaExceeded(c, decision)
+		c.Abort()
+	}
+}
+
+func writeOpenAIQuotaServiceError(c *gin.Context, status int, code, message string) {
+	c.JSON(status, gin.H{
+		"error": gin.H{
+			"message": message,
+			"type":    "server_error",
+			"param":   nil,
+			"code":    code,
+		},
+	})
+}
+
+func writeOpenAIQuotaExceeded(c *gin.Context, decision RelayQuotaDecision) {
+	status := decision.Status
+	code := "relay_key_quota_exceeded"
+	message := "Relay key quota exceeded"
+	switch decision.Reason {
+	case "token":
+		code = "relay_key_token_quota_exceeded"
+		message = "Relay key token quota exceeded"
+	case "usd":
+		code = "relay_key_cost_quota_exceeded"
+		message = "Relay key cost quota exceeded"
+	case "token_and_usd":
+		code = "relay_key_quota_exceeded"
+		message = "Relay key token and cost quotas exceeded"
+	}
+	if status.ResetAt != nil && strings.TrimSpace(*status.ResetAt) != "" {
+		message += "; resets at " + *status.ResetAt
+		if resetAt, err := time.Parse(time.RFC3339, *status.ResetAt); err == nil {
+			seconds := int64(time.Until(resetAt).Seconds())
+			if seconds < 1 {
+				seconds = 1
+			}
+			c.Header("Retry-After", strconv.FormatInt(seconds, 10))
+			c.Header("X-Quota-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+		}
+	} else if status.Blocked && status.Period == RelayQuotaPeriodOnce {
+		message += "; requires administrator reset"
+	}
+	c.JSON(http.StatusTooManyRequests, gin.H{
+		"error": gin.H{
+			"message": message,
+			"type":    "insufficient_quota",
+			"param":   nil,
+			"code":    code,
+		},
+	})
 }
 
 func extractCodexRelayKey(req *http.Request) string {

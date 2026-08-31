@@ -678,11 +678,12 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 	req.URL.RawQuery = q.Encode()
 
 	requestLog := &ReqeustLog{
-		Platform: kind,
-		Provider: provider.Name,
-		Model:    model,
-		IsStream: streamRequested,
-		ClientIP: clientIPFromRequest(c.Request),
+		Platform:   kind,
+		Provider:   provider.Name,
+		Model:      model,
+		IsStream:   streamRequested,
+		RelayKeyID: relayKeyIDFromContext(c),
+		ClientIP:   clientIPFromRequest(c.Request),
 	}
 	start := time.Now()
 	activeRequestID := defaultActiveRequestTracker.Start(requestLog, start)
@@ -1031,15 +1032,16 @@ func (prs *ProviderRelayService) writeRelayRequestLog(requestLog *ReqeustLog, st
 
 	err := GlobalDBQueueLogs.ExecBatchCtx(ctx, `
 		INSERT INTO request_log (
-			platform, model, provider, http_code,
+			platform, model, provider, relay_key_id, http_code,
 			input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
 			reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
 			is_degraded, resend_count
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		requestLog.Platform,
 		requestLog.Model,
 		requestLog.Provider,
+		requestLog.RelayKeyID,
 		requestLog.HttpCode,
 		requestLog.InputTokens,
 		requestLog.OutputTokens,

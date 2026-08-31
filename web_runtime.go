@@ -39,6 +39,7 @@ type appRuntime struct {
 	adminAuth           *services.AdminAuthService
 	adminSecurity       *adminSecurity
 	codexRelayKeys      *services.CodexRelayKeyService
+	relayQuota          *services.RelayQuotaService
 	mcpService          *services.MCPService
 	skillService        *services.SkillService
 	promptService       *services.PromptService
@@ -78,6 +79,7 @@ func newAppRuntime() (*appRuntime, error) {
 		return nil, fmt.Errorf("初始化后台安全配置失败: %w", err)
 	}
 	codexRelayKeys := services.NewCodexRelayKeyService()
+	relayQuota := services.NewRelayQuotaService()
 	bootstrapNetworkService := services.NewNetworkService(defaultRelayAddr, nil, nil, nil, codexRelayKeys)
 	relayAddr := defaultRelayAddr
 	if networkSettings, err := bootstrapNetworkService.GetNetworkSettings(); err != nil {
@@ -91,7 +93,7 @@ func newAppRuntime() (*appRuntime, error) {
 	blacklistService := services.NewBlacklistService(settingsService, notificationService)
 	providerService.SetBlacklistService(blacklistService)
 	geminiService := services.NewGeminiService(relayAddr)
-	providerRelay := services.NewProviderRelayService(providerService, geminiService, codexRelayKeys, blacklistService, notificationService, appSettings, relayAddr)
+	providerRelay := services.NewProviderRelayService(providerService, geminiService, codexRelayKeys, blacklistService, notificationService, appSettings, relayAddr, relayQuota)
 	claudeSettings := services.NewClaudeSettingsService(providerRelay.Addr(), codexRelayKeys)
 	codexSettings := services.NewCodexSettingsService(providerRelay.Addr(), codexRelayKeys)
 	cliConfigService := services.NewCliConfigService(providerRelay.Addr(), codexRelayKeys)
@@ -184,6 +186,7 @@ func newAppRuntime() (*appRuntime, error) {
 		adminAuth:                   adminAuth,
 		adminSecurity:               adminSecurity,
 		codexRelayKeys:              codexRelayKeys,
+		relayQuota:                  relayQuota,
 		mcpService:                  mcpService,
 		skillService:                skillService,
 		promptService:               promptService,

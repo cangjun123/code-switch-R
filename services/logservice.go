@@ -120,6 +120,7 @@ func (ls *LogService) ListRequestLogs(platform string, provider string, limit in
 			Platform:              record.GetString("platform"),
 			Model:                 record.GetString("model"),
 			Provider:              record.GetString("provider"),
+			RelayKeyID:            record.GetString("relay_key_id"),
 			HttpCode:              record.GetInt("http_code"),
 			InputTokens:           record.GetInt("input_tokens"),
 			OutputTokens:          record.GetInt("output_tokens"),

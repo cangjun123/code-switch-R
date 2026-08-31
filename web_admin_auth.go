@@ -2,6 +2,9 @@ package main
 
 import (
 	"codeswitch/services"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -32,7 +35,263 @@ type adminUpdateCredentialsRequest struct {
 }
 
 type codexRelayKeyCreateRequest struct {
-	Name string `json:"name"`
+	Name            string          `json:"name"`
+	TokenLimit      int64           `json:"tokenLimit"`
+	TokenLimitSnake *int64          `json:"token_limit"`
+	USDLimit        json.RawMessage `json:"usdLimit"`
+	USDLimitSnake   json.RawMessage `json:"usd_limit"`
+	Period          string          `json:"period"`
+	QuotaPeriod     string          `json:"quotaPeriod"`
+	PeriodSnake     string          `json:"quota_period"`
+}
+
+// UnmarshalJSON keeps the admin endpoint tolerant of clients that encode an
+// integer quota as either a JSON number or a quoted decimal string.  The UI
+// sends numbers, while older scripts commonly persisted strings.
+func (r *codexRelayKeyCreateRequest) UnmarshalJSON(data []byte) error {
+	type rawRequest struct {
+		Name            string          `json:"name"`
+		TokenLimit      json.RawMessage `json:"tokenLimit"`
+		TokenLimitSnake json.RawMessage `json:"token_limit"`
+		USDLimit        json.RawMessage `json:"usdLimit"`
+		USDLimitSnake   json.RawMessage `json:"usd_limit"`
+		Period          string          `json:"period"`
+		QuotaPeriod     string          `json:"quotaPeriod"`
+		PeriodSnake     string          `json:"quota_period"`
+	}
+	var raw rawRequest
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = codexRelayKeyCreateRequest{
+		Name: raw.Name, USDLimit: raw.USDLimit, USDLimitSnake: raw.USDLimitSnake,
+		Period: raw.Period, QuotaPeriod: raw.QuotaPeriod, PeriodSnake: raw.PeriodSnake,
+	}
+	tokenRaw := raw.TokenLimit
+	if len(tokenRaw) == 0 {
+		tokenRaw = raw.TokenLimitSnake
+	}
+	if len(tokenRaw) > 0 && strings.TrimSpace(string(tokenRaw)) != "null" {
+		value, err := parseAdminInt64(tokenRaw)
+		if err != nil {
+			return fmt.Errorf("invalid tokenLimit: %w", err)
+		}
+		r.TokenLimit = value
+	}
+	return nil
+}
+
+type codexRelayKeyQuotaRequest struct {
+	TokenLimit      *int64          `json:"tokenLimit"`
+	TokenLimitSnake *int64          `json:"token_limit"`
+	USDLimit        json.RawMessage `json:"usdLimit"`
+	USDLimitSnake   json.RawMessage `json:"usd_limit"`
+	Period          string          `json:"period"`
+	QuotaPeriod     string          `json:"quotaPeriod"`
+	PeriodSnake     string          `json:"quota_period"`
+}
+
+func (r *codexRelayKeyQuotaRequest) UnmarshalJSON(data []byte) error {
+	type rawRequest struct {
+		TokenLimit      json.RawMessage `json:"tokenLimit"`
+		TokenLimitSnake json.RawMessage `json:"token_limit"`
+		USDLimit        json.RawMessage `json:"usdLimit"`
+		USDLimitSnake   json.RawMessage `json:"usd_limit"`
+		Period          string          `json:"period"`
+		QuotaPeriod     string          `json:"quotaPeriod"`
+		PeriodSnake     string          `json:"quota_period"`
+	}
+	var raw rawRequest
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = codexRelayKeyQuotaRequest{
+		USDLimit: raw.USDLimit, USDLimitSnake: raw.USDLimitSnake,
+		Period: raw.Period, QuotaPeriod: raw.QuotaPeriod, PeriodSnake: raw.PeriodSnake,
+	}
+	tokenRaw := raw.TokenLimit
+	if len(tokenRaw) == 0 {
+		tokenRaw = raw.TokenLimitSnake
+	}
+	if len(tokenRaw) > 0 && strings.TrimSpace(string(tokenRaw)) != "null" {
+		value, err := parseAdminInt64(tokenRaw)
+		if err != nil {
+			return fmt.Errorf("invalid tokenLimit: %w", err)
+		}
+		r.TokenLimit = &value
+	}
+	return nil
+}
+
+func parseAdminInt64(raw json.RawMessage) (int64, error) {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return 0, nil
+	}
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err == nil {
+		value, parseErr := number.Int64()
+		if parseErr == nil {
+			return value, nil
+		}
+		return 0, parseErr
+	}
+	var quoted string
+	if err := json.Unmarshal(raw, &quoted); err != nil {
+		return 0, errors.New("must be an integer number or string")
+	}
+	value, err := json.Number(strings.TrimSpace(quoted)).Int64()
+	if err != nil {
+		return 0, err
+	}
+	return value, nil
+}
+
+type relayModelPriceRequest struct {
+	Model                 string `json:"model"`
+	Input                 string `json:"input"`
+	InputSnake            string `json:"input_price"`
+	CachedInput           string `json:"cachedInput"`
+	CachedInputSnake      string `json:"cached_input"`
+	CachedInputPriceSnake string `json:"cached_input_price"`
+	Output                string `json:"output"`
+	OutputSnake           string `json:"output_price"`
+	ReasoningOutput       string `json:"reasoningOutput"`
+	ReasoningOutputSnake  string `json:"reasoning_output"`
+	ReasoningPriceSnake   string `json:"reasoning_output_price"`
+	InputPriceCamel       string `json:"inputPrice"`
+	CachedInputPriceCamel string `json:"cachedInputPrice"`
+	OutputPriceCamel      string `json:"outputPrice"`
+	ReasoningPriceCamel   string `json:"reasoningOutputPrice"`
+}
+
+// UnmarshalJSON accepts both decimal strings (the canonical API form) and
+// JSON numbers.  Keeping the values as strings after decoding avoids float
+// rounding before the service converts them to nano-USD.
+func (r *relayModelPriceRequest) UnmarshalJSON(data []byte) error {
+	type rawRequest struct {
+		Model                 string          `json:"model"`
+		Input                 json.RawMessage `json:"input"`
+		InputSnake            json.RawMessage `json:"input_price"`
+		CachedInput           json.RawMessage `json:"cachedInput"`
+		CachedInputSnake      json.RawMessage `json:"cached_input"`
+		CachedInputPriceSnake json.RawMessage `json:"cached_input_price"`
+		Output                json.RawMessage `json:"output"`
+		OutputSnake           json.RawMessage `json:"output_price"`
+		ReasoningOutput       json.RawMessage `json:"reasoningOutput"`
+		ReasoningOutputSnake  json.RawMessage `json:"reasoning_output"`
+		ReasoningPriceSnake   json.RawMessage `json:"reasoning_output_price"`
+		InputPriceCamel       json.RawMessage `json:"inputPrice"`
+		CachedInputPriceCamel json.RawMessage `json:"cachedInputPrice"`
+		OutputPriceCamel      json.RawMessage `json:"outputPrice"`
+		ReasoningPriceCamel   json.RawMessage `json:"reasoningOutputPrice"`
+	}
+	var raw rawRequest
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	read := func(label string, values ...json.RawMessage) (string, error) {
+		for _, value := range values {
+			if len(value) == 0 {
+				continue
+			}
+			text := strings.TrimSpace(string(value))
+			if text == "null" {
+				continue
+			}
+			if text == "" {
+				continue
+			}
+			var number json.Number
+			if err := json.Unmarshal(value, &number); err == nil {
+				return number.String(), nil
+			}
+			var quoted string
+			if err := json.Unmarshal(value, &quoted); err != nil {
+				return "", fmt.Errorf("%s must be a decimal number or string", label)
+			}
+			return strings.TrimSpace(quoted), nil
+		}
+		return "", nil
+	}
+	var err error
+	*r = relayModelPriceRequest{Model: raw.Model}
+	if r.Input, err = read("input", raw.Input, raw.InputSnake, raw.InputPriceCamel); err != nil {
+		return err
+	}
+	if r.CachedInput, err = read("cachedInput", raw.CachedInput, raw.CachedInputSnake, raw.CachedInputPriceSnake, raw.CachedInputPriceCamel); err != nil {
+		return err
+	}
+	if r.Output, err = read("output", raw.Output, raw.OutputSnake, raw.OutputPriceCamel); err != nil {
+		return err
+	}
+	if r.ReasoningOutput, err = read("reasoningOutput", raw.ReasoningOutput, raw.ReasoningOutputSnake, raw.ReasoningPriceSnake, raw.ReasoningPriceCamel); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r relayModelPriceRequest) toServiceModel() services.RelayModelPrice {
+	input := r.Input
+	if strings.TrimSpace(input) == "" {
+		input = r.InputSnake
+	}
+	if strings.TrimSpace(input) == "" {
+		input = r.InputPriceCamel
+	}
+	cached := r.CachedInput
+	if strings.TrimSpace(cached) == "" {
+		cached = r.CachedInputSnake
+	}
+	if strings.TrimSpace(cached) == "" {
+		cached = r.CachedInputPriceSnake
+	}
+	if strings.TrimSpace(cached) == "" {
+		cached = r.CachedInputPriceCamel
+	}
+	output := r.Output
+	if strings.TrimSpace(output) == "" {
+		output = r.OutputSnake
+	}
+	if strings.TrimSpace(output) == "" {
+		output = r.OutputPriceCamel
+	}
+	reasoning := r.ReasoningOutput
+	if strings.TrimSpace(reasoning) == "" {
+		reasoning = r.ReasoningOutputSnake
+	}
+	if strings.TrimSpace(reasoning) == "" {
+		reasoning = r.ReasoningPriceSnake
+	}
+	if strings.TrimSpace(reasoning) == "" {
+		reasoning = r.ReasoningPriceCamel
+	}
+	return services.RelayModelPrice{Model: r.Model, Input: input, CachedInput: cached, Output: output, ReasoningOutput: reasoning}
+}
+
+func requestTokenLimit(tokenLimit int64, snake *int64) int64 {
+	if snake != nil {
+		return *snake
+	}
+	return tokenLimit
+}
+
+func requestUSDLimit(primary, snake json.RawMessage) (string, error) {
+	raw := primary
+	if len(raw) == 0 {
+		raw = snake
+	}
+	return services.ParseRelayUSDLimit(raw)
+}
+
+func requestQuotaPeriod(primary, quotaPeriod, snake string) string {
+	if strings.TrimSpace(quotaPeriod) != "" {
+		return quotaPeriod
+	}
+	if strings.TrimSpace(snake) != "" {
+		return snake
+	}
+	return primary
 }
 
 func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
@@ -171,6 +430,18 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 			})
 			return
 		}
+		if rt.relayQuota != nil {
+			for index := range keys {
+				key, keyErr := rt.codexRelayKeys.GetKeyByID(keys[index].ID)
+				if keyErr != nil {
+					continue
+				}
+				status, statusErr := rt.relayQuota.Status(key)
+				if statusErr == nil {
+					keys[index].Quota = &status
+				}
+			}
+		}
 		c.JSON(http.StatusOK, gin.H{"keys": keys})
 	})
 
@@ -184,12 +455,43 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 			return
 		}
 
+		// Validate optional quota fields before creating the key so malformed
+		// admin input cannot leave an unconfigured orphan key behind.
+		tokenLimit := requestTokenLimit(request.TokenLimit, request.TokenLimitSnake)
+		usdLimit, usdErr := requestUSDLimit(request.USDLimit, request.USDLimitSnake)
+		if usdErr != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_quota", Message: usdErr.Error()}})
+			return
+		}
+		period := requestQuotaPeriod(request.Period, request.QuotaPeriod, request.PeriodSnake)
+		if tokenLimit < 0 {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_quota", Message: "Token 额度不能为负数"}})
+			return
+		}
+		if strings.TrimSpace(period) != "" {
+			if _, err := services.ValidateRelayQuotaPeriod(period); err != nil {
+				c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_quota", Message: err.Error()}})
+				return
+			}
+		}
+
 		result, err := rt.codexRelayKeys.CreateKey(request.Name)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, apiErrorResponse{
 				Error: apiError{Code: "create_key_failed", Message: err.Error()},
 			})
 			return
+		}
+		if rt.relayQuota != nil {
+			if tokenLimit != 0 || strings.TrimSpace(usdLimit) != "0" || strings.TrimSpace(period) != "" {
+				if err := rt.codexRelayKeys.UpdateQuotaConfig(result.ID, tokenLimit, usdLimit, period); err != nil {
+					c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_quota", Message: err.Error()}})
+					return
+				}
+				result.TokenLimit = tokenLimit
+				result.USDLimit = usdLimit
+				result.QuotaPeriod = services.NormalizeRelayQuotaPeriod(period)
+			}
 		}
 		c.JSON(http.StatusOK, result)
 	})
@@ -205,6 +507,123 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 		}
 		c.JSON(http.StatusOK, gin.H{"key": secret})
 	})
+
+	// Quota status is exposed separately so clients can refresh it without
+	// retrieving key secrets.
+	router.GET("/api/admin/codex-keys/:id/quota", authRequired, func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		if rt.relayQuota == nil {
+			c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Error: apiError{Code: "quota_unavailable", Message: "relay quota service is unavailable"}})
+			return
+		}
+		key, err := rt.codexRelayKeys.GetKeyByID(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusNotFound, apiErrorResponse{Error: apiError{Code: "key_not_found", Message: err.Error()}})
+			return
+		}
+		status, err := rt.relayQuota.Status(key)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, apiErrorResponse{Error: apiError{Code: "quota_status_failed", Message: err.Error()}})
+			return
+		}
+		c.JSON(http.StatusOK, status)
+	})
+
+	updateQuota := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		if rt.relayQuota == nil {
+			c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Error: apiError{Code: "quota_unavailable", Message: "relay quota service is unavailable"}})
+			return
+		}
+		var request codexRelayKeyQuotaRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_request", Message: err.Error()}})
+			return
+		}
+		tokenLimit := int64(0)
+		if request.TokenLimit != nil {
+			tokenLimit = *request.TokenLimit
+		} else if request.TokenLimitSnake != nil {
+			tokenLimit = *request.TokenLimitSnake
+		} else {
+			key, keyErr := rt.codexRelayKeys.GetKeyByID(c.Param("id"))
+			if keyErr != nil {
+				c.JSON(http.StatusNotFound, apiErrorResponse{Error: apiError{Code: "key_not_found", Message: keyErr.Error()}})
+				return
+			}
+			tokenLimit = key.TokenLimit
+		}
+		usdLimit, usdErr := requestUSDLimit(request.USDLimit, request.USDLimitSnake)
+		if len(request.USDLimit) == 0 && len(request.USDLimitSnake) == 0 {
+			key, keyErr := rt.codexRelayKeys.GetKeyByID(c.Param("id"))
+			if keyErr != nil {
+				c.JSON(http.StatusNotFound, apiErrorResponse{Error: apiError{Code: "key_not_found", Message: keyErr.Error()}})
+				return
+			}
+			usdLimit = key.USDLimit
+		}
+		if usdErr != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_quota", Message: usdErr.Error()}})
+			return
+		}
+		period := requestQuotaPeriod(request.Period, request.QuotaPeriod, request.PeriodSnake)
+		if strings.TrimSpace(period) == "" {
+			key, keyErr := rt.codexRelayKeys.GetKeyByID(c.Param("id"))
+			if keyErr != nil {
+				c.JSON(http.StatusNotFound, apiErrorResponse{Error: apiError{Code: "key_not_found", Message: keyErr.Error()}})
+				return
+			}
+			period = key.QuotaPeriod
+		}
+		if err := rt.codexRelayKeys.UpdateQuotaConfig(c.Param("id"), tokenLimit, usdLimit, period); err != nil {
+			status := http.StatusBadRequest
+			if strings.Contains(err.Error(), "未找到") {
+				status = http.StatusNotFound
+			}
+			c.JSON(status, apiErrorResponse{Error: apiError{Code: "update_quota_failed", Message: err.Error()}})
+			return
+		}
+		key, err := rt.codexRelayKeys.GetKeyByID(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusNotFound, apiErrorResponse{Error: apiError{Code: "key_not_found", Message: err.Error()}})
+			return
+		}
+		quota, err := rt.relayQuota.Status(key)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, apiErrorResponse{Error: apiError{Code: "quota_status_failed", Message: err.Error()}})
+			return
+		}
+		c.JSON(http.StatusOK, quota)
+	}
+	router.PATCH("/api/admin/codex-keys/:id/quota", originRequired, authRequired, updateQuota)
+	router.PUT("/api/admin/codex-keys/:id/quota", originRequired, authRequired, updateQuota)
+	router.PATCH("/api/admin/codex-keys/:id", originRequired, authRequired, updateQuota)
+
+	resetQuota := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		if rt.relayQuota == nil {
+			c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Error: apiError{Code: "quota_unavailable", Message: "relay quota service is unavailable"}})
+			return
+		}
+		key, err := rt.codexRelayKeys.GetKeyByID(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusNotFound, apiErrorResponse{Error: apiError{Code: "key_not_found", Message: err.Error()}})
+			return
+		}
+		if err := rt.relayQuota.Reset(key); err != nil {
+			c.JSON(http.StatusInternalServerError, apiErrorResponse{Error: apiError{Code: "reset_quota_failed", Message: err.Error()}})
+			return
+		}
+		status, err := rt.relayQuota.Status(key)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, apiErrorResponse{Error: apiError{Code: "quota_status_failed", Message: err.Error()}})
+			return
+		}
+		c.JSON(http.StatusOK, status)
+	}
+	router.POST("/api/admin/codex-keys/:id/reset-quota", originRequired, authRequired, resetQuota)
+	// Alias retained for clients that model reset as a REST resource action.
+	router.POST("/api/admin/codex-keys/:id/quota/reset", originRequired, authRequired, resetQuota)
 
 	router.DELETE("/api/admin/codex-keys/:id", originRequired, authRequired, func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
@@ -226,6 +645,101 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 		}
 		c.Status(http.StatusNoContent)
 	})
+
+	// Global Codex model prices. Values are USD per million tokens and are
+	// deliberately strings in the JSON API.
+	priceList := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		if rt.relayQuota == nil {
+			c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Error: apiError{Code: "quota_unavailable", Message: "relay quota service is unavailable"}})
+			return
+		}
+		prices, err := rt.relayQuota.ListModelPrices()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, apiErrorResponse{Error: apiError{Code: "list_model_prices_failed", Message: err.Error()}})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"prices": prices})
+	}
+	priceUpsert := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		if rt.relayQuota == nil {
+			c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Error: apiError{Code: "quota_unavailable", Message: "relay quota service is unavailable"}})
+			return
+		}
+		var request relayModelPriceRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_request", Message: err.Error()}})
+			return
+		}
+		if strings.TrimSpace(request.Model) == "" {
+			request.Model = c.Param("model")
+		}
+		if strings.TrimSpace(request.Model) == "" {
+			request.Model = strings.TrimSpace(c.Query("model"))
+		}
+		price, err := rt.relayQuota.UpsertModelPrice(request.toServiceModel())
+		if err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "upsert_model_price_failed", Message: err.Error()}})
+			return
+		}
+		c.JSON(http.StatusOK, price)
+	}
+	priceDelete := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		if rt.relayQuota == nil {
+			c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Error: apiError{Code: "quota_unavailable", Message: "relay quota service is unavailable"}})
+			return
+		}
+		model := strings.TrimSpace(c.Param("model"))
+		if model == "" {
+			model = strings.TrimSpace(c.Query("model"))
+		}
+		if model == "" {
+			var request struct {
+				Model string `json:"model"`
+			}
+			if err := c.ShouldBindJSON(&request); err == nil {
+				model = strings.TrimSpace(request.Model)
+			}
+		}
+		if err := rt.relayQuota.DeleteModelPrice(model); err != nil {
+			status := http.StatusBadRequest
+			if strings.Contains(err.Error(), "未找到") {
+				status = http.StatusNotFound
+			}
+			c.JSON(status, apiErrorResponse{Error: apiError{Code: "delete_model_price_failed", Message: err.Error()}})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	}
+	priceUnpriced := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		if rt.relayQuota == nil {
+			c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Error: apiError{Code: "quota_unavailable", Message: "relay quota service is unavailable"}})
+			return
+		}
+		models, err := rt.relayQuota.ListUnpricedModels()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, apiErrorResponse{Error: apiError{Code: "list_unpriced_models_failed", Message: err.Error()}})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"models": models})
+	}
+	router.GET("/api/admin/relay-model-prices", authRequired, priceList)
+	router.GET("/api/admin/model-prices", authRequired, priceList)
+	router.POST("/api/admin/relay-model-prices", originRequired, authRequired, priceUpsert)
+	router.PUT("/api/admin/relay-model-prices", originRequired, authRequired, priceUpsert)
+	router.PUT("/api/admin/relay-model-prices/:model", originRequired, authRequired, priceUpsert)
+	router.POST("/api/admin/model-prices", originRequired, authRequired, priceUpsert)
+	router.PUT("/api/admin/model-prices", originRequired, authRequired, priceUpsert)
+	router.PUT("/api/admin/model-prices/:model", originRequired, authRequired, priceUpsert)
+	router.DELETE("/api/admin/relay-model-prices/:model", originRequired, authRequired, priceDelete)
+	router.DELETE("/api/admin/relay-model-prices", originRequired, authRequired, priceDelete)
+	router.DELETE("/api/admin/model-prices/:model", originRequired, authRequired, priceDelete)
+	router.DELETE("/api/admin/model-prices", originRequired, authRequired, priceDelete)
+	router.GET("/api/admin/relay-model-prices/unpriced", authRequired, priceUnpriced)
+	router.GET("/api/admin/unpriced-models", authRequired, priceUnpriced)
 }
 
 func requireAdminSession(authService *services.AdminAuthService, security *adminSecurity) gin.HandlerFunc {

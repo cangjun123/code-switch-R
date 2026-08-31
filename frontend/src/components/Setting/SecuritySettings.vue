@@ -3,14 +3,22 @@ import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   createCodexRelayKey,
+  deleteCodexRelayModelPrice,
   deleteCodexRelayKey,
   getCodexRelayKeySecret,
   listCodexRelayKeys,
+  listCodexRelayModelPrices,
+  listCodexRelayUnpricedModels,
   logoutAdmin,
+  resetCodexRelayKeyQuota,
+  updateCodexRelayKeyQuota,
+  upsertCodexRelayModelPrice,
   updateAdminCredentials,
   useAdminAuthState,
   type CodexRelayKeyCreateResult,
   type CodexRelayKeyListItem,
+  type CodexRelayModelPrice,
+  type CodexRelayUnpricedModel,
 } from '../../services/adminAuth'
 import { extractErrorMessage } from '../../utils/error'
 import { showToast } from '../../utils/toast'
@@ -28,7 +36,19 @@ const keysLoading = ref(false)
 const keyBusyId = ref('')
 const createBusy = ref(false)
 const createName = ref('')
+const createTokenLimit = ref('0')
+const createUsdLimit = ref('0')
+const createPeriod = ref<'once' | 'daily' | 'weekly' | 'monthly'>('once')
 const createdKey = ref<CodexRelayKeyCreateResult | null>(null)
+const quotaDrafts = ref<Record<string, { tokenLimit: string; usdLimit: string; period: 'once' | 'daily' | 'weekly' | 'monthly' }>>({})
+const quotaBusyId = ref('')
+const modelPrices = ref<CodexRelayModelPrice[]>([])
+const unpricedModels = ref<CodexRelayUnpricedModel[]>([])
+const pricesLoading = ref(false)
+const priceBusyModel = ref('')
+const priceDraft = ref<CodexRelayModelPrice>({
+  model: '', input: '0', cachedInput: '0', output: '0', reasoningOutput: '0',
+})
 
 const formatDateTime = (value: string) => {
   if (!value) {
@@ -71,6 +91,33 @@ const loadKeys = async () => {
     showToast(extractErrorMessage(error, t('auth.security.loadKeysFailed')), 'error')
   } finally {
     keysLoading.value = false
+  }
+}
+
+const draftForKey = (key: CodexRelayKeyListItem) => {
+  if (!quotaDrafts.value[key.id]) {
+    quotaDrafts.value[key.id] = {
+      tokenLimit: String(key.tokenLimit ?? 0),
+      usdLimit: key.usdLimit || '0',
+      period: key.quotaPeriod || 'once',
+    }
+  }
+  return quotaDrafts.value[key.id]
+}
+
+const loadPrices = async () => {
+  pricesLoading.value = true
+  try {
+    const [prices, unpriced] = await Promise.all([
+      listCodexRelayModelPrices(),
+      listCodexRelayUnpricedModels(),
+    ])
+    modelPrices.value = prices
+    unpricedModels.value = unpriced
+  } catch (error) {
+    showToast(extractErrorMessage(error, t('auth.security.loadPricesFailed')), 'error')
+  } finally {
+    pricesLoading.value = false
   }
 }
 
@@ -120,14 +167,126 @@ const handleCreateKey = async () => {
 
   createBusy.value = true
   try {
-    createdKey.value = await createCodexRelayKey(createName.value.trim())
+    const tokenText = createTokenLimit.value.trim() || '0'
+    const tokenLimit = Number.parseInt(tokenText, 10)
+    if (!/^\d+$/.test(tokenText) || !Number.isSafeInteger(tokenLimit) || tokenLimit < 0) {
+      throw new Error(t('auth.security.invalidTokenLimit'))
+    }
+    const usdLimit = createUsdLimit.value.trim() || '0'
+    if (!/^\d+(\.\d{1,9})?$/.test(usdLimit)) {
+      throw new Error(t('auth.security.invalidUsdLimit'))
+    }
+    createdKey.value = await createCodexRelayKey(createName.value.trim(), {
+      tokenLimit,
+      usdLimit,
+      period: createPeriod.value,
+    })
     createName.value = ''
+    createTokenLimit.value = '0'
+    createUsdLimit.value = '0'
+    createPeriod.value = 'once'
     await loadKeys()
     showToast(t('auth.security.createSuccess'), 'success')
   } catch (error) {
     showToast(extractErrorMessage(error, t('auth.security.createFailed')), 'error')
   } finally {
     createBusy.value = false
+  }
+}
+
+const handleUpdateQuota = async (key: CodexRelayKeyListItem) => {
+  const draft = draftForKey(key)
+  const tokenText = draft.tokenLimit.trim() || '0'
+  const tokenLimit = Number.parseInt(tokenText, 10)
+  if (!/^\d+$/.test(tokenText) || !Number.isSafeInteger(tokenLimit) || tokenLimit < 0) {
+    showToast(t('auth.security.invalidTokenLimit'), 'error')
+    return
+  }
+  if (!/^\d+(\.\d{1,9})?$/.test(draft.usdLimit.trim() || '0')) {
+    showToast(t('auth.security.invalidUsdLimit'), 'error')
+    return
+  }
+  quotaBusyId.value = key.id
+  try {
+    await updateCodexRelayKeyQuota(key.id, {
+      tokenLimit,
+      usdLimit: draft.usdLimit.trim() || '0',
+      period: draft.period,
+    })
+    await loadKeys()
+    const refreshed = keys.value.find((item) => item.id === key.id)
+    if (refreshed) {
+      quotaDrafts.value[key.id] = {
+        tokenLimit: String(refreshed.tokenLimit ?? 0),
+        usdLimit: refreshed.usdLimit || '0',
+        period: refreshed.quotaPeriod || 'once',
+      }
+    }
+    showToast(t('auth.security.quotaUpdated'), 'success')
+  } catch (error) {
+    showToast(extractErrorMessage(error, t('auth.security.quotaUpdateFailed')), 'error')
+  } finally {
+    quotaBusyId.value = ''
+  }
+}
+
+const handleResetQuota = async (key: CodexRelayKeyListItem) => {
+  if (!window.confirm(t('auth.security.resetQuotaConfirm', { name: key.name }))) {
+    return
+  }
+  quotaBusyId.value = key.id
+  try {
+    await resetCodexRelayKeyQuota(key.id)
+    await loadKeys()
+    showToast(t('auth.security.quotaReset'), 'success')
+  } catch (error) {
+    showToast(extractErrorMessage(error, t('auth.security.quotaResetFailed')), 'error')
+  } finally {
+    quotaBusyId.value = ''
+  }
+}
+
+const editPrice = (price: CodexRelayModelPrice) => {
+  priceDraft.value = { ...price }
+}
+
+const clearPriceDraft = () => {
+  priceDraft.value = { model: '', input: '0', cachedInput: '0', output: '0', reasoningOutput: '0' }
+}
+
+const handleSavePrice = async () => {
+  const draft = priceDraft.value
+  if (!draft.model.trim() || !['input', 'cachedInput', 'output', 'reasoningOutput'].every((field) => /^\d+(\.\d{1,9})?$/.test(draft[field] || ''))) {
+    showToast(t('auth.security.invalidPrice'), 'error')
+    return
+  }
+  priceBusyModel.value = draft.model
+  try {
+    await upsertCodexRelayModelPrice({ ...draft, model: draft.model.trim() })
+    clearPriceDraft()
+    await loadPrices()
+    showToast(t('auth.security.priceSaved'), 'success')
+  } catch (error) {
+    showToast(extractErrorMessage(error, t('auth.security.priceSaveFailed')), 'error')
+  } finally {
+    priceBusyModel.value = ''
+  }
+}
+
+const handleDeletePrice = async (price: CodexRelayModelPrice) => {
+  if (!window.confirm(t('auth.security.deletePriceConfirm', { model: price.model }))) {
+    return
+  }
+  priceBusyModel.value = price.model
+  try {
+    await deleteCodexRelayModelPrice(price.model)
+    if (priceDraft.value.model === price.model) clearPriceDraft()
+    await loadPrices()
+    showToast(t('auth.security.priceDeleted'), 'success')
+  } catch (error) {
+    showToast(extractErrorMessage(error, t('auth.security.priceDeleteFailed')), 'error')
+  } finally {
+    priceBusyModel.value = ''
   }
 }
 
@@ -179,6 +338,7 @@ const handleDeleteKey = async (key: CodexRelayKeyListItem) => {
 
 onMounted(async () => {
   await loadKeys()
+  await loadPrices()
 })
 </script>
 
@@ -277,6 +437,23 @@ onMounted(async () => {
             @keyup.enter="handleCreateKey"
           />
         </label>
+        <label class="security-field quota-create-field">
+          <span>{{ t('auth.security.tokenLimit') }}</span>
+          <input v-model="createTokenLimit" class="base-input" type="number" min="0" step="1" :disabled="createBusy" />
+        </label>
+        <label class="security-field quota-create-field">
+          <span>{{ t('auth.security.usdLimit') }}</span>
+          <input v-model="createUsdLimit" class="base-input" inputmode="decimal" :disabled="createBusy" />
+        </label>
+        <label class="security-field quota-create-field">
+          <span>{{ t('auth.security.period') }}</span>
+          <select v-model="createPeriod" class="base-input" :disabled="createBusy">
+            <option value="once">{{ t('auth.security.periodOnce') }}</option>
+            <option value="daily">{{ t('auth.security.periodDaily') }}</option>
+            <option value="weekly">{{ t('auth.security.periodWeekly') }}</option>
+            <option value="monthly">{{ t('auth.security.periodMonthly') }}</option>
+          </select>
+        </label>
         <button class="security-btn" :disabled="createBusy" @click="handleCreateKey">
           {{ createBusy ? t('auth.security.creating') : t('auth.security.create') }}
         </button>
@@ -323,6 +500,64 @@ onMounted(async () => {
             >
               {{ t('auth.security.delete') }}
             </button>
+          </div>
+          <div class="quota-editor">
+            <div class="quota-summary">
+              <span>{{ t('auth.security.tokenUsage') }}: {{ key.quota?.tokenUsed ?? 0 }} / {{ key.tokenLimit || t('auth.security.unlimited') }}</span>
+              <span>{{ t('auth.security.usdUsage') }}: ${{ key.quota?.usdUsed ?? '0' }} / {{ key.usdLimit === '0' ? t('auth.security.unlimited') : `$${key.usdLimit}` }}</span>
+              <span>{{ t('auth.security.period') }}: {{ t(`auth.security.period${(key.quotaPeriod || 'once').charAt(0).toUpperCase()}${(key.quotaPeriod || 'once').slice(1)}`) }}</span>
+              <span v-if="key.quota?.resetAt">{{ t('auth.security.nextReset') }}: {{ formatDateTime(key.quota.resetAt) }} ({{ key.quota.serverTimezone }})</span>
+              <strong v-if="key.quota?.blocked" class="quota-blocked">{{ t('auth.security.quotaBlocked') }}</strong>
+            </div>
+            <div class="quota-edit-fields">
+              <input v-model="draftForKey(key).tokenLimit" class="base-input" type="number" min="0" step="1" :aria-label="t('auth.security.tokenLimit')" />
+              <input v-model="draftForKey(key).usdLimit" class="base-input" inputmode="decimal" :aria-label="t('auth.security.usdLimit')" />
+              <select v-model="draftForKey(key).period" class="base-input" :aria-label="t('auth.security.period')">
+                <option value="once">{{ t('auth.security.periodOnce') }}</option>
+                <option value="daily">{{ t('auth.security.periodDaily') }}</option>
+                <option value="weekly">{{ t('auth.security.periodWeekly') }}</option>
+                <option value="monthly">{{ t('auth.security.periodMonthly') }}</option>
+              </select>
+              <button class="security-btn secondary" :disabled="quotaBusyId === key.id" @click="handleUpdateQuota(key)">{{ t('auth.security.saveQuota') }}</button>
+              <button class="security-btn secondary" :disabled="quotaBusyId === key.id" @click="handleResetQuota(key)">{{ t('auth.security.resetQuota') }}</button>
+            </div>
+          </div>
+        </article>
+      </div>
+    </div>
+
+    <div class="mac-panel security-card">
+      <div class="security-card-header">
+        <div>
+          <h3 class="security-card-title">{{ t('auth.security.pricesTitle') }}</h3>
+          <p class="security-card-description">{{ t('auth.security.pricesDescription') }}</p>
+        </div>
+      </div>
+      <div v-if="unpricedModels.length" class="unpriced-warning">
+        {{ t('auth.security.unpricedWarning', { count: unpricedModels.length }) }}
+        <span v-for="model in unpricedModels" :key="model.model" class="unpriced-model">{{ model.model }}</span>
+      </div>
+      <div class="price-editor">
+        <input v-model="priceDraft.model" class="base-input" :placeholder="t('auth.security.modelName')" />
+        <input v-model="priceDraft.input" class="base-input" inputmode="decimal" :placeholder="t('auth.security.inputPrice')" />
+        <input v-model="priceDraft.cachedInput" class="base-input" inputmode="decimal" :placeholder="t('auth.security.cachedInputPrice')" />
+        <input v-model="priceDraft.output" class="base-input" inputmode="decimal" :placeholder="t('auth.security.outputPrice')" />
+        <input v-model="priceDraft.reasoningOutput" class="base-input" inputmode="decimal" :placeholder="t('auth.security.reasoningPrice')" />
+        <button class="security-btn" :disabled="pricesLoading" @click="handleSavePrice">{{ t('auth.security.savePrice') }}</button>
+        <button class="security-btn secondary" :disabled="pricesLoading" @click="clearPriceDraft">{{ t('common.cancel') }}</button>
+      </div>
+      <div v-if="pricesLoading" class="security-empty">{{ t('auth.security.loadingPrices') }}</div>
+      <div v-else-if="modelPrices.length === 0" class="security-empty">{{ t('auth.security.emptyPrices') }}</div>
+      <div v-else class="price-list">
+        <article v-for="price in modelPrices" :key="price.model" class="price-row">
+          <strong>{{ price.model }}</strong>
+          <span>{{ t('auth.security.inputShort') }} {{ price.input }}</span>
+          <span>{{ t('auth.security.cachedShort') }} {{ price.cachedInput }}</span>
+          <span>{{ t('auth.security.outputShort') }} {{ price.output }}</span>
+          <span>{{ t('auth.security.reasoningShort') }} {{ price.reasoningOutput }}</span>
+          <div class="security-key-actions">
+            <button class="security-btn secondary" @click="editPrice(price)">{{ t('auth.security.editPrice') }}</button>
+            <button class="security-btn danger" :disabled="priceBusyModel === price.model" @click="handleDeletePrice(price)">{{ t('auth.security.deletePrice') }}</button>
           </div>
         </article>
       </div>
@@ -418,10 +653,16 @@ onMounted(async () => {
 
 .security-create-row {
   align-items: flex-end;
+  flex-wrap: wrap;
 }
 
 .security-field-grow {
   flex: 1;
+  min-width: 180px;
+}
+
+.quota-create-field {
+  min-width: 130px;
 }
 
 .security-btn {
@@ -503,6 +744,94 @@ onMounted(async () => {
   padding: 14px 16px;
   border-radius: 18px;
   background: color-mix(in srgb, var(--mac-surface-strong) 82%, transparent);
+}
+
+.quota-editor {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--mac-border) 70%, transparent);
+}
+
+.quota-summary,
+.quota-edit-fields,
+.price-editor,
+.price-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.quota-summary {
+  color: var(--mac-text-secondary);
+  font-size: 0.8rem;
+}
+
+.quota-edit-fields .base-input {
+  min-width: 120px;
+  height: 36px;
+}
+
+.quota-edit-fields .security-btn,
+.price-editor .security-btn {
+  min-height: 36px;
+  border-radius: 10px;
+  padding: 0 12px;
+}
+
+.quota-blocked {
+  color: #d92d20;
+}
+
+.prices-title {
+  margin-top: 14px;
+}
+
+.price-editor .base-input {
+  flex: 1 1 130px;
+  min-width: 110px;
+  height: 38px;
+}
+
+.price-list {
+  display: grid;
+  gap: 10px;
+}
+
+.price-row {
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--mac-surface-strong) 82%, transparent);
+  color: var(--mac-text-secondary);
+  font-size: 0.82rem;
+}
+
+.price-row strong {
+  color: var(--mac-text);
+  min-width: 180px;
+}
+
+.unpriced-warning {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, #d97706 35%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, #f59e0b 12%, var(--mac-surface));
+  color: var(--mac-text);
+  font-size: 0.82rem;
+}
+
+.unpriced-model {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: color-mix(in srgb, #f59e0b 20%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .security-key-meta {

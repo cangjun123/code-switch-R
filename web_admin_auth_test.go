@@ -475,3 +475,32 @@ func TestAdminServerStillRejectsPublicHTTPWithTrustedNet(t *testing.T) {
 		t.Fatalf("expected public HTTP request to still return 403, got %d: %s", status.Code, status.Body.String())
 	}
 }
+
+func TestQuotaAdminRequestsAcceptNumericAndStringForms(t *testing.T) {
+	var create codexRelayKeyCreateRequest
+	if err := json.Unmarshal([]byte(`{"name":"k","tokenLimit":"123","usdLimit":4.5,"period":"daily"}`), &create); err != nil {
+		t.Fatalf("decode create request: %v", err)
+	}
+	if create.TokenLimit != 123 || string(create.USDLimit) != "4.5" || create.Period != "daily" {
+		t.Fatalf("unexpected create request: %+v", create)
+	}
+
+	var update codexRelayKeyQuotaRequest
+	if err := json.Unmarshal([]byte(`{"token_limit":"456","usd_limit":"0.25","quota_period":"monthly"}`), &update); err != nil {
+		t.Fatalf("decode update request: %v", err)
+	}
+	if update.TokenLimit == nil || *update.TokenLimit != 456 || string(update.USDLimitSnake) != `"0.25"` || update.PeriodSnake != "monthly" {
+		t.Fatalf("unexpected update request: %+v", update)
+	}
+}
+
+func TestModelPriceRequestAcceptsNumericValues(t *testing.T) {
+	var request relayModelPriceRequest
+	if err := json.Unmarshal([]byte(`{"model":"gpt-test","input":1.25,"cachedInput":"0.1","output":2,"reasoningOutput":0}`), &request); err != nil {
+		t.Fatalf("decode model price request: %v", err)
+	}
+	price := request.toServiceModel()
+	if price.Model != "gpt-test" || price.Input != "1.25" || price.CachedInput != "0.1" || price.Output != "2" || price.ReasoningOutput != "0" {
+		t.Fatalf("unexpected model price: %+v", price)
+	}
+}
