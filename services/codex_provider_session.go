@@ -250,7 +250,9 @@ func (prs *ProviderRelayService) preferCodexStickyProvider(
 		if provider.Name != request.stickyProvider || provider.APIURL == "" || provider.APIKey == "" {
 			continue
 		}
-		if len(provider.ValidateConfiguration()) > 0 ||
+		// 禁用即立即脱离粘性：切换由历史清洗兜底（剥离属主加密历史后发给新 provider）。
+		if !provider.Enabled ||
+			len(provider.ValidateConfiguration()) > 0 ||
 			(requestedModel != "" && !provider.IsModelSupported(requestedModel)) ||
 			!provider.SupportsOpenAIEndpoint(endpoint) ||
 			(requestHasNamespaceConflict && provider.CodexMultiAgentNamespaceRewrite) {
