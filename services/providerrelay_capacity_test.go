@@ -77,12 +77,30 @@ func TestCodexCapacityErrorFromPayload(t *testing.T) {
 			wantMessage: "retry later",
 		},
 		{
+			// OpenAI 原生 Responses API 容量错误（new-api #6594 抓包样本）。
+			name:        "native model_at_capacity",
+			payload:     `{"type":"response.failed","response":{"status":"failed","error":{"type":"server_error","code":"model_at_capacity","message":"Selected model is at capacity. Please try a different model."}}}`,
+			wantCode:    "model_at_capacity",
+			wantMessage: "Selected model is at capacity. Please try a different model.",
+		},
+		{
 			name:    "rate limit is out of scope",
 			payload: `{"type":"response.failed","response":{"status":"failed","error":{"code":"rate_limit_exceeded","message":"retry"}}}`,
 		},
 		{
-			name:    "visible message without code is ignored",
+			// 兜底：未知错误码但携带容量文案，同样按容量错误处理。
+			name:        "unknown code with capacity message falls back to message",
+			payload:     `{"type":"response.failed","response":{"status":"failed","error":{"code":"some_new_capacity_code","message":"Selected model is at capacity. Please try a different model."}}}`,
+			wantCode:    "some_new_capacity_code",
+			wantMessage: "Selected model is at capacity. Please try a different model.",
+		},
+		{
+			name:    "message without code is ignored",
 			payload: `{"type":"response.failed","response":{"status":"failed","error":{"message":"Selected model is at capacity. Please try a different model."}}}`,
+		},
+		{
+			name:    "unknown code without capacity message is ignored",
+			payload: `{"type":"response.failed","response":{"status":"failed","error":{"code":"some_new_capacity_code","message":"invalid request"}}}`,
 		},
 		{
 			name:    "capacity code on successful response is ignored",
@@ -261,6 +279,61 @@ func TestCodexCapacityResponseFallsBackToNextProvider(t *testing.T) {
 	if err := providers.SaveProviders(ProviderKindCodex, []Provider{
 		{ID: 1, Name: "capacity-fallback-primary", APIURL: capacity.URL, APIKey: "key-1", Enabled: true, Level: 1},
 		{ID: 2, Name: "capacity-fallback-secondary", APIURL: success.URL, APIKey: "key-2", Enabled: true, Level: 2},
+	}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	recorder := performCodexNamespaceTestRequest(
+		t,
+		relay,
+		[]byte(`{"model":"gpt-5-codex","stream":true,"input":"hi"}`),
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if capacityCalls.Load() != 1 || successCalls.Load() != 1 {
+		t.Fatalf("upstream calls capacity=%d success=%d", capacityCalls.Load(), successCalls.Load())
+	}
+	if recorder.Body.String() != successBody {
+		t.Fatalf("client response changed or leaked capacity response:\n got: %q\nwant: %q", recorder.Body.String(), successBody)
+	}
+}
+
+// OpenAI 原生容量错误码（new-api #6594 样本）也必须触发 provider 回退。
+func TestCodexNativeCapacityResponseFallsBackToNextProvider(t *testing.T) {
+	var capacityCalls atomic.Int32
+	capacity := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		capacityCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			"event: response.created",
+			`data: {"type":"response.created","response":{"status":"in_progress","output":[]}}`,
+			"",
+			"event: response.failed",
+			`data: {"type":"response.failed","response":{"status":"failed","error":{"type":"server_error","code":"model_at_capacity","message":"Selected model is at capacity. Please try a different model."}}}`,
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n")))
+	}))
+	defer capacity.Close()
+
+	successBody := codexSessionSSE(`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"native capacity fallback"}]}`)
+	var successCalls atomic.Int32
+	success := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		successCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(successBody))
+	}))
+	defer success.Close()
+
+	providers, relay := newTestRelayService(t)
+	setNamespaceRoutingDBSetting(t, "enable_blacklist", "false")
+	setNamespaceRoutingDBSetting(t, "blacklist_level_enabled", "false")
+	setCapacityTestDegradation(t, relay, false)
+	if err := providers.SaveProviders(ProviderKindCodex, []Provider{
+		{ID: 1, Name: "native-capacity-primary", APIURL: capacity.URL, APIKey: "key-1", Enabled: true, Level: 1},
+		{ID: 2, Name: "native-capacity-secondary", APIURL: success.URL, APIKey: "key-2", Enabled: true, Level: 2},
 	}); err != nil {
 		t.Fatalf("SaveProviders: %v", err)
 	}
