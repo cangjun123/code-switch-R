@@ -2569,15 +2569,41 @@ func codexCapacityErrorFromPayload(payload []byte) *codexProviderCapacityError {
 
 	for _, errorPath := range []string{"response.error", "error"} {
 		code := strings.TrimSpace(gjson.GetBytes(payload, errorPath+".code").String())
-		if code != "server_is_overloaded" && code != "slow_down" {
-			continue
+		if isCodexCapacityErrorCode(code) {
+			return &codexProviderCapacityError{
+				Code:    code,
+				Message: strings.TrimSpace(gjson.GetBytes(payload, errorPath+".message").String()),
+			}
 		}
-		return &codexProviderCapacityError{
-			Code:    code,
-			Message: strings.TrimSpace(gjson.GetBytes(payload, errorPath+".message").String()),
+		message := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, errorPath+".message").String()))
+		// 兜底：上游可能省略或更换错误码（如 OpenAI 原生 model_at_capacity 之外的变体），
+		// 只要失败事件里出现容量文案且尚未产生任何输出，就按容量错误处理。
+		if code != "" && isCodexCapacityMessage(message) {
+			return &codexProviderCapacityError{
+				Code:    code,
+				Message: strings.TrimSpace(gjson.GetBytes(payload, errorPath+".message").String()),
+			}
 		}
 	}
 	return nil
+}
+
+// codexCapacityErrorCodes 是已知的容量类错误码白名单。
+var codexCapacityErrorCodes = map[string]bool{
+	"server_is_overloaded": true,
+	"slow_down":            true,
+	// OpenAI 原生 Responses API 的容量错误码（new-api #6594 抓包样本）。
+	"model_at_capacity": true,
+}
+
+func isCodexCapacityErrorCode(code string) bool {
+	return codexCapacityErrorCodes[code]
+}
+
+// isCodexCapacityMessage 按文案兜底识别容量错误。
+// "selected model is at capacity. please try a different model."
+func isCodexCapacityMessage(message string) bool {
+	return message != "" && strings.Contains(message, "model is at capacity")
 }
 
 func sanitizeCodexCapacityLogMessage(message string) string {
