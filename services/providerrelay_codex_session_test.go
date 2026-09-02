@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -30,7 +31,9 @@ func codexSessionRequest(input string) []byte {
 	return []byte(`{"model":"gpt-5.6-sol","stream":true,"prompt_cache_key":"switch-session","tools":[{"type":"namespace","name":"collaboration"}],"input":` + input + `}`)
 }
 
-func TestCodexProviderSessionPinsToolResultThenSanitizesReverseSwitch(t *testing.T) {
+// 旧语义（属主禁用后仍粘住）已废弃：禁用现在立即脱离粘性，
+// tool-result 由历史清洗兜底切到新 provider。见 TestCodexProviderSessionDisabledOwnerDetachesImmediately。
+func TestCodexProviderSessionSanitizesReverseSwitch(t *testing.T) {
 	type upstreamCapture struct {
 		mu      sync.Mutex
 		bodies  [][]byte
@@ -84,11 +87,7 @@ func TestCodexProviderSessionPinsToolResultThenSanitizesReverseSwitch(t *testing
 		t.Fatalf("first response status=%d body=%s", first.Code, first.Body.String())
 	}
 
-	providerList[0].Enabled = false
-	providerList[1].Enabled = true
-	if err := providers.SaveProviders(ProviderKindCodex, providerList); err != nil {
-		t.Fatalf("SaveProviders switch: %v", err)
-	}
+	// 属主未被禁用（改为保持启用），tool result 必须粘住属主。
 	toolResultInput := `[
 	  {"type":"reasoning","id":"rs_eto","encrypted_content":"eto-ciphertext"},
 	  {"type":"custom_tool_call","id":"ctc_eto","call_id":"call_eto","namespace":"collaboration","name":"exec","input":"{}"},
@@ -102,9 +101,15 @@ func TestCodexProviderSessionPinsToolResultThenSanitizesReverseSwitch(t *testing
 	plainCallsAfterToolResult := len(plainCapture.bodies)
 	plainCapture.mu.Unlock()
 	if plainCallsAfterToolResult != 0 {
-		t.Fatalf("tool result escaped to switched provider: plain calls=%d", plainCallsAfterToolResult)
+		t.Fatalf("tool result escaped from enabled owner: plain calls=%d", plainCallsAfterToolResult)
 	}
 
+	// 禁用属主，启用 plain：粘性立即脱离，切走时剥离属主绑定历史。
+	providerList[0].Enabled = false
+	providerList[1].Enabled = true
+	if err := providers.SaveProviders(ProviderKindCodex, providerList); err != nil {
+		t.Fatalf("SaveProviders switch: %v", err)
+	}
 	thirdInput := `[
 	  {"type":"reasoning","id":"rs_eto","encrypted_content":"eto-ciphertext"},
 	  {"type":"custom_tool_call","id":"ctc_eto","call_id":"call_eto","namespace":"collaboration","name":"exec","input":"{}"},
@@ -139,6 +144,62 @@ func TestCodexProviderSessionPinsToolResultThenSanitizesReverseSwitch(t *testing
 		if plainHeaders[0].Get(headerName) != "" {
 			t.Fatalf("plain provider received provider-bound header %s", headerName)
 		}
+	}
+}
+
+// 禁用属主：粘性必须立即失效，tool-result 走历史清洗切到新 provider。
+func TestCodexProviderSessionDisabledOwnerDetachesImmediately(t *testing.T) {
+	var etoCalls, plainCalls atomic.Int32
+	eto := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		etoCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(codexSessionSSE(`{"type":"custom_tool_call","id":"ctc_eto","call_id":"call_eto","namespace":"agents","name":"exec","input":"{}"}`)))
+	}))
+	defer eto.Close()
+
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plainCalls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if bytes.Contains(body, []byte("eto-ciphertext")) {
+			http.Error(w, "received owner ciphertext", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(codexSessionSSE(`{"type":"message","id":"msg_plain","role":"assistant","content":[{"type":"output_text","text":"detached safely"}]}`)))
+	}))
+	defer plain.Close()
+
+	providers, relay := newTestRelayService(t)
+	providerList := []Provider{
+		{ID: 1, Name: "eto", APIURL: eto.URL, APIKey: "eto-key", Enabled: true, Level: 1, CodexMultiAgentNamespaceRewrite: true},
+		{ID: 2, Name: "plain", APIURL: plain.URL, APIKey: "plain-key", Enabled: false, Level: 1},
+	}
+	if err := providers.SaveProviders(ProviderKindCodex, providerList); err != nil {
+		t.Fatalf("SaveProviders initial: %v", err)
+	}
+
+	first := performCodexNamespaceTestRequest(t, relay, codexSessionRequest(`[{"type":"message","role":"user","content":[{"type":"input_text","text":"run a tool"}]}]`))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+
+	// 禁用属主、启用 plain 后回填 tool result：必须打到 plain 且不带属主密文。
+	providerList[0].Enabled = false
+	providerList[1].Enabled = true
+	if err := providers.SaveProviders(ProviderKindCodex, providerList); err != nil {
+		t.Fatalf("SaveProviders disable owner: %v", err)
+	}
+	toolResult := `[
+	  {"type":"reasoning","id":"rs_eto","encrypted_content":"eto-ciphertext"},
+	  {"type":"custom_tool_call","id":"ctc_eto","call_id":"call_eto","namespace":"collaboration","name":"exec","input":"{}"},
+	  {"type":"custom_tool_call_output","call_id":"call_eto","output":[{"type":"input_text","text":"tool output"},{"type":"encrypted_content","encrypted_content":"eto-output-ciphertext"}]}
+	]`
+	second := performCodexNamespaceTestRequest(t, relay, codexSessionRequest(toolResult))
+	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), "detached safely") {
+		t.Fatalf("detached tool result status=%d body=%s", second.Code, second.Body.String())
+	}
+	if etoCalls.Load() != 1 || plainCalls.Load() != 1 {
+		t.Fatalf("upstream calls eto=%d plain=%d, want 1/1（禁用后属主不应再被调度）", etoCalls.Load(), plainCalls.Load())
 	}
 }
 
@@ -273,6 +334,7 @@ func TestCodexProviderSessionTracksCompressedResponseWithoutNamespaceRewrite(t *
 		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
 	}
 
+	// 禁用即脱离粘性：tool result 改为打到 fallback（gzip 层透明解压、无密文需清洗）。
 	providerList[0].Enabled = false
 	providerList[1].Enabled = true
 	if err := providers.SaveProviders(ProviderKindCodex, providerList); err != nil {
@@ -288,11 +350,11 @@ func TestCodexProviderSessionTracksCompressedResponseWithoutNamespaceRewrite(t *
 		]`),
 		http.Header{"Accept-Encoding": []string{"br"}},
 	)
-	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), "gzip tool result accepted") {
+	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), "wrong provider") {
 		t.Fatalf("second status=%d body=%s", second.Code, second.Body.String())
 	}
-	if primaryCalls != 2 || fallbackCalls != 0 {
-		t.Fatalf("calls primary=%d fallback=%d, want 2/0", primaryCalls, fallbackCalls)
+	if primaryCalls != 1 || fallbackCalls != 1 {
+		t.Fatalf("calls primary=%d fallback=%d, want 1/1", primaryCalls, fallbackCalls)
 	}
 }
 
