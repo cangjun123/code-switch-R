@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // AvailabilityConfig 可用性监控高级配置
@@ -158,13 +159,30 @@ type providerEnvelope struct {
 	Providers []Provider `json:"providers"`
 }
 
+// providerCacheEntry 缓存一份已解析的 provider 配置及其来源文件的 mtime+size。
+// LoadProviders 在转发热路径上每个请求调用，缓存避免重复读文件+JSON 解析。
+type providerCacheEntry struct {
+	providers []Provider
+	modTime   time.Time
+	size      int64
+}
+
 type ProviderService struct {
 	mu               sync.Mutex
 	blacklistService *BlacklistService // 可选：改名时用于清理旧 name 的黑名单状态
+
+	// providerCache 按 mtime+size 缓存已解析配置，key 为配置文件绝对路径
+	// （而非 kind——测试会切换 HOME，路径 key 天然隔离）。
+	// 局限：mtime 粒度（1-2s）内、且 size 不变的外部改写理论探测不到，
+	// 与 GeminiService 的既有内存缓存同等风险；进程内写路径均主动失效。
+	cacheMu       sync.Mutex
+	providerCache map[string]providerCacheEntry
 }
 
 func NewProviderService() *ProviderService {
-	return &ProviderService{}
+	return &ProviderService{
+		providerCache: make(map[string]providerCacheEntry),
+	}
 }
 
 // SetBlacklistService 注入黑名单服务。可选依赖：为 nil 时改名仍允许，
@@ -329,6 +347,9 @@ func (ps *ProviderService) saveProvidersLocked(kind string, providers []Provider
 		return err
 	}
 
+	// 主动失效缓存（换 inode 后 mtime+size 比对也会 miss，此处双保险）
+	ps.invalidateProviderCache(path)
+
 	// 清理相关 name 的黑名单状态：改名清“旧+新 name”，新建清“新 name”。
 	// request_log / health_check_history 按约定保留（以旧 name 孤儿留存，按保留期过期）。
 	if ps.blacklistService != nil {
@@ -342,15 +363,66 @@ func (ps *ProviderService) saveProvidersLocked(kind string, providers []Provider
 	return nil
 }
 
+// cachedProvidersLocked 返回缓存的 providers（调用方必须已持有 cacheMu）。
+func (ps *ProviderService) cachedProvidersLocked(path string, info os.FileInfo) ([]Provider, bool) {
+	entry, ok := ps.providerCache[path]
+	if !ok || !entry.modTime.Equal(info.ModTime()) || entry.size != info.Size() {
+		return nil, false
+	}
+	return entry.providers, true
+}
+
+// updateCache 写入缓存条目。写回/外部并发修改会改变 mtime，
+// 因此重新 os.Stat（在锁外执行）而不是复用加载前的旧 info。
+func (ps *ProviderService) updateCache(path string, providers []Provider) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	ps.cacheMu.Lock()
+	ps.providerCache[path] = providerCacheEntry{
+		providers: providers,
+		modTime:   info.ModTime(),
+		size:      info.Size(),
+	}
+	ps.cacheMu.Unlock()
+}
+
+// invalidateProviderCache 主动失效某个配置文件的缓存条目。
+func (ps *ProviderService) invalidateProviderCache(path string) {
+	ps.cacheMu.Lock()
+	delete(ps.providerCache, path)
+	ps.cacheMu.Unlock()
+}
+
 func (ps *ProviderService) LoadProviders(kind string) ([]Provider, error) {
 	path, err := providerFilePath(kind)
 	if err != nil {
 		return nil, err
 	}
 
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			ps.invalidateProviderCache(path)
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	// mtime+size 命中则直接返回缓存的浅拷贝（元素是值类型 struct，
+	// 拷贝隔离调用方对元素的修改；append 的底层数组也是全新的）
+	ps.cacheMu.Lock()
+	cached, hit := ps.cachedProvidersLocked(path, info)
+	ps.cacheMu.Unlock()
+	if hit {
+		return append([]Provider(nil), cached...), nil
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			ps.invalidateProviderCache(path)
 			return nil, nil
 		}
 		return nil, err
@@ -388,7 +460,8 @@ func (ps *ProviderService) LoadProviders(kind string) ([]Provider, error) {
 		}
 	}
 
-	return envelope.Providers, nil
+	ps.updateCache(path, envelope.Providers)
+	return append([]Provider(nil), envelope.Providers...), nil
 }
 
 // loadProvidersNoLock 内部加载方法，在持有锁的情况下调用（避免递归加锁）

@@ -30,7 +30,8 @@ func InitDatabase() error {
 
 	// 2. 初始化 xdb 连接池
 	// 【修复】移除 DSN 中的 PRAGMA 参数，modernc.org/sqlite 需要显式执行 PRAGMA
-	dbPath := filepath.Join(configDir, "app.db?cache=shared&mode=rwc")
+	// _pragma=busy_timeout 对池中每条新连接生效（下方 db.Exec 只作用于单条连接）
+	dbPath := filepath.Join(configDir, "app.db?cache=shared&mode=rwc&_pragma=busy_timeout(30000)")
 	if err := xdb.Inits([]xdb.Config{
 		{
 			Name:   "default",
@@ -46,6 +47,13 @@ func InitDatabase() error {
 	if err != nil {
 		return fmt.Errorf("获取数据库连接失败: %w", err)
 	}
+
+	// 3.0 限制连接池：写入已串行化在 dbqueue 的 3 个 worker，WAL 单写者下更大的池无收益。
+	// MaxIdle==MaxOpen 使连接常驻——busy_timeout 是每连接 PRAGMA，连接重建会丢失。
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(8)
+	db.SetConnMaxLifetime(0)
+	db.SetConnMaxIdleTime(0)
 
 	// 3.1 设置 busy_timeout（30秒，确保高并发下有足够等待时间）
 	if _, err := db.Exec("PRAGMA busy_timeout = 30000"); err != nil {
