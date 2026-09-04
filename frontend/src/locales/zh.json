@@ -781,6 +781,7 @@
         "dataImport": "数据导入",
         "connectivity": "连通性检测",
         "codexDegradation": "Codex 降智检测",
+        "codexTrace": "Codex 请求链路追踪",
         "logsPolling": "日志监控"
       },
       "label": {
@@ -845,6 +846,8 @@
         "logsFastRefreshIntervalHint": "有活动请求时缩短到此间隔，首 token 更快显示（1–60 秒）。",
         "codexDegradationThreshold": "降智特征值",
         "codexDegradationThresholdHint": "reasoning_tokens 恰好等于其中任一值即判定降智。多个值用英文逗号分隔（如 516,1030）。留空则关闭检测。",
+        "codexTrace": "Codex 请求链路追踪",
+        "codexTraceHint": "开启后每个 Codex 请求在后台日志输出分段耗时（quota 等待、上游连接、上传、首 token 等），用于定位慢请求。仅记录耗时与大小，不记录请求内容。",
         "autoUpdate": "自动更新",
         "lastCheck": "上次检查",
         "currentVersion": "当前版本",

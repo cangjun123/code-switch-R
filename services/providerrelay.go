@@ -171,6 +171,7 @@ func markFirstTokenDuration(requestLog *ReqeustLog, start time.Time) {
 	// 首 token 落定后同步到活动请求追踪器，让日志页的处理中行实时显示首 token 耗时。
 	// ActiveRequestID 为 0（未注册活动请求）时 Update 是 no-op，安全。
 	defaultActiveRequestTracker.Update(requestLog.ActiveRequestID, requestLog)
+	requestLog.trace.markOnce("first_client_write")
 }
 
 func NewProviderRelayService(providerService *ProviderService, geminiService *GeminiService, codexRelayKeys *CodexRelayKeyService, blacklistService *BlacklistService, notificationService *NotificationService, appSettings *AppSettingsService, addr string, quotaServices ...*RelayQuotaService) *ProviderRelayService {
@@ -184,6 +185,8 @@ func NewProviderRelayService(providerService *ProviderService, geminiService *Ge
 	if len(quotaServices) > 0 && quotaServices[0] != nil {
 		quotaService = quotaServices[0]
 	}
+	// 异步结算 worker 通过 keyID 反查 relay key；注册进程级 key 服务。
+	globalCodexRelayKeys = codexRelayKeys
 
 	// 【修复】数据库初始化已移至 main.go 的 InitDatabase()
 	// 此处不再调用 xdb.Inits()、ensureRequestLogTable()、ensureBlacklistTables()
@@ -493,12 +496,13 @@ func (prs *ProviderRelayService) registerRoutes(router gin.IRouter) {
 	claudeAuth := prs.claudeRelayAuthMiddleware()
 	codexAuth := prs.codexRelayAuthMiddleware()
 	codexQuota := prs.codexQuotaMiddleware()
+	codexTrace := prs.codexTraceMiddleware()
 
 	router.POST("/v1/messages", claudeAuth, prs.proxyHandler("claude", "/v1/messages"))
 	router.POST("/v1/messages/count_tokens", claudeAuth, prs.proxyHandler("claude", "/v1/messages/count_tokens"))
-	router.POST("/responses", codexAuth, codexQuota, prs.proxyHandler("codex", "/responses"))
+	router.POST("/responses", codexTrace, codexAuth, codexQuota, prs.proxyHandler("codex", "/responses"))
 	router.OPTIONS("/v1/chat/completions", prs.openAIChatCompletionsOptionsHandler())
-	router.POST("/v1/chat/completions", prs.openAIChatCompletionsCORSMiddleware(), codexAuth, codexQuota, prs.proxyHandler("codex", "/v1/chat/completions"))
+	router.POST("/v1/chat/completions", prs.openAIChatCompletionsCORSMiddleware(), codexTrace, codexAuth, codexQuota, prs.proxyHandler("codex", "/v1/chat/completions"))
 	router.OPTIONS("/v1/quota", prs.codexQuotaOptionsHandler())
 	router.GET("/v1/quota", prs.codexQuotaCORSMiddleware(), codexAuth, prs.codexQuotaStatusHandler())
 	router.OPTIONS("/v1/images/generations", prs.openAIImagesOptionsHandler())
@@ -599,6 +603,7 @@ func (prs *ProviderRelayService) resolveRelayEndpoint(kind string, provider Prov
 
 func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		trace := codexTraceFromContext(c.Request.Context())
 		var bodyBytes []byte
 		if c.Request.Body != nil {
 			data, err := io.ReadAll(c.Request.Body)
@@ -609,12 +614,15 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 			bodyBytes = data
 			c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		}
+		trace.setBodyBytes(int64(len(bodyBytes)))
+		trace.mark("body_read_done")
 
 		isStream := gjson.GetBytes(bodyBytes, "stream").Bool()
 		if kind == ProviderKindCodex && strings.EqualFold(endpoint, "/v1/chat/completions") && isStream {
 			bodyBytes = ensureChatCompletionUsageOption(bodyBytes)
 		}
 		requestedModel := gjson.GetBytes(bodyBytes, "model").String()
+		trace.setModel(requestedModel)
 		clientHeaders := cloneHeaders(c.Request.Header)
 		codexSessionRequest := prs.attachCodexSessionRequest(c, kind, endpoint, bodyBytes, clientHeaders)
 
@@ -737,6 +745,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 			fmt.Printf("%s ", p.Name)
 		}
 		fmt.Println()
+		trace.mark("provider_selected")
 
 		// 按 Level 分组
 		levelGroups := make(map[int][]Provider)
@@ -833,6 +842,8 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 							provider.Name, level, retryCount+1, maxRetryPerProvider, effectiveModel)
 
 						startTime := time.Now()
+						trace.markOnce("dispatch")
+						trace.setProvider(provider.Name)
 						ok, err := prs.forwardRequest(c, kind, provider, effectiveEndpoint, query, clientHeaders, currentBodyBytes, isStream, effectiveModel)
 						duration := time.Since(startTime)
 
@@ -973,6 +984,8 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 				// 获取有效的端点（用户配置优先）
 				effectiveEndpoint := prs.resolveRelayEndpoint(kind, provider, endpoint)
 				startTime := time.Now()
+				trace.markOnce("dispatch")
+				trace.setProvider(provider.Name)
 				ok, err := prs.forwardRequest(c, kind, provider, effectiveEndpoint, query, clientHeaders, currentBodyBytes, isStream, effectiveModel)
 				duration := time.Since(startTime)
 
@@ -1292,6 +1305,7 @@ func (prs *ProviderRelayService) forwardRequest(
 		RelayKeyID: relayKeyIDFromContext(c),
 		ClientIP:   clientIPFromRequest(c.Request),
 	}
+	requestLog.attachCodexTrace(codexTraceFromContext(c.Request.Context()))
 	start := time.Now()
 	activeRequestID := defaultActiveRequestTracker.Start(requestLog, start)
 	requestLog.ActiveRequestID = activeRequestID
@@ -1594,7 +1608,9 @@ func (prs *ProviderRelayService) postCodexResponsesRequest(
 ) (*xrequest.Response, error) {
 	tracker := codexQuotaTrackerFromContext(ctx)
 	attemptID := newRelayAttemptID()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	trace := codexTraceFromContext(ctx)
+	reqCtx := withCodexTraceHTTPTracing(ctx, trace, attemptID)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
 		if tracker != nil {
 			tracker.settle(attemptID, nil)
@@ -1619,13 +1635,26 @@ func (prs *ProviderRelayService) postCodexResponsesRequest(
 	if rawResponse != nil {
 		status = rawResponse.StatusCode
 	}
-	fmt.Printf(
-		"[Codex Relay] provider=%s upstream_headers_ms=%.1f status=%d error=%t\n",
-		providerName,
-		float64(time.Since(startedAt).Microseconds())/1000,
-		status,
-		err != nil,
-	)
+	if trace != nil {
+		trace.setStatus(status)
+		attempt, _ := trace.lastAttempt()
+		fmt.Printf(
+			"[Codex Relay] req=%s attempt=%s provider=%s upstream_headers_ms=%.1f write_ms=%s status=%d error=%t\n",
+			trace.requestID, attemptID, providerName,
+			float64(time.Since(startedAt).Microseconds())/1000,
+			formatTraceMs(attempt.writeMs),
+			status,
+			err != nil,
+		)
+	} else {
+		fmt.Printf(
+			"[Codex Relay] provider=%s upstream_headers_ms=%.1f status=%d error=%t\n",
+			providerName,
+			float64(time.Since(startedAt).Microseconds())/1000,
+			status,
+			err != nil,
+		)
+	}
 	if rawResponse == nil {
 		if tracker != nil {
 			tracker.settle(attemptID, nil)
@@ -2110,6 +2139,7 @@ func inspectCodexResponsePreflight(
 		}
 		if firstEventAt.IsZero() {
 			firstEventAt = time.Now()
+			markCodexPreflightFirstEvent(ctx)
 		}
 		if inspectSSE == nil {
 			return false, false, ""
@@ -3265,6 +3295,16 @@ type ReqeustLog struct {
 	Status                string  `json:"status,omitempty"`
 	ActiveRequestID       int64   `json:"-"`
 	SkipLog               bool    `json:"-"`
+
+	// trace 指向本次请求的链路追踪上下文（不参与 DB/JSON 序列化），
+	// 供 markFirstTokenDuration 记录首个写给客户端的字节时刻。
+	trace *codexTrace `json:"-"`
+}
+
+func (usage *ReqeustLog) attachCodexTrace(trace *codexTrace) {
+	if usage != nil {
+		usage.trace = trace
+	}
 }
 
 // claude code usage parser
@@ -4651,6 +4691,7 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 			ClientIP:    clientIP,
 			ResendCount: attempt,
 		}
+		attemptLog.attachCodexTrace(codexTraceFromContext(clientCtx))
 		if attempt == 0 {
 			activeID = defaultActiveRequestTracker.Start(attemptLog, attemptStart)
 			attemptLog.ActiveRequestID = activeID

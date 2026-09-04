@@ -109,6 +109,10 @@ func (prs *ProviderRelayService) codexRelayAuthMiddleware() gin.HandlerFunc {
 		c.Request.Header.Del("X-API-Key")
 		c.Request.Header.Del("x-api-key")
 
+		if trace := codexTraceFromContext(c.Request.Context()); trace != nil {
+			trace.setKeyID(key.ID)
+			trace.mark("auth_done")
+		}
 		c.Next()
 	}
 }
@@ -187,7 +191,10 @@ func (prs *ProviderRelayService) codexQuotaMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		trace := codexTraceFromContext(c.Request.Context())
+		trace.mark("quota_check_start")
 		decision, err := prs.relayQuota.Check(key)
+		trace.mark("quota_check_done")
 		if err != nil {
 			writeOpenAIQuotaServiceError(c, http.StatusServiceUnavailable, "quota_service_unavailable", "relay quota service is temporarily unavailable")
 			c.Abort()

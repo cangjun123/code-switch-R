@@ -187,19 +187,110 @@ type relayQuotaState struct {
 	TrackingStartedAt int64
 }
 
+// relaySettleJob is one queued settlement for an unlimited key.  Kept small so
+// the bounded queue has a predictable memory footprint.
+type relaySettleJob struct {
+	keyID     string
+	attemptID string
+	provider  string
+	model     string
+	usage     RelayQuotaUsage
+}
+
 // RelayQuotaService owns all quota state transitions.  now and location are
 // injectable for deterministic boundary tests.
 type RelayQuotaService struct {
 	mu       sync.Mutex
 	now      func() time.Time
 	location func() *time.Location
+
+	// settleQueue carries settlements for unlimited keys.  Synchronous
+	// settlement runs on the response-read goroutine while holding s.mu, so on
+	// a weak machine with SQLite write contention it delayed handler cleanup
+	// and queued the next request's Check behind the mutex.  Unlimited keys
+	// have no admission decision, so their settlements are stats-only and can
+	// settle asynchronously; limited keys keep the synchronous path so quota
+	// exhaustion is never over-run.  Jobs beyond the queue capacity are
+	// dropped with a rate-limited log line: settlement is accounting-only for
+	// these keys, and a process exit can equally lose pending jobs.
+	settleQueue   chan relaySettleJob
+	settleDropped int64
+
+	// settleKeyLookup lets tests inject the key lookup; nil falls back to the
+	// process-wide CodexRelayKeyService created in web_runtime.
+	settleKeyLookup func(keyID string) *CodexRelayKey
+}
+
+// relayQuotaSettleQueueCapacity is a package-level var so tests can shrink it.
+var relayQuotaSettleQueueCapacity = 1024
+
+// globalCodexRelayKeys backs the settle worker's key lookup when no injection is
+// configured; NewProviderRelayService registers the process-wide service.
+var globalCodexRelayKeys relayQuotaKeySource
+
+// relayQuotaKeySource is the subset of CodexRelayKeyService the settle worker
+// needs, so the default fallback can construct its own service lazily.
+type relayQuotaKeySource interface {
+	GetKeyByID(id string) (*CodexRelayKey, error)
 }
 
 func NewRelayQuotaService() *RelayQuotaService {
-	return &RelayQuotaService{
+	service := &RelayQuotaService{
 		now:      time.Now,
 		location: func() *time.Location { return time.Local },
 	}
+	if relayQuotaSettleQueueCapacity > 0 {
+		service.settleQueue = make(chan relaySettleJob, relayQuotaSettleQueueCapacity)
+		go service.drainSettleQueue()
+	}
+	return service
+}
+
+// enqueueUnlimitedSettle hands one unlimited-key settlement to the background
+// worker.  It never blocks: a full queue drops the job (stats-only accounting).
+func (s *RelayQuotaService) enqueueUnlimitedSettle(job relaySettleJob) {
+	if s == nil || s.settleQueue == nil {
+		return
+	}
+	select {
+	case s.settleQueue <- job:
+	default:
+		s.mu.Lock()
+		s.settleDropped++
+		s.mu.Unlock()
+		logRelayQuotaSettlementDropped(job.attemptID, job.provider, job.model)
+	}
+}
+
+func (s *RelayQuotaService) drainSettleQueue() {
+	for job := range s.settleQueue {
+		s.runSettleJob(job)
+	}
+}
+
+// runSettleJob resolves the key by ID at settlement time (the key may have been
+// deleted while the job was queued) and records the settlement synchronously.
+func (s *RelayQuotaService) runSettleJob(job relaySettleJob) {
+	key, err := s.lookupSettleKey(job.keyID)
+	if err != nil {
+		logRelayQuotaSettlementError(job.attemptID, job.provider, job.model, err)
+		return
+	}
+	if _, err := s.Settle(key, job.attemptID, job.provider, job.model, job.usage); err != nil {
+		logRelayQuotaSettlementError(job.attemptID, job.provider, job.model, err)
+	}
+}
+
+func (s *RelayQuotaService) lookupSettleKey(keyID string) (*CodexRelayKey, error) {
+	if s.settleKeyLookup != nil {
+		return s.settleKeyLookup(keyID), nil
+	}
+	if globalCodexRelayKeys != nil {
+		return globalCodexRelayKeys.GetKeyByID(keyID)
+	}
+	// Fallback for stand-alone constructions (tests, early startup): read the
+	// same on-disk key store the process-wide service uses.
+	return NewCodexRelayKeyService().GetKeyByID(keyID)
 }
 
 // SetClockForTest is intentionally small and only used by package tests.
@@ -764,14 +855,17 @@ func (s *RelayQuotaService) Check(key *CodexRelayKey) (RelayQuotaDecision, error
 	if s == nil || key == nil || strings.TrimSpace(key.ID) == "" {
 		return RelayQuotaDecision{Allowed: true}, nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// 无限额 key 不做准入判断，且不能等待 quota mutex：结算（含无限额 key 的
+	// 异步结算）持锁执行 SQLite 事务，弱机上排队等锁会把新请求的发起推迟数十秒。
+	// key 是每请求的副本，只读字段，锁外判定安全。
 	if !relayQuotaHasLimits(key) {
 		// Unlimited keys still get settlement tracking after the upstream call,
 		// but do not need a request-start transaction or a state row.
 		now := s.currentTime().In(s.currentLocation())
 		return RelayQuotaDecision{Allowed: true, Status: s.statusFromState(key, nil, now)}, nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := ensureRelayQuotaTables(); err != nil {
 		return RelayQuotaDecision{}, err
 	}
