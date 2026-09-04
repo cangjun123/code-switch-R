@@ -56,6 +56,10 @@ type AppSettings struct {
 	CodexDegradationResendEnabled   bool  `json:"codex_degradation_resend_enabled"`
 	CodexDegradationMaxResend       int   `json:"codex_degradation_max_resend"`
 	CodexDegradationReasoningTokens []int `json:"codex_degradation_reasoning_tokens"`
+
+	// Codex 请求链路追踪：每个 Codex 请求在后台日志输出分段耗时（认证、
+	// quota 等待、调度、上游连接/上传、首 token 等）。默认关闭。
+	CodexTraceEnabled bool `json:"codex_trace_enabled"`
 }
 
 type persistedAppSettings struct {
@@ -77,6 +81,74 @@ type AppSettingsService struct {
 	path             string
 	mu               sync.Mutex
 	autoStartService *AutoStartService
+
+	// codexTrace 按 mtime+size 缓存已解析的开关值，供每请求热路径查询，
+	// 避免每个 Codex 请求都重读 app.json（与 ProviderService 缓存同模式，
+	// 进程内写路径主动失效；粒度局限见 providerservice.go 注释）。
+	traceCacheMu     sync.Mutex
+	traceCacheValue  bool
+	traceCacheModAt  time.Time
+	traceCacheSize   int64
+	traceCacheInited bool
+}
+
+// loadCodexTraceFlag reads just the codex_trace_enabled flag from disk.  It must
+// be called with traceCacheMu held.
+func (as *AppSettingsService) loadCodexTraceFlag(info os.FileInfo) (bool, error) {
+	data, err := os.ReadFile(as.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if len(data) == 0 {
+		return false, nil
+	}
+	file := as.defaultSettingsFile()
+	if err := json.Unmarshal(data, &file); err != nil {
+		return false, err
+	}
+	return file.CodexTraceEnabled, nil
+}
+
+// IsCodexTraceEnabled returns the codex_trace_enabled flag with an mtime+size
+// cache so per-request lookups skip the disk read when app.json is unchanged.
+func (as *AppSettingsService) IsCodexTraceEnabled() bool {
+	if as == nil {
+		return false
+	}
+	info, err := os.Stat(as.path)
+	if err != nil {
+		// 文件缺失（未保存过设置）时按默认关闭处理，并让缓存跟随缺失状态。
+		as.traceCacheMu.Lock()
+		as.traceCacheValue = false
+		as.traceCacheModAt = time.Time{}
+		as.traceCacheInited = true
+		as.traceCacheMu.Unlock()
+		return false
+	}
+	as.traceCacheMu.Lock()
+	defer as.traceCacheMu.Unlock()
+	if as.traceCacheInited && info.ModTime().Equal(as.traceCacheModAt) && info.Size() == as.traceCacheSize {
+		return as.traceCacheValue
+	}
+	settings, err := as.loadCodexTraceFlag(info)
+	if err != nil {
+		// 解析失败保留上次值；首次失败按默认关闭。
+		if !as.traceCacheInited {
+			as.traceCacheValue = false
+			as.traceCacheModAt = info.ModTime()
+			as.traceCacheSize = info.Size()
+			as.traceCacheInited = true
+		}
+		return as.traceCacheValue
+	}
+	as.traceCacheValue = settings
+	as.traceCacheModAt = info.ModTime()
+	as.traceCacheSize = info.Size()
+	as.traceCacheInited = true
+	return as.traceCacheValue
 }
 
 func NewAppSettingsService(autoStartService *AutoStartService) *AppSettingsService {
@@ -219,6 +291,8 @@ func (as *AppSettingsService) defaultSettings() AppSettings {
 		CodexDegradationResendEnabled:   false,
 		CodexDegradationMaxResend:       3,
 		CodexDegradationReasoningTokens: []int{516},
+
+		CodexTraceEnabled: false,
 	}
 }
 

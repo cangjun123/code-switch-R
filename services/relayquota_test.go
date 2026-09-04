@@ -1,6 +1,10 @@
 package services
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -375,5 +379,125 @@ func TestRelayQuotaStatusDoesNotStartTracking(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("status unexpectedly created state row: %d", count)
+	}
+}
+
+func TestRelayQuotaCheckUnlimitedKeySkipsMutex(t *testing.T) {
+	quota := NewRelayQuotaService()
+	key := &CodexRelayKey{ID: "unlimited-check", TokenLimit: 0, USDLimit: "", QuotaPeriod: RelayQuotaPeriodOnce}
+
+	// 模拟一个进行中的结算事务持锁：无限额 key 的 Check 必须不等锁直接放行。
+	quota.mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		decision, err := quota.Check(key)
+		if err != nil || !decision.Allowed {
+			t.Errorf("unlimited check: allowed=%v err=%v", decision.Allowed, err)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("unlimited-key Check blocked behind the quota mutex")
+	}
+	quota.mu.Unlock()
+}
+
+func TestRelayQuotaUnlimitedKeySettlesAsynchronously(t *testing.T) {
+	setupRelayTestEnv(t)
+	keyService := &CodexRelayKeyService{path: filepath.Join(t.TempDir(), "keys.json")}
+	created, err := keyService.CreateKey("async-settle-test")
+	if err != nil {
+		t.Fatalf("create test key: %v", err)
+	}
+	// 无限额 key：不限 token、不限美元。
+	key, err := keyService.GetKeyByID(created.ID)
+	if err != nil {
+		t.Fatalf("reload test key: %v", err)
+	}
+	if relayQuotaHasLimits(key) {
+		t.Fatal("test key should be unlimited")
+	}
+	quota := NewRelayQuotaService()
+	quota.settleKeyLookup = func(keyID string) *CodexRelayKey {
+		found, lookupErr := keyService.GetKeyByID(keyID)
+		if lookupErr != nil {
+			return nil
+		}
+		return found
+	}
+	if _, err := quota.UpsertModelPrice(RelayModelPrice{
+		Model: "async-settle-model", Input: "1", CachedInput: "0", Output: "2", ReasoningOutput: "4",
+	}); err != nil {
+		t.Fatalf("configure model price: %v", err)
+	}
+	defer func() {
+		db, _ := xdb.DB("default")
+		if db != nil {
+			_, _ = db.Exec("DELETE FROM relay_key_quota_state WHERE relay_key_id = ?", key.ID)
+			_, _ = db.Exec("DELETE FROM relay_key_quota_settlement WHERE relay_key_id = ?", key.ID)
+			_, _ = db.Exec("DELETE FROM relay_model_price WHERE model = ?", "async-settle-model")
+		}
+	}()
+
+	sse := "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":12,\"output_tokens\":8}}}\n\n"
+	transport := &quotaFakeRoundTripper{responses: []string{sse}}
+	relay := &ProviderRelayService{
+		httpClient:     &http.Client{Transport: transport},
+		codexRelayKeys: keyService,
+		relayQuota:     quota,
+	}
+	tracker := &codexQuotaAttemptTracker{
+		service: relay, keyID: key.ID, provider: "fake", model: "async-settle-model",
+	}
+	ctx := withCodexQuotaAttemptTracker(context.Background(), tracker)
+	response, err := relay.postCodexResponsesRequest(ctx, "http://quota.invalid/responses", nil,
+		map[string]string{"Content-Type": "application/json"}, []byte(`{"model":"async-settle-model"}`), "fake")
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	consumeQuotaResponse(t, response)
+
+	// settleLog 应立即返回，用量由后台 worker 落库。无限额 key 不建 state
+	// 行（ensureStateTx 跳过），usage 记录在 settlement 表——轮询该表直到出现。
+	db, err := xdb.DB("default")
+	if err != nil {
+		t.Fatalf("quota db: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var total int64
+		if err := db.QueryRow(
+			"SELECT COALESCE(SUM(total_tokens), 0) FROM relay_key_quota_settlement WHERE relay_key_id = ?", key.ID,
+		).Scan(&total); err != nil {
+			t.Fatalf("settlement sum: %v", err)
+		}
+		if total >= 20 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("async settlement never landed: total=%d", total)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestRelayQuotaSettleQueueOverflowDrops(t *testing.T) {
+	quota := NewRelayQuotaService()
+	quota.settleQueue = nil // 停掉 worker，让队列容量完全可控
+	quota.settleQueue = make(chan relaySettleJob, 2)
+	for i := 0; i < 2; i++ {
+		quota.enqueueUnlimitedSettle(relaySettleJob{keyID: "k", attemptID: fmt.Sprintf("attempt-%d", i)})
+	}
+	quota.enqueueUnlimitedSettle(relaySettleJob{keyID: "k", attemptID: "attempt-overflow"})
+	quota.mu.Lock()
+	dropped := quota.settleDropped
+	quota.mu.Unlock()
+	if dropped != 1 {
+		t.Fatalf("dropped=%d, want 1", dropped)
+	}
+	if len(quota.settleQueue) != 2 {
+		t.Fatalf("queue length=%d, want 2", len(quota.settleQueue))
 	}
 }

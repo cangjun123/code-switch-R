@@ -157,6 +157,7 @@ func (t *codexQuotaAttemptTracker) settleLog(attemptID string, logEntry ReqeustL
 	if keyID == "" {
 		return
 	}
+	startedAt := time.Now()
 	key, err := t.service.codexRelayKeys.GetKeyByID(keyID)
 	if err != nil {
 		logRelayQuotaSettlementError(attemptID, t.provider, t.model, err)
@@ -168,30 +169,42 @@ func (t *codexQuotaAttemptTracker) settleLog(attemptID string, logEntry ReqeustL
 		OutputTokens:          int64(logEntry.OutputTokens),
 		ReasoningOutputTokens: int64(logEntry.ReasoningTokens),
 	}
+	// 无限额 key 的结算只用于用量统计：走有界异步队列，避免结算事务持有
+	// quota mutex 阻塞同一时刻进入的下一个 Codex 请求（弱机 + SQLite 写
+	// 竞争时可达秒级）。有限额 key 保持同步结算，额度判定不受影响。
+	if !relayQuotaHasLimits(key) {
+		t.service.relayQuota.enqueueUnlimitedSettle(relaySettleJob{
+			keyID:     keyID,
+			attemptID: attemptID,
+			provider:  t.provider,
+			model:     t.model,
+			usage:     usage,
+		})
+		logEntry.trace.markOnce("settle")
+		return
+	}
 	if _, err := t.service.relayQuota.Settle(key, attemptID, t.provider, t.model, usage); err != nil {
 		// Settlement happens after the response body is consumed and must not
 		// change the already-delivered upstream response.  Make failures visible
 		// to operators instead of silently dropping accounting errors.
 		logRelayQuotaSettlementError(attemptID, t.provider, t.model, err)
 	}
+	logEntry.trace.markOnce("settle")
+	logSettleDuration(startedAt)
+}
+
+// logSettleDuration reports synchronous settlement duration for diagnosis.
+func logSettleDuration(startedAt time.Time) {
+	fmt.Printf("[Relay Quota] event=settle_done settle_ms=%.1f\n", float64(time.Since(startedAt).Microseconds())/1000)
 }
 
 func logRelayQuotaSettlementError(attemptID, provider, model string, err error) {
 	if err == nil {
 		return
 	}
-	now := time.Now()
-	relayQuotaSettlementLogState.Lock()
-	if !relayQuotaSettlementLogState.last.IsZero() && now.Sub(relayQuotaSettlementLogState.last) < relayQuotaSettlementLogInterval {
-		relayQuotaSettlementLogState.suppressed++
-		relayQuotaSettlementLogState.Unlock()
+	if !relayQuotaSettlementLogGate() {
 		return
 	}
-	suppressed := relayQuotaSettlementLogState.suppressed
-	relayQuotaSettlementLogState.last = now
-	relayQuotaSettlementLogState.suppressed = 0
-	relayQuotaSettlementLogState.Unlock()
-
 	sanitize := func(value string) string {
 		value = strings.Join(strings.Fields(value), " ")
 		if len(value) > 160 {
@@ -201,8 +214,48 @@ func logRelayQuotaSettlementError(attemptID, provider, model string, err error) 
 	}
 	fmt.Printf(
 		"[Relay Quota] level=error event=settlement_failed attempt=%s provider=%q model=%q suppressed=%d error=%q\n",
-		sanitize(attemptID), sanitize(provider), sanitize(model), suppressed, sanitize(err.Error()),
+		sanitize(attemptID), sanitize(provider), sanitize(model), relayQuotaSettlementSuppressed(), sanitize(err.Error()),
 	)
+}
+
+// logRelayQuotaSettlementDropped reports an unlimited-key settlement dropped
+// because the bounded async queue is full.  Rate-limited like settlement errors.
+func logRelayQuotaSettlementDropped(attemptID, provider, model string) {
+	if !relayQuotaSettlementLogGate() {
+		return
+	}
+	sanitize := func(value string) string {
+		value = strings.Join(strings.Fields(value), " ")
+		if len(value) > 160 {
+			value = value[:160] + "..."
+		}
+		return value
+	}
+	fmt.Printf(
+		"[Relay Quota] level=warn event=settlement_dropped attempt=%s provider=%q model=%q suppressed=%d\n",
+		sanitize(attemptID), sanitize(provider), sanitize(model), relayQuotaSettlementSuppressed(),
+	)
+}
+
+// relayQuotaSettlementLogGate applies the shared rate limit: the first caller in
+// relayQuotaSettlementLogInterval wins the log slot, later ones are counted.
+func relayQuotaSettlementLogGate() bool {
+	now := time.Now()
+	relayQuotaSettlementLogState.Lock()
+	defer relayQuotaSettlementLogState.Unlock()
+	if !relayQuotaSettlementLogState.last.IsZero() && now.Sub(relayQuotaSettlementLogState.last) < relayQuotaSettlementLogInterval {
+		relayQuotaSettlementLogState.suppressed++
+		return false
+	}
+	relayQuotaSettlementLogState.last = now
+	relayQuotaSettlementLogState.suppressed = 0
+	return true
+}
+
+func relayQuotaSettlementSuppressed() int {
+	relayQuotaSettlementLogState.Lock()
+	defer relayQuotaSettlementLogState.Unlock()
+	return relayQuotaSettlementLogState.suppressed
 }
 
 // codexQuotaTrackingBody buffers only response bytes needed for usage parsing;

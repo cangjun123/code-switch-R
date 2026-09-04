@@ -780,6 +780,7 @@
         "dataImport": "Data Import",
         "connectivity": "Connectivity Test",
         "codexDegradation": "Codex Degradation Detection",
+        "codexTrace": "Codex Request Tracing",
         "logsPolling": "Logs"
       },
       "label": {
@@ -846,6 +847,8 @@
         "logsFastRefreshIntervalHint": "Shorter interval used while requests are active so the first token shows sooner (1-60 s).",
         "codexDegradationThreshold": "Degradation token values",
         "codexDegradationThresholdHint": "Treat the response as degraded when reasoning_tokens exactly equals any of these values. Separate multiple values with commas (e.g. 516,1030). Leave empty to disable.",
+        "codexTrace": "Codex request tracing",
+        "codexTraceHint": "Log per-request stage timings (quota wait, upstream connect, upload, first token, ...) for every Codex request to locate slow requests. Only durations and sizes are logged, never request content.",
         "autoUpdate": "Automatic update",
         "autoConnectivityTest": "Auto Availability Monitoring",
         "autoConnectivityTestHint": "Automatically check availability of monitored providers every minute",
