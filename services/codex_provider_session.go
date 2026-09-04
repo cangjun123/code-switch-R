@@ -83,31 +83,38 @@ func headerValueCaseInsensitive(headers map[string]string, target string) string
 	return ""
 }
 
+// codexRequestToolOutputIDs 用 gjson 流式扫描（不建 interface{} 树），
+// 每个 codex /responses 请求都会调用，避免全量反序列化的内存放大。
+// 语义与 JSON 树版本等价：畸形 JSON、非 object 根、input 非数组都返回
+// (空集合, false)；字段取值只在 JSON 类型为 string 时生效（gjsonStringField）。
 func codexRequestToolOutputIDs(body []byte) (map[string]struct{}, bool) {
 	result := make(map[string]struct{})
-	root, err := decodeJSONPreservingNumbers(body)
-	if err != nil {
+	if !gjson.ValidBytes(body) {
 		return result, false
 	}
-	object, ok := root.(map[string]any)
-	if !ok {
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() {
 		return result, false
 	}
-	input, ok := object["input"].([]any)
-	if !ok {
+	input := root.Get("input")
+	if !input.IsArray() {
 		return result, false
 	}
 	hasOutput := false
-	for _, rawItem := range input {
-		item, ok := rawItem.(map[string]any)
-		if !ok || !isCodexToolOutputType(stringField(item, "type")) {
-			continue
+	input.ForEach(func(_, item gjson.Result) bool {
+		if !item.IsObject() {
+			return true
+		}
+		itemType, _ := gjsonStringField(item, "type")
+		if !isCodexToolOutputType(itemType) {
+			return true
 		}
 		hasOutput = true
-		if callID := stringField(item, "call_id"); callID != "" {
+		if callID, ok := gjsonStringField(item, "call_id"); ok && callID != "" {
 			result[callID] = struct{}{}
 		}
-	}
+		return true
+	})
 	return result, hasOutput
 }
 

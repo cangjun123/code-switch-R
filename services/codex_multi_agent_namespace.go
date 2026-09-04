@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -230,13 +232,31 @@ func hashCodexHistoryValue(value any) [sha256.Size]byte {
 	return sha256.Sum256(encoded)
 }
 
+// HasCodexMultiAgentNamespaceConflict 用 gjson 流式扫描（不建 interface{} 树），
+// 避免每个 codex /responses 请求对完整请求体做全量反序列化的内存放大。
+// 与 JSON 树版本语义等价：畸形/尾随垃圾 JSON 报错（gjson.ValidBytes 对尾随
+// 非空白数据返回 false，与 ensureJSONEOF 的多值检测一致）；字段取值只在
+// JSON 类型为 string 时生效（gjsonStringField），与 UseNumber 树下
+// stringField 的类型判断一致。唯一理论差异：重复键时 ForEach 会遍历两处
+// 而 map 只保留最后一个——实际客户端不会发送，且后果仅是冲突判定更保守。
 func HasCodexMultiAgentNamespaceConflict(body []byte) (bool, error) {
-	root, err := decodeJSONPreservingNumbers(body)
-	if err != nil {
-		return false, err
+	if !gjson.ValidBytes(body) {
+		return false, errors.New("decode codex namespace payload: invalid JSON")
 	}
+	root := gjson.ParseBytes(body)
 	definitions := codexNamespaceDefinitions{}
-	inspectCodexNamespaceDefinitions(root, &definitions)
+	visitCodexRequestToolCollectionsGJSON(root, func(collection gjson.Result) {
+		visitCodexNamespaceDefinitionsGJSON(collection, func(definition gjson.Result) {
+			if name, ok := gjsonStringField(definition, "name"); ok {
+				switch name {
+				case codexClientMultiAgentNamespace:
+					definitions.collaboration = true
+				case codexUpstreamMultiAgentNamespace:
+					definitions.agents = true
+				}
+			}
+		})
+	})
 	return definitions.collaboration && definitions.agents, nil
 }
 
@@ -525,6 +545,72 @@ func isCodexCallType(itemType string) bool {
 func stringField(object map[string]any, key string) string {
 	value, _ := object[key].(string)
 	return value
+}
+
+// gjsonStringField 仅当字段为 JSON 字符串时返回其值，等价于 UseNumber 树下
+// stringField 的类型判断。绝不能用 gjson Result.String()——它会把数字/布尔
+// 转换成字符串（call_id:123 会得到 "123" 而非 ""），与树版本语义不一致。
+func gjsonStringField(object gjson.Result, key string) (string, bool) {
+	value := object.Get(key)
+	if value.Type != gjson.String {
+		return "", false
+	}
+	return value.Str, true
+}
+
+// visitCodexRequestToolCollectionsGJSON 是 visitCodexRequestToolCollections 的
+// gjson 版（只读扫描，不建树），逐分支语义对齐：
+// - 顶层任意 tools/additional_tools 键（不看 value 类型）都 visit；
+// - input 数组中 type=="additional_tools" 的项，其 tools 键存在（含显式 null）即 visit。
+func visitCodexRequestToolCollectionsGJSON(root gjson.Result, visit func(gjson.Result)) {
+	if !root.IsObject() {
+		return
+	}
+	root.ForEach(func(key, collection gjson.Result) bool {
+		if key.Type == gjson.String && isCodexToolCollectionKey(key.Str) {
+			visit(collection)
+		}
+		return true
+	})
+	input := root.Get("input")
+	if !input.IsArray() {
+		return
+	}
+	input.ForEach(func(_, item gjson.Result) bool {
+		if itemType, ok := gjsonStringField(item, "type"); ok && itemType == "additional_tools" {
+			if tools := item.Get("tools"); tools.Exists() {
+				visit(tools)
+			}
+		}
+		return true
+	})
+}
+
+// visitCodexNamespaceDefinitionsGJSON 是 visitCodexNamespaceDefinitions 的 gjson 版：
+// 数组逐项；对象处理自身并对 items 键（存在即递归，任何类型含 null——递归入口
+// 自然过滤不匹配的类型）递归；仅 type 为字符串 "namespace" 的定义被回调。
+func visitCodexNamespaceDefinitionsGJSON(value gjson.Result, visit func(gjson.Result)) {
+	switch {
+	case value.IsArray():
+		value.ForEach(func(_, item gjson.Result) bool {
+			visitCodexNamespaceDefinitionItemGJSON(item, visit)
+			return true
+		})
+	case value.IsObject():
+		visitCodexNamespaceDefinitionItemGJSON(value, visit)
+		if items := value.Get("items"); items.Exists() {
+			visitCodexNamespaceDefinitionsGJSON(items, visit)
+		}
+	}
+}
+
+func visitCodexNamespaceDefinitionItemGJSON(value gjson.Result, visit func(gjson.Result)) {
+	if !value.IsObject() {
+		return
+	}
+	if itemType, ok := gjsonStringField(value, "type"); ok && itemType == "namespace" {
+		visit(value)
+	}
 }
 
 func isCodexToolCollectionKey(key string) bool {

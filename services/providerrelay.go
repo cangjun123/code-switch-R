@@ -4461,44 +4461,24 @@ func (prs *ProviderRelayService) customModelsHandler() gin.HandlerFunc {
 // estimateInputTokens 在本地估算 Anthropic Messages 请求的输入 token 数。
 // 用于上游不支持 /v1/messages/count_tokens 的场景。
 // 中文按每字 1 token，英文按每 4 字符 1 token。
+// 实现为 gjson 流式扫描（不建 interface{} 树），与 encoding/json 全量
+// Unmarshal 版本语义等价：畸形 JSON / messages 非数组 → 返回 100。
 func estimateInputTokens(bodyBytes []byte) int {
-	var body struct {
-		System   interface{}     `json:"system"`
-		Messages []interface{}   `json:"messages"`
-		Tools    json.RawMessage `json:"tools"`
+	if !gjson.ValidBytes(bodyBytes) {
+		return 100
 	}
-	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+	root := gjson.ParseBytes(bodyBytes)
+
+	// 对齐旧版：messages 字段存在但非数组时 Unmarshal 报 UnmarshalTypeError → 100
+	messages := root.Get("messages")
+	if messages.Exists() && !messages.IsArray() {
 		return 100
 	}
 
 	var totalChars int
 	var cjkCount int
 
-	extractText := func(v interface{}) string {
-		if v == nil {
-			return ""
-		}
-		switch val := v.(type) {
-		case string:
-			return val
-		case []interface{}:
-			var parts []string
-			for _, item := range val {
-				if s, ok := item.(string); ok {
-					parts = append(parts, s)
-				} else if m, ok := item.(map[string]interface{}); ok {
-					if t, ok := m["type"].(string); ok && t == "text" {
-						parts = append(parts, fmt.Sprint(m["text"]))
-					}
-				}
-			}
-			return strings.Join(parts, "\n")
-		default:
-			return fmt.Sprint(v)
-		}
-	}
-
-	systemText := extractText(body.System)
+	systemText := extractTextGJSON(root.Get("system"))
 	for _, ch := range systemText {
 		if ch >= 0x4e00 && ch <= 0x9fff {
 			cjkCount++
@@ -4506,20 +4486,24 @@ func estimateInputTokens(bodyBytes []byte) int {
 		totalChars += len(string(ch))
 	}
 
-	for _, raw := range body.Messages {
-		if m, ok := raw.(map[string]interface{}); ok {
-			txt := fmt.Sprint(m["role"]) + "\n" + extractText(m["content"])
-			for _, ch := range txt {
-				if ch >= 0x4e00 && ch <= 0x9fff {
-					cjkCount++
-				}
-				totalChars += len(string(ch))
-			}
+	messages.ForEach(func(_, message gjson.Result) bool {
+		if !message.IsObject() {
+			return true
 		}
-	}
+		// role 与旧版 fmt.Sprint(m["role"]) 对齐：缺失/显式 null → "<nil>"，
+		// 非字符串 role 经 Value() 还原后 Sprint。
+		txt := fmt.Sprint(message.Get("role").Value()) + "\n" + extractTextGJSON(message.Get("content"))
+		for _, ch := range txt {
+			if ch >= 0x4e00 && ch <= 0x9fff {
+				cjkCount++
+			}
+			totalChars += len(string(ch))
+		}
+		return true
+	})
 
-	if body.Tools != nil {
-		totalChars += len(body.Tools)
+	if tools := root.Get("tools"); tools.Exists() {
+		totalChars += len(tools.Raw)
 	}
 
 	otherCount := totalChars - cjkCount
@@ -4531,6 +4515,40 @@ func estimateInputTokens(bodyBytes []byte) int {
 		estimated = 1
 	}
 	return estimated
+}
+
+// extractTextGJSON 是旧版 extractText（interface{} 树）的 gjson 等价实现：
+// 字符串原样返回；数组取 string 元素与 type=="text" 块的 text 字段（值经
+// Value() 还原后 fmt.Sprint，与旧版 fmt.Sprint(m["text"]) 一致）以 \n 连接；
+// 其他类型中，缺失字段与 JSON null（旧版 v==nil → ""）返回空串，数字/布尔
+// 等标量经 fmt.Sprint(Value()) 格式化，与旧版 fmt.Sprint(v) 一致。
+func extractTextGJSON(result gjson.Result) string {
+	switch {
+	case result.Type == gjson.String:
+		return result.Str
+	case result.IsArray():
+		var parts []string
+		result.ForEach(func(_, item gjson.Result) bool {
+			if item.Type == gjson.String {
+				parts = append(parts, item.Str)
+			} else if item.IsObject() {
+				if t, ok := gjsonStringField(item, "type"); ok && t == "text" {
+					parts = append(parts, fmt.Sprint(item.Get("text").Value()))
+				}
+			}
+			return true
+		})
+		return strings.Join(parts, "\n")
+	default:
+		// 旧版 extractText 开头有 v==nil 分支：字段缺失（树中无键 → nil）和
+		// JSON null（解出 nil interface）都返回 ""。gjson 中两者 Type 均为
+		// Null、Value() 均为 nil，需要在此归一到 ""；数字/布尔等标量才走
+		// fmt.Sprint(Value())（与旧版 default 分支 fmt.Sprint(v) 一致）。
+		if result.Type == gjson.Null {
+			return ""
+		}
+		return fmt.Sprint(result.Value())
+	}
 }
 
 // shouldDetectCodexDegradation 判断是否对当前 codex 请求启用降智检测重发。

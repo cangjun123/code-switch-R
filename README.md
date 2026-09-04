@@ -100,6 +100,8 @@ User=your-user
 WorkingDirectory=/opt/codeswitch/current
 Environment=CODE_SWITCH_WEB_ADDR=127.0.0.1:8080
 Environment=CODE_SWITCH_SETUP_TOKEN=replace-with-a-long-random-token
+# 可选：覆盖内置的 512MiB 内存软上限（字节数，0=不限制）
+#Environment=CODESWITCH_MEMLIMIT=536870912
 ExecStart=/opt/codeswitch/current/codeswitch-web
 Restart=on-failure
 RestartSec=3

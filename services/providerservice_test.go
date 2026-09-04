@@ -2,6 +2,8 @@ package services
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"sort"
 	"testing"
 
@@ -1369,5 +1371,180 @@ func TestDuplicateProvider(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --- LoadProviders mtime+size 缓存测试 ---
+
+func writeProviderConfigFile(t *testing.T, home, filename string, providers []Provider) {
+	t.Helper()
+	dir := filepath.Join(home, ".code-switch")
+	target := filepath.Join(dir, filename)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	data, err := json.MarshalIndent(providerEnvelope{Providers: providers}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal providers: %v", err)
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatalf("write provider config: %v", err)
+	}
+}
+
+func TestLoadProvidersCacheHitAndExternalInvalidation(t *testing.T) {
+	testHome := t.TempDir()
+	t.Setenv("HOME", testHome)
+	t.Setenv("USERPROFILE", testHome)
+
+	service := NewProviderService()
+	writeProviderConfigFile(t, testHome, "claude-code.json", []Provider{
+		{ID: 1, Name: "p1", APIURL: "https://a.example.com", APIKey: "k1", Enabled: true},
+	})
+
+	first, err := service.LoadProviders(ProviderKindClaude)
+	if err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	if len(first) != 1 || first[0].Name != "p1" {
+		t.Fatalf("first load content: %+v", first)
+	}
+
+	// 二次加载走缓存，内容一致
+	second, err := service.LoadProviders(ProviderKindClaude)
+	if err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	if len(second) != 1 || second[0].Name != "p1" {
+		t.Fatalf("cached load content: %+v", second)
+	}
+
+	// 外部直接改写文件（不同 size）→ 下次加载必须拿到新数据
+	writeProviderConfigFile(t, testHome, "claude-code.json", []Provider{
+		{ID: 1, Name: "renamed-longer-name", APIURL: "https://a.example.com", APIKey: "k1", Enabled: true},
+		{ID: 2, Name: "p2", APIURL: "https://b.example.com", APIKey: "k2", Enabled: true},
+	})
+	third, err := service.LoadProviders(ProviderKindClaude)
+	if err != nil {
+		t.Fatalf("load after external rewrite: %v", err)
+	}
+	if len(third) != 2 || third[0].Name != "renamed-longer-name" {
+		t.Fatalf("external rewrite not detected: %+v", third)
+	}
+}
+
+func TestLoadProvidersCacheInvalidatedBySave(t *testing.T) {
+	testHome := t.TempDir()
+	t.Setenv("HOME", testHome)
+	t.Setenv("USERPROFILE", testHome)
+
+	service := NewProviderService()
+	writeProviderConfigFile(t, testHome, "claude-code.json", []Provider{
+		{ID: 1, Name: "p1", APIURL: "https://a.example.com", APIKey: "k1", Enabled: true},
+	})
+	if _, err := service.LoadProviders(ProviderKindClaude); err != nil {
+		t.Fatalf("warm cache: %v", err)
+	}
+
+	// 进程内 SaveProviders 后必须拿到新数据（主动失效）
+	if err := service.SaveProviders(ProviderKindClaude, []Provider{
+		{ID: 1, Name: "p1", APIURL: "https://a.example.com", APIKey: "k1", Enabled: true},
+		{ID: 2, Name: "p2", APIURL: "https://b.example.com", APIKey: "k2", Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+	loaded, err := service.LoadProviders(ProviderKindClaude)
+	if err != nil {
+		t.Fatalf("load after save: %v", err)
+	}
+	if len(loaded) != 2 || loaded[1].Name != "p2" {
+		t.Fatalf("save did not invalidate cache: %+v", loaded)
+	}
+}
+
+func TestLoadProvidersReturnsIsolatedCopy(t *testing.T) {
+	testHome := t.TempDir()
+	t.Setenv("HOME", testHome)
+	t.Setenv("USERPROFILE", testHome)
+
+	service := NewProviderService()
+	writeProviderConfigFile(t, testHome, "claude-code.json", []Provider{
+		{ID: 1, Name: "p1", APIURL: "https://a.example.com", APIKey: "k1", Enabled: true},
+	})
+	loaded, err := service.LoadProviders(ProviderKindClaude)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	// 模拟调用方对返回 slice 的写操作：改元素字段 + append
+	loaded[0].Name = "mutated"
+	loaded = append(loaded, Provider{ID: 2, Name: "appended"})
+
+	again, err := service.LoadProviders(ProviderKindClaude)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if len(again) != 1 || again[0].Name != "p1" {
+		t.Fatalf("cache was polluted by caller mutation: %+v", again)
+	}
+}
+
+func TestLoadProvidersMigratesOnceThenServesFromCache(t *testing.T) {
+	testHome := t.TempDir()
+	t.Setenv("HOME", testHome)
+	t.Setenv("USERPROFILE", testHome)
+
+	service := NewProviderService()
+	// 直接构造含旧字段的原始 JSON（migrateFromLegacy 会迁移并写回）
+	legacyJSON := `{"providers":[{"id":1,"name":"legacy","apiUrl":"https://a.example.com","apiKey":"k1","websiteUrl":"","icons":"","enabled":true,"category":"","priority":0,"connectivity_check":true}]}`
+	dir := filepath.Join(testHome, ".code-switch")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "claude-code.json"), []byte(legacyJSON), 0o644); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	first, err := service.LoadProviders(ProviderKindClaude)
+	if err != nil {
+		t.Fatalf("first load (migration): %v", err)
+	}
+	if len(first) != 1 {
+		t.Fatalf("first load content: %+v", first)
+	}
+
+	// 第二次加载：迁移已写回磁盘，应直接命中缓存且内容一致
+	second, err := service.LoadProviders(ProviderKindClaude)
+	if err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	if len(second) != 1 || second[0].ID != first[0].ID || second[0].Name != first[0].Name {
+		t.Fatalf("post-migration cache mismatch: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestLoadProvidersCachesCustomKindSeparately(t *testing.T) {
+	testHome := t.TempDir()
+	t.Setenv("HOME", testHome)
+	t.Setenv("USERPROFILE", testHome)
+
+	service := NewProviderService()
+	writeProviderConfigFile(t, testHome, filepath.Join("providers", "mytool.json"), []Provider{
+		{ID: 1, Name: "custom-p1", APIURL: "https://a.example.com", APIKey: "k1", Enabled: true},
+	})
+
+	loaded, err := service.LoadProviders("custom:mytool")
+	if err != nil {
+		t.Fatalf("custom kind load: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Name != "custom-p1" {
+		t.Fatalf("custom kind content: %+v", loaded)
+	}
+	cached, err := service.LoadProviders("custom:mytool")
+	if err != nil {
+		t.Fatalf("custom kind cached load: %v", err)
+	}
+	if len(cached) != 1 || cached[0].Name != "custom-p1" {
+		t.Fatalf("custom kind cached content: %+v", cached)
 	}
 }

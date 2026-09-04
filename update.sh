@@ -10,6 +10,9 @@
 #   和 frontend/dist，服务器无需编译），赋可执行权限后重启服务。
 # - 需要当前用户具备 git pull 权限，以及 sudo 权限（仅用于 systemctl restart）。
 # - 不会删除 ~/.code-switch/，配置和数据库保留。
+#
+# 内存：codeswitch-web 默认内置 512MiB 内存软上限（GOMEMLIMIT），
+# 如需调整，在 systemd unit 里设置环境变量 CODESWITCH_MEMLIMIT（字节数，0=不限）。
 
 set -euo pipefail
 
