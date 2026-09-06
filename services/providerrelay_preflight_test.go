@@ -218,6 +218,29 @@ func TestCodexCapacityPreflightTimeoutInspectsBufferedPrefix(t *testing.T) {
 	_ = writer.Close()
 }
 
+func TestCodexCapacityPreflightTimeoutDetectsTruncatedFailure(t *testing.T) {
+	useCodexPreflightTimeout(t, 40*time.Millisecond)
+	reader, writer := io.Pipe()
+	resp := newCodexPreflightTestResponse(http.StatusOK, "text/event-stream", reader)
+	resultCh := make(chan *codexProviderCapacityError, 1)
+	go func() {
+		capacityErr, _ := codexResponseCapacityFailure(context.Background(), resp, true, "truncated-capacity-provider")
+		resultCh <- capacityErr
+	}()
+	// Deliberately omit the closing JSON braces/newline. The bounded
+	// preflight must still classify an explicit failed capacity envelope.
+	_, _ = io.WriteString(writer, "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"message\":\"Selected model is at capacity. Please try a different model.")
+	select {
+	case capacityErr := <-resultCh:
+		if capacityErr == nil || capacityErr.Code != "model_at_capacity" {
+			t.Fatalf("capacity error = %#v, want model_at_capacity", capacityErr)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("truncated capacity preflight did not return")
+	}
+	_ = writer.Close()
+}
+
 func TestCodexCapacityPreflightRunsAfterHistoryFailOpen(t *testing.T) {
 	body := strings.Join([]string{
 		"event: response.failed",
@@ -235,6 +258,86 @@ func TestCodexCapacityPreflightRunsAfterHistoryFailOpen(t *testing.T) {
 	)
 
 	capacityErr, err := codexResponseCapacityFailure(context.Background(), resp, true, "history-fail-open-provider")
+	if err != nil {
+		t.Fatalf("capacity preflight error: %v", err)
+	}
+	if capacityErr == nil || capacityErr.Code != "model_at_capacity" {
+		t.Fatalf("capacity error = %#v, want model_at_capacity", capacityErr)
+	}
+}
+
+// The SSE envelope may identify an output delta even when the JSON payload
+// omits its `type` field. In that case capacity preflight must stop inspecting
+// promptly and pass the stream through instead of waiting for its timeout.
+func TestCodexCapacityPreflightStopsOnEnvelopeDeltaWithoutPayloadType(t *testing.T) {
+	useCodexPreflightTimeout(t, 200*time.Millisecond)
+
+	reader, writer := io.Pipe()
+	resp := newCodexPreflightTestResponse(http.StatusOK, "text/event-stream", reader)
+	resultCh := make(chan struct {
+		err  *codexProviderCapacityError
+		err2 error
+	}, 1)
+	go func() {
+		capacityErr, err := codexResponseCapacityFailure(context.Background(), resp, true, "envelope-delta-provider")
+		resultCh <- struct {
+			err  *codexProviderCapacityError
+			err2 error
+		}{capacityErr, err}
+	}()
+
+	prefix := "event: response.output_text.delta\ndata: {\"delta_text\":\"partial\"}\n\n"
+	if _, err := io.WriteString(writer, prefix); err != nil {
+		t.Fatalf("write delta prefix: %v", err)
+	}
+	select {
+	case result := <-resultCh:
+		if result.err2 != nil {
+			t.Fatalf("capacity preflight error: %v", result.err2)
+		}
+		if result.err != nil {
+			t.Fatalf("envelope delta was treated as capacity failure: %#v", result.err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("envelope delta did not stop capacity preflight promptly")
+	}
+
+	tail := "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"model_at_capacity\"}}}\n\n"
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(writer, tail)
+		if closeErr := writer.Close(); err == nil {
+			err = closeErr
+		}
+		writeDone <- err
+	}()
+	body, err := io.ReadAll(resp.RawResponse.Body)
+	if err != nil {
+		t.Fatalf("read replay body: %v", err)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatalf("write tail: %v", err)
+	}
+	if got, want := string(body), prefix+tail; got != want {
+		t.Fatalf("replayed body changed:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// A mismatched SSE envelope must not hide a capacity failure reported by the
+// JSON payload. Payload inspection takes precedence over the envelope event.
+func TestCodexCapacityPreflightPayloadFailureOverridesEnvelopeDelta(t *testing.T) {
+	body := strings.Join([]string{
+		"event: response.output_text.delta",
+		`data: {"type":"response.failed","response":{"status":"failed","error":{"code":"model_at_capacity","message":"Selected model is at capacity. Please try a different model."}}}`,
+		"",
+	}, "\n")
+	resp := newCodexPreflightTestResponse(
+		http.StatusOK,
+		"text/event-stream",
+		io.NopCloser(strings.NewReader(body)),
+	)
+
+	capacityErr, err := codexResponseCapacityFailure(context.Background(), resp, true, "mismatched-envelope-provider")
 	if err != nil {
 		t.Fatalf("capacity preflight error: %v", err)
 	}

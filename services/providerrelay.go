@@ -2158,6 +2158,7 @@ func inspectCodexResponsePreflight(
 	stream := newCodexPreflightStream(resp.RawResponse.Body)
 	prefix := make([]byte, 0, 32*1024)
 	lineBuffer := make([]byte, 0, 8*1024)
+	currentEventType := ""
 	firstEventAt := time.Time{}
 	mode := codexPreflightModeUnknown
 	defaultMode := codexPreflightModeUnknown
@@ -2187,11 +2188,31 @@ func inspectCodexResponsePreflight(
 		if stage != "capacity" || inspectJSON == nil {
 			return false, "", nil
 		}
-		return inspectJSON(prefix)
+		if retry, reason, err := inspectJSON(prefix); err != nil || retry {
+			return retry, reason, err
+		}
+		// The timer can fire while the final SSE data line is still buffered
+		// (or contains truncated JSON). Apply a conservative textual fallback
+		// requiring an explicit failure marker before classifying capacity.
+		lower := strings.ToLower(string(prefix))
+		normalized := strings.Join(strings.Fields(lower), " ")
+		if (strings.Contains(normalized, "response.failed") || strings.Contains(normalized, `"status":"failed"`) || strings.Contains(normalized, `"code":"model_at_capacity"`)) &&
+			isCodexCapacityMessage(normalized) {
+			return true, "model_at_capacity", nil
+		}
+		return false, "", nil
 	}
 	inspectSSELine := func(line []byte) (bool, bool, string) {
+		trimmedLine := strings.TrimSpace(string(line))
+		if strings.HasPrefix(strings.ToLower(trimmedLine), "event:") {
+			currentEventType = strings.TrimSpace(trimmedLine[len("event:"):])
+			return false, false, ""
+		}
 		payload, isData := codexSSEDataPayload(line)
 		if !isData {
+			if trimmedLine == "" {
+				currentEventType = ""
+			}
 			return false, false, ""
 		}
 		if firstEventAt.IsZero() {
@@ -2201,7 +2222,18 @@ func inspectCodexResponsePreflight(
 		if inspectSSE == nil {
 			return false, false, ""
 		}
-		return inspectSSE(payload)
+		done, retry, reason := inspectSSE(payload)
+		if done {
+			return done, retry, reason
+		}
+		// Some gateways put the event name in the SSE envelope but omit the
+		// corresponding type in the JSON data payload. Recognize only actual
+		// delta events as output; output_item/content_part added events remain
+		// metadata so a later response.failed event can still be detected.
+		if codexSSEEventHasOutput(currentEventType) {
+			return true, false, ""
+		}
+		return false, false, ""
 	}
 
 	timer := time.NewTimer(codexResponsePreflightTimeout)
@@ -2550,7 +2582,7 @@ func codexResponseCapacityFailure(ctx context.Context, resp *xrequest.Response, 
 	}
 
 	var matched *codexProviderCapacityError
-	retry, _, inspectErr := inspectCodexResponsePreflight(
+	retry, retryReason, inspectErr := inspectCodexResponsePreflight(
 		ctx,
 		resp,
 		requestedStream,
@@ -2591,6 +2623,9 @@ func codexResponseCapacityFailure(ctx context.Context, resp *xrequest.Response, 
 	)
 	if inspectErr != nil {
 		return nil, inspectErr
+	}
+	if retry && matched == nil && retryReason != "" {
+		matched = &codexProviderCapacityError{Code: retryReason, Message: retryReason}
 	}
 	if !retry || matched == nil {
 		return nil, nil
@@ -2742,7 +2777,7 @@ var codexCapacityErrorCodes = map[string]bool{
 }
 
 func isCodexCapacityErrorCode(code string) bool {
-	return codexCapacityErrorCodes[code]
+	return codexCapacityErrorCodes[strings.ToLower(strings.TrimSpace(code))]
 }
 
 // isCodexCapacityMessage 按文案兜底识别容量错误。
@@ -2782,6 +2817,7 @@ func codexPayloadHasOutput(payload []byte) bool {
 		// the first chunk as output so capacity preflight does not buffer a
 		// normal long-running chat stream until its timeout.
 		gjson.GetBytes(payload, "choices.#").Int() > 0 ||
+		strings.TrimSpace(gjson.GetBytes(payload, "delta").String()) != "" ||
 		strings.TrimSpace(gjson.GetBytes(payload, "response.output_text").String()) != "" ||
 		strings.TrimSpace(gjson.GetBytes(payload, "output_text").String()) != "" {
 		return true
@@ -2791,6 +2827,11 @@ func codexPayloadHasOutput(payload []byte) bool {
 		strings.HasPrefix(eventType, "response.function_call_arguments.") ||
 		strings.HasPrefix(eventType, "response.custom_tool_call_input.") ||
 		strings.HasPrefix(eventType, "response.reasoning")
+}
+
+func codexSSEEventHasOutput(eventType string) bool {
+	eventType = strings.ToLower(strings.TrimSpace(eventType))
+	return strings.HasPrefix(eventType, "response.") && strings.HasSuffix(eventType, ".delta")
 }
 
 func codexPayloadHasUsage(payload []byte) bool {
