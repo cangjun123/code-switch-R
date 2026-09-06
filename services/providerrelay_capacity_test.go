@@ -84,6 +84,13 @@ func TestCodexCapacityErrorFromPayload(t *testing.T) {
 			wantMessage: "Selected model is at capacity. Please try a different model.",
 		},
 		{
+			// Chat Completions 可能以无 type/status 的顶层 error 对象返回。
+			name:        "chat completions top-level model_at_capacity",
+			payload:     `{"error":{"code":"model_at_capacity","message":"Selected model is at capacity. Please try a different model."}}`,
+			wantCode:    "model_at_capacity",
+			wantMessage: "Selected model is at capacity. Please try a different model.",
+		},
+		{
 			name:    "rate limit is out of scope",
 			payload: `{"type":"response.failed","response":{"status":"failed","error":{"code":"rate_limit_exceeded","message":"retry"}}}`,
 		},
@@ -351,6 +358,61 @@ func TestCodexNativeCapacityResponseFallsBackToNextProvider(t *testing.T) {
 	}
 	if recorder.Body.String() != successBody {
 		t.Fatalf("client response changed or leaked capacity response:\n got: %q\nwant: %q", recorder.Body.String(), successBody)
+	}
+}
+
+// Capacity failures can also arrive through the OpenAI-compatible chat
+// completions route. They must be classified as provider failures so routing
+// proceeds to the next provider instead of forwarding the terminal SSE event.
+func TestCodexChatCompletionsCapacityResponseFallsBackToNextProvider(t *testing.T) {
+	var capacityCalls atomic.Int32
+	capacity := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		capacityCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			"event: error",
+			`data: {"error":{"code":"model_at_capacity","message":"Selected model is at capacity. Please try a different model."}}`,
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n")))
+	}))
+	defer capacity.Close()
+
+	successBody := codexSessionSSE(`{"id":"chatcmpl-ok","object":"chat.completion.chunk","choices":[{"delta":{"content":"chat fallback success"}}]}`)
+	var successCalls atomic.Int32
+	success := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		successCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(successBody))
+	}))
+	defer success.Close()
+
+	providers, relay := newTestRelayService(t)
+	setNamespaceRoutingDBSetting(t, "enable_blacklist", "false")
+	setNamespaceRoutingDBSetting(t, "blacklist_level_enabled", "false")
+	setCapacityTestDegradation(t, relay, false)
+	if err := providers.SaveProviders(ProviderKindCodex, []Provider{
+		{ID: 1, Name: "chat-capacity-primary", APIURL: capacity.URL, APIKey: "key-1", Enabled: true, Level: 1},
+		{ID: 2, Name: "chat-capacity-secondary", APIURL: success.URL, APIKey: "key-2", Enabled: true, Level: 2},
+	}); err != nil {
+		t.Fatalf("SaveProviders: %v", err)
+	}
+
+	recorder := performCodexNamespaceTestRequestAtPath(
+		t,
+		relay,
+		"/v1/chat/completions",
+		[]byte(`{"model":"gpt-5-codex","stream":true,"messages":[{"role":"user","content":"hi"}]}`),
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if capacityCalls.Load() != 1 || successCalls.Load() != 1 {
+		t.Fatalf("upstream calls capacity=%d success=%d, want 1/1", capacityCalls.Load(), successCalls.Load())
+	}
+	if recorder.Body.String() != successBody {
+		t.Fatalf("client response leaked capacity response:\n got: %q\nwant: %q", recorder.Body.String(), successBody)
 	}
 }
 

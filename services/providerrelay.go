@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -1375,7 +1376,11 @@ func (prs *ProviderRelayService) forwardRequest(
 			service: prs, keyID: relayKeyIDFromContext(c), provider: provider.Name, model: model,
 		})
 	}
-	if kind == ProviderKindCodex && isResponsesEndpoint(endpoint) {
+	if kind == ProviderKindCodex {
+		// Codex /responses and /v1/chat/completions can both return a
+		// capacity failure in a successful (HTTP 200) SSE/JSON envelope.
+		// Inspect both routes before handing the body to the client so the
+		// outer provider scheduler can retry and record the failure.
 		resp, err = prs.postCodexResponsesRequestWithCapacityPreflight(
 			requestCtx,
 			targetURL,
@@ -1386,8 +1391,6 @@ func (prs *ProviderRelayService) forwardRequest(
 			provider.Name,
 			historyAttempt,
 		)
-	} else if kind == ProviderKindCodex {
-		resp, err = prs.postCodexResponsesRequest(requestCtx, targetURL, query, headers, bodyBytes, provider.Name)
 	} else {
 		req := xrequest.New().
 			SetHeaders(headers).
@@ -1406,6 +1409,27 @@ func (prs *ProviderRelayService) forwardRequest(
 		var capacityErr *codexProviderCapacityError
 		if errors.As(err, &capacityErr) {
 			requestLog.HttpCode = capacityErr.StatusCode
+		}
+	}
+
+	// OpenAI-compatible providers can report model capacity in an HTTP 200
+	// response.  Claude requests converted to OpenAI Responses/Chat use the
+	// generic xrequest path, so inspect those envelopes here as well; otherwise
+	// the terminal error would be forwarded as a successful conversation.
+	if err == nil && resp != nil && kind != ProviderKindCodex && upstreamProtocol == UpstreamProtocolOpenAIChat &&
+		isOpenAICompatibleCapacityEndpoint(endpoint, targetURL) {
+		capacityErr, inspectErr := codexResponseCapacityFailure(requestCtx, resp, isStream, provider.Name)
+		if inspectErr != nil {
+			return false, inspectErr
+		}
+		if capacityErr != nil {
+			if resp.RawResponse != nil && resp.RawResponse.Body != nil {
+				_ = resp.RawResponse.Body.Close()
+			}
+			requestLog.HttpCode = capacityErr.StatusCode
+			resp = nil
+			err = capacityErr
+			logCodexCapacityFailure(provider.Name, capacityErr)
 		}
 	}
 
@@ -1593,6 +1617,25 @@ func (prs *ProviderRelayService) forwardRequest(
 
 func isResponsesEndpoint(endpoint string) bool {
 	return strings.Contains(strings.ToLower(endpoint), "/responses")
+}
+
+func isResponsesTargetURL(targetURL string) bool {
+	parsed, err := url.Parse(targetURL)
+	if err != nil || parsed.Path == "" {
+		return isResponsesEndpoint(targetURL)
+	}
+	path := strings.TrimSuffix(strings.ToLower(parsed.Path), "/")
+	return path == "/responses" || strings.HasSuffix(path, "/responses")
+}
+
+func isOpenAICompatibleCapacityEndpoint(endpoints ...string) bool {
+	for _, endpoint := range endpoints {
+		lower := strings.ToLower(endpoint)
+		if strings.Contains(lower, "/responses") || strings.Contains(lower, "/chat/completions") {
+			return true
+		}
+	}
+	return false
 }
 
 // postCodexResponsesRequest avoids xrequest's automatic curl diagnostics,
@@ -1905,16 +1948,24 @@ func (prs *ProviderRelayService) postCodexResponsesRequestWithCapacityPreflight(
 	providerName string,
 	attempt *codexHistoryAttempt,
 ) (*xrequest.Response, error) {
-	resp, err := prs.postCodexResponsesRequestWithHistoryFallback(
-		ctx,
-		targetURL,
-		query,
-		headers,
-		body,
-		isStream,
-		providerName,
-		attempt,
-	)
+	var resp *xrequest.Response
+	var err error
+	if isResponsesTargetURL(targetURL) {
+		resp, err = prs.postCodexResponsesRequestWithHistoryFallback(
+			ctx,
+			targetURL,
+			query,
+			headers,
+			body,
+			isStream,
+			providerName,
+			attempt,
+		)
+	} else {
+		// Chat Completions has no Responses history compatibility layer, but
+		// still needs the same semantic capacity inspection below.
+		resp, err = prs.postCodexResponsesRequest(ctx, targetURL, query, headers, body, providerName)
+	}
 	if err != nil || resp == nil {
 		return resp, err
 	}
@@ -2581,6 +2632,17 @@ func codexCapacityErrorFromResponseBody(body []byte) *codexProviderCapacityError
 			return capacityErr
 		}
 	}
+	// A few OpenAI-compatible gateways collapse the error into a plain text
+	// HTTP 200 body.  It cannot be an actual Responses/Chat completion when it
+	// contains this unambiguous capacity message, so classify it too.
+	if !bytes.Contains(trimmed, []byte("\n")) && !bytes.Contains(trimmed, []byte("\r")) &&
+		!bytes.Contains(trimmed, []byte("data:")) &&
+		isCodexCapacityMessage(strings.ToLower(string(trimmed))) {
+		return &codexProviderCapacityError{
+			Code:    "model_at_capacity",
+			Message: strings.TrimSpace(string(trimmed)),
+		}
+	}
 	return nil
 }
 
@@ -2593,7 +2655,16 @@ func codexCapacityErrorFromPayload(payload []byte) *codexProviderCapacityError {
 	if status == "" {
 		status = strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "status").String()))
 	}
-	if eventType != "response.failed" && eventType != "error" && status != "failed" {
+	// Responses normally marks failures with response.failed/error or a
+	// failed status.  Chat Completions providers sometimes return only an
+	// {"error": ...} object, so allow an otherwise untyped error payload too.
+	// Explicit successful terminal events must remain passthrough even if a
+	// provider includes a stale error field.
+	if eventType == "response.completed" || status == "completed" {
+		return nil
+	}
+	if eventType != "response.failed" && eventType != "error" && status != "failed" &&
+		!(eventType == "" && status == "") {
 		return nil
 	}
 
@@ -2662,6 +2733,11 @@ func logCodexCapacityFailure(providerName string, capacityErr *codexProviderCapa
 func codexPayloadHasOutput(payload []byte) bool {
 	if gjson.GetBytes(payload, "response.output.#").Int() > 0 ||
 		gjson.GetBytes(payload, "output.#").Int() > 0 ||
+		// OpenAI Chat Completions chunks expose generated output under
+		// choices rather than Responses' output/output_text fields. Treat
+		// the first chunk as output so capacity preflight does not buffer a
+		// normal long-running chat stream until its timeout.
+		gjson.GetBytes(payload, "choices.#").Int() > 0 ||
 		strings.TrimSpace(gjson.GetBytes(payload, "response.output_text").String()) != "" ||
 		strings.TrimSpace(gjson.GetBytes(payload, "output_text").String()) != "" {
 		return true
