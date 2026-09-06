@@ -46,6 +46,7 @@ const codexDegradationEnabled = ref(getCachedValue('codexDegradation', false))  
 const codexDegradationMaxResend = ref(getCachedNumber('codexDegradationMaxResend', 3))   // 最多重发次数
 const codexDegradationTokensInput = ref(getCachedString('codexDegradationTokens', '516')) // 降智特征值（逗号分隔）
 const codexTraceEnabled = ref(getCachedValue('codexTrace', false))                        // Codex 请求链路追踪开关
+const codexCapacityPreflightMaxWaitSec = ref(getCachedNumber('codexCapacityPreflightMaxWaitSec', 16))
 const logRefreshIntervalSec = ref(getCachedNumber('logRefreshIntervalSec', 30)) // 日志页默认轮询间隔（秒）
 const logFastRefreshIntervalSec = ref(getCachedNumber('logFastRefreshIntervalSec', 3)) // 日志页有活动请求时的快轮询间隔（秒）
 const notificationWebhookUrl = ref(getCachedString('notificationWebhookUrl', ''))
@@ -137,6 +138,7 @@ const loadAppSettings = async () => {
     codexDegradationMaxResend.value = Number(data?.codex_degradation_max_resend ?? 3)
     codexDegradationTokensInput.value = (data?.codex_degradation_reasoning_tokens ?? [516]).join(',')
     codexTraceEnabled.value = data?.codex_trace_enabled ?? false
+    codexCapacityPreflightMaxWaitSec.value = Number(data?.codex_capacity_preflight_max_wait_sec ?? 16)
     autoUpdateEnabled.value = data?.auto_update ?? true
     notificationWebhookUrl.value = data?.notification_webhook_url ?? ''
     notificationWebhookMethod.value = normalizeNotificationWebhookMethod(data?.notification_webhook_method ?? 'POST')
@@ -176,6 +178,7 @@ const loadAppSettings = async () => {
     localStorage.setItem('app-settings-codexDegradationMaxResend', String(codexDegradationMaxResend.value))
     localStorage.setItem('app-settings-codexDegradationTokens', codexDegradationTokensInput.value)
     localStorage.setItem('app-settings-codexTrace', String(codexTraceEnabled.value))
+    localStorage.setItem('app-settings-codexCapacityPreflightMaxWaitSec', String(codexCapacityPreflightMaxWaitSec.value))
     localStorage.setItem('app-settings-autoUpdate', String(autoUpdateEnabled.value))
     localStorage.setItem('app-settings-notificationWebhookUrl', notificationWebhookUrl.value)
     localStorage.setItem('app-settings-notificationWebhookMethod', notificationWebhookMethod.value)
@@ -213,6 +216,7 @@ const loadAppSettings = async () => {
     codexDegradationMaxResend.value = 3
     codexDegradationTokensInput.value = '516'
     codexTraceEnabled.value = false
+    codexCapacityPreflightMaxWaitSec.value = 16
     notificationWebhookUrl.value = ''
     notificationWebhookMethod.value = 'POST'
     notificationWebhookHeaders.value = DEFAULT_NOTIFICATION_WEBHOOK_HEADERS
@@ -264,6 +268,10 @@ const persistAppSettings = async (): Promise<boolean> => {
       ? Math.min(Math.max(Math.floor(codexDegradationMaxResend.value), 1), 9)
       : 3
     codexDegradationMaxResend.value = normalizedCodexDegradationMaxResend
+    const normalizedCodexCapacityPreflightMaxWaitSec = Number.isFinite(codexCapacityPreflightMaxWaitSec.value)
+      ? Math.min(Math.max(Math.floor(codexCapacityPreflightMaxWaitSec.value), 2), 120)
+      : 16
+    codexCapacityPreflightMaxWaitSec.value = normalizedCodexCapacityPreflightMaxWaitSec
     const normalizedCodexDegradationTokens = Array.from(
       new Set(
         codexDegradationTokensInput.value
@@ -310,6 +318,7 @@ const persistAppSettings = async (): Promise<boolean> => {
       codex_degradation_max_resend: normalizedCodexDegradationMaxResend,
       codex_degradation_reasoning_tokens: normalizedCodexDegradationTokens,
       codex_trace_enabled: codexTraceEnabled.value,
+      codex_capacity_preflight_max_wait_sec: normalizedCodexCapacityPreflightMaxWaitSec,
       auto_update: autoUpdateEnabled.value,
       notification_webhook_url: notificationWebhookUrl.value.trim(),
       notification_webhook_method: normalizedNotificationWebhookMethod,
@@ -355,6 +364,7 @@ const persistAppSettings = async (): Promise<boolean> => {
     localStorage.setItem('app-settings-codexDegradationMaxResend', String(codexDegradationMaxResend.value))
     localStorage.setItem('app-settings-codexDegradationTokens', codexDegradationTokensInput.value)
     localStorage.setItem('app-settings-codexTrace', String(codexTraceEnabled.value))
+    localStorage.setItem('app-settings-codexCapacityPreflightMaxWaitSec', String(codexCapacityPreflightMaxWaitSec.value))
     localStorage.setItem('app-settings-autoUpdate', String(autoUpdateEnabled.value))
     localStorage.setItem('app-settings-notificationWebhookUrl', notificationWebhookUrl.value.trim())
     localStorage.setItem('app-settings-notificationWebhookMethod', normalizedNotificationWebhookMethod)
@@ -754,6 +764,26 @@ onMounted(async () => {
                 <span></span>
               </label>
               <span class="hint-text">{{ $t('components.general.label.codexTraceHint') }}</span>
+            </div>
+          </ListItem>
+        </div>
+      </section>
+
+      <section>
+        <h2 class="mac-section-title">{{ $t('components.general.title.codexCapacity') }}</h2>
+        <div class="mac-panel">
+          <ListItem :label="$t('components.general.label.codexCapacityPreflightMaxWait')">
+            <div class="toggle-with-hint">
+              <input
+                type="number"
+                class="mac-input"
+                min="2"
+                max="120"
+                :disabled="settingsLoading || saveBusy"
+                v-model.number="codexCapacityPreflightMaxWaitSec"
+                @change="persistAppSettings"
+              />
+              <span class="hint-text">{{ $t('components.general.label.codexCapacityPreflightMaxWaitHint') }}</span>
             </div>
           </ListItem>
         </div>

@@ -1418,7 +1418,7 @@ func (prs *ProviderRelayService) forwardRequest(
 	// the terminal error would be forwarded as a successful conversation.
 	if err == nil && resp != nil && kind != ProviderKindCodex && upstreamProtocol == UpstreamProtocolOpenAIChat &&
 		isOpenAICompatibleCapacityEndpoint(endpoint, targetURL) {
-		capacityErr, inspectErr := codexResponseCapacityFailure(requestCtx, resp, isStream, provider.Name)
+		capacityErr, inspectErr := codexResponseCapacityFailure(requestCtx, resp, isStream, provider.Name, prs.appSettings.CodexCapacityPreflightMaxWait())
 		if inspectErr != nil {
 			return false, inspectErr
 		}
@@ -1970,7 +1970,7 @@ func (prs *ProviderRelayService) postCodexResponsesRequestWithCapacityPreflight(
 		return resp, err
 	}
 
-	capacityErr, inspectErr := codexResponseCapacityFailure(ctx, resp, isStream, providerName)
+	capacityErr, inspectErr := codexResponseCapacityFailure(ctx, resp, isStream, providerName, prs.appSettings.CodexCapacityPreflightMaxWait())
 	if inspectErr != nil {
 		return resp, inspectErr
 	}
@@ -2146,6 +2146,7 @@ func inspectCodexResponsePreflight(
 	inspectJSON codexJSONPreflightDecision,
 	eofSSERetry bool,
 	eofSSEReason string,
+	capacityMaxWait ...time.Duration,
 ) (bool, string, error) {
 	if resp == nil || resp.RawResponse == nil || resp.RawResponse.Body == nil {
 		return false, "", nil
@@ -2248,6 +2249,9 @@ func inspectCodexResponsePreflight(
 		// trigger provider retry without delaying ordinary streams past their
 		// first delta.
 		preflightTimeout *= 8
+		if len(capacityMaxWait) > 0 && capacityMaxWait[0] > 0 {
+			preflightTimeout = capacityMaxWait[0]
+		}
 	}
 	timer := time.NewTimer(codexResponsePreflightTimeout)
 	defer timer.Stop()
@@ -2259,9 +2263,16 @@ func inspectCodexResponsePreflight(
 			logCodexPreflight(providerName, stage, "client_canceled", startedAt, firstEventAt, len(prefix))
 			return false, "", ctx.Err()
 		case <-timer.C:
-			if stage == "capacity" && !sawOutput && time.Since(startedAt) < preflightTimeout {
-				timer.Reset(codexResponsePreflightTimeout)
-				continue
+			if stage == "capacity" && !sawOutput {
+				elapsed := time.Since(startedAt)
+				if elapsed < preflightTimeout {
+					remaining := preflightTimeout - elapsed
+					if remaining > codexResponsePreflightTimeout {
+						remaining = codexResponsePreflightTimeout
+					}
+					timer.Reset(remaining)
+					continue
+				}
 			}
 			// A slow upstream may have already delivered a complete capacity
 			// error event before the bounded preflight timer fired. Inspect the
@@ -2589,7 +2600,7 @@ func codexResponseNeedsProviderHistoryFallback(ctx context.Context, resp *xreque
 	)
 }
 
-func codexResponseCapacityFailure(ctx context.Context, resp *xrequest.Response, requestedStream bool, providerName string) (*codexProviderCapacityError, error) {
+func codexResponseCapacityFailure(ctx context.Context, resp *xrequest.Response, requestedStream bool, providerName string, capacityMaxWait ...time.Duration) (*codexProviderCapacityError, error) {
 	if resp == nil || resp.RawResponse == nil {
 		return nil, nil
 	}
@@ -2637,6 +2648,7 @@ func codexResponseCapacityFailure(ctx context.Context, resp *xrequest.Response, 
 		},
 		false,
 		"",
+		capacityMaxWait...,
 	)
 	if inspectErr != nil {
 		return nil, inspectErr

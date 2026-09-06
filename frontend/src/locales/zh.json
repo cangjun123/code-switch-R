@@ -782,6 +782,7 @@
         "connectivity": "连通性检测",
         "codexDegradation": "Codex 降智检测",
         "codexTrace": "Codex 请求链路追踪",
+        "codexCapacity": "Codex 容量错误预检",
         "logsPolling": "日志监控"
       },
       "label": {
@@ -848,6 +849,9 @@
         "codexDegradationThresholdHint": "reasoning_tokens 恰好等于其中任一值即判定降智。多个值用英文逗号分隔（如 516,1030）。留空则关闭检测。",
         "codexTrace": "Codex 请求链路追踪",
         "codexTraceHint": "开启后每个 Codex 请求在后台日志输出分段耗时（quota 等待、上游连接、上传、首 token 等），用于定位慢请求。仅记录耗时与大小，不记录请求内容。",
+        "codexCapacity": "Codex 容量错误预检",
+        "codexCapacityPreflightMaxWait": "容量预检最大等待时间（秒）",
+        "codexCapacityPreflightMaxWaitHint": "未收到真实输出时等待容量错误的最长时间（2–120 秒）。收到真实输出或明确错误后立即结束。",
         "autoUpdate": "自动更新",
         "lastCheck": "上次检查",
         "currentVersion": "当前版本",
