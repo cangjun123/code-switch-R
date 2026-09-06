@@ -36,6 +36,7 @@ export type AppSettings = {
   codex_degradation_max_resend: number
   codex_degradation_reasoning_tokens: number[]
   codex_trace_enabled: boolean
+  codex_capacity_preflight_max_wait_sec: number
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -74,6 +75,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   codex_degradation_max_resend: 3,
   codex_degradation_reasoning_tokens: [516],
   codex_trace_enabled: false,
+  codex_capacity_preflight_max_wait_sec: 16,
 }
 
 export const fetchAppSettings = async (): Promise<AppSettings> => {

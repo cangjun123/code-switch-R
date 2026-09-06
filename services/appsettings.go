@@ -15,6 +15,12 @@ const (
 	appSettingsFileName = "app.json"
 	oldSettingsDir      = ".codex-swtich"               // 旧的错误拼写
 	migrationMarkerFile = ".migrated-from-codex-swtich" // 迁移标记文件
+
+	// Codex capacity preflight wait bounds. The default preserves the current
+	// behaviour while preventing an accidental unbounded request hold.
+	CodexCapacityPreflightMinWaitSec     = 2
+	CodexCapacityPreflightMaxWaitSec     = 120
+	CodexCapacityPreflightDefaultWaitSec = 16
 )
 
 type AppSettings struct {
@@ -60,6 +66,9 @@ type AppSettings struct {
 	// Codex 请求链路追踪：每个 Codex 请求在后台日志输出分段耗时（认证、
 	// quota 等待、调度、上游连接/上传、首 token 等）。默认关闭。
 	CodexTraceEnabled bool `json:"codex_trace_enabled"`
+
+	// Codex 容量预检最长等待时间（秒）。
+	CodexCapacityPreflightMaxWaitSec int `json:"codex_capacity_preflight_max_wait_sec"`
 }
 
 type persistedAppSettings struct {
@@ -292,7 +301,8 @@ func (as *AppSettingsService) defaultSettings() AppSettings {
 		CodexDegradationMaxResend:       3,
 		CodexDegradationReasoningTokens: []int{516},
 
-		CodexTraceEnabled: false,
+		CodexTraceEnabled:                false,
+		CodexCapacityPreflightMaxWaitSec: CodexCapacityPreflightDefaultWaitSec,
 	}
 }
 
@@ -316,6 +326,13 @@ func (as *AppSettingsService) GetAppSettings() (AppSettings, error) {
 	}
 	if s.LogFastRefreshIntervalSec <= 0 {
 		s.LogFastRefreshIntervalSec = 3
+	}
+	if s.CodexCapacityPreflightMaxWaitSec == 0 {
+		s.CodexCapacityPreflightMaxWaitSec = CodexCapacityPreflightDefaultWaitSec
+	} else if s.CodexCapacityPreflightMaxWaitSec < CodexCapacityPreflightMinWaitSec {
+		s.CodexCapacityPreflightMaxWaitSec = CodexCapacityPreflightMinWaitSec
+	} else if s.CodexCapacityPreflightMaxWaitSec > CodexCapacityPreflightMaxWaitSec {
+		s.CodexCapacityPreflightMaxWaitSec = CodexCapacityPreflightMaxWaitSec
 	}
 	return s, nil
 }
@@ -349,11 +366,40 @@ func (as *AppSettingsService) SaveAppSettings(settings AppSettings) (AppSettings
 			}
 		}
 	}
+	if settings.CodexCapacityPreflightMaxWaitSec == 0 {
+		settings.CodexCapacityPreflightMaxWaitSec = CodexCapacityPreflightDefaultWaitSec
+	} else if settings.CodexCapacityPreflightMaxWaitSec < CodexCapacityPreflightMinWaitSec {
+		settings.CodexCapacityPreflightMaxWaitSec = CodexCapacityPreflightMinWaitSec
+	} else if settings.CodexCapacityPreflightMaxWaitSec > CodexCapacityPreflightMaxWaitSec {
+		settings.CodexCapacityPreflightMaxWaitSec = CodexCapacityPreflightMaxWaitSec
+	}
 
 	if err := as.saveLocked(settings); err != nil {
 		return settings, err
 	}
 	return settings, nil
+}
+
+// CodexCapacityPreflightMaxWait returns the configured capacity preflight
+// limit. It is intentionally read at request time so changing settings takes
+// effect for subsequent requests without restarting the service.
+func (as *AppSettingsService) CodexCapacityPreflightMaxWait() time.Duration {
+	if as == nil {
+		return time.Duration(CodexCapacityPreflightDefaultWaitSec) * time.Second
+	}
+	settings, err := as.GetAppSettings()
+	if err != nil {
+		return time.Duration(CodexCapacityPreflightDefaultWaitSec) * time.Second
+	}
+	seconds := settings.CodexCapacityPreflightMaxWaitSec
+	if seconds == 0 {
+		seconds = CodexCapacityPreflightDefaultWaitSec
+	} else if seconds < CodexCapacityPreflightMinWaitSec {
+		seconds = CodexCapacityPreflightMinWaitSec
+	} else if seconds > CodexCapacityPreflightMaxWaitSec {
+		seconds = CodexCapacityPreflightMaxWaitSec
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func (as *AppSettingsService) loadLocked() (AppSettings, error) {
