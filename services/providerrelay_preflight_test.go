@@ -177,6 +177,47 @@ func TestCodexHistoryPreflightTimeoutPassesThroughByteExact(t *testing.T) {
 	}
 }
 
+func TestCodexCapacityPreflightTimeoutInspectsBufferedPrefix(t *testing.T) {
+	useCodexPreflightTimeout(t, 40*time.Millisecond)
+
+	reader, writer := io.Pipe()
+	resp := newCodexPreflightTestResponse(http.StatusOK, "text/event-stream", reader)
+	resultCh := make(chan *codexProviderCapacityError, 1)
+	errorCh := make(chan error, 1)
+	go func() {
+		capacityErr, err := codexResponseCapacityFailure(context.Background(), resp, true, "timeout-capacity-provider")
+		if err != nil {
+			errorCh <- err
+			return
+		}
+		resultCh <- capacityErr
+	}()
+
+	prefix := strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"status":"in_progress","output":[]}}`,
+		"",
+		"event: response.failed",
+		`data: {"type":"response.failed","response":{"status":"failed","error":{"message":"Selected model is at capacity. Please try a different model."}}}`,
+		"",
+	}, "\n")
+	if _, err := io.WriteString(writer, prefix); err != nil {
+		t.Fatalf("write capacity prefix: %v", err)
+	}
+
+	select {
+	case err := <-errorCh:
+		t.Fatalf("capacity preflight error: %v", err)
+	case capacityErr := <-resultCh:
+		if capacityErr == nil || capacityErr.Code != "model_at_capacity" {
+			t.Fatalf("capacity error = %#v, want model_at_capacity", capacityErr)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("capacity preflight did not inspect buffered timeout prefix")
+	}
+	_ = writer.Close()
+}
+
 func TestCodexHistoryPreflightSizeLimitPassesThroughByteExact(t *testing.T) {
 	useCodexPreflightTimeout(t, time.Second)
 

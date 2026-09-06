@@ -102,8 +102,10 @@ func TestCodexCapacityErrorFromPayload(t *testing.T) {
 			wantMessage: "Selected model is at capacity. Please try a different model.",
 		},
 		{
-			name:    "message without code is ignored",
-			payload: `{"type":"response.failed","response":{"status":"failed","error":{"message":"Selected model is at capacity. Please try a different model."}}}`,
+			name:        "message without code falls back to native capacity code",
+			payload:     `{"type":"response.failed","response":{"status":"failed","error":{"message":"Selected model is at capacity. Please try a different model."}}}`,
+			wantCode:    "model_at_capacity",
+			wantMessage: "Selected model is at capacity. Please try a different model.",
 		},
 		{
 			name:    "unknown code without capacity message is ignored",

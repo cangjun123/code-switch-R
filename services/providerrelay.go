@@ -2183,6 +2183,12 @@ func inspectCodexResponsePreflight(
 		}
 		return finishPassthrough("normal", false)
 	}
+	inspectBufferedCapacity := func() (bool, string, error) {
+		if stage != "capacity" || inspectJSON == nil {
+			return false, "", nil
+		}
+		return inspectJSON(prefix)
+	}
 	inspectSSELine := func(line []byte) (bool, bool, string) {
 		payload, isData := codexSSEDataPayload(line)
 		if !isData {
@@ -2208,6 +2214,18 @@ func inspectCodexResponsePreflight(
 			logCodexPreflight(providerName, stage, "client_canceled", startedAt, firstEventAt, len(prefix))
 			return false, "", ctx.Err()
 		case <-timer.C:
+			// A slow upstream may have already delivered a complete capacity
+			// error event before the bounded preflight timer fired. Inspect the
+			// buffered prefix once more instead of fail-opening that error as a
+			// successful HTTP 200 stream.
+			if retry, reason, inspectErr := inspectBufferedCapacity(); inspectErr != nil {
+				_ = stream.Close()
+				replaceCodexResponseBody(resp, prefix)
+				logCodexPreflight(providerName, stage, "inspect_error", startedAt, firstEventAt, len(prefix))
+				return false, "", inspectErr
+			} else if retry {
+				return finishDecision(true, reason)
+			}
 			return finishPassthrough("timeout_passthrough", true)
 		case chunk, ok := <-stream.chunks:
 			if !ok {
@@ -2235,6 +2253,14 @@ func inspectCodexResponsePreflight(
 					}
 				}
 				if len(prefix) >= codexHistoryPreflightMaxBytes {
+					if retry, reason, inspectErr := inspectBufferedCapacity(); inspectErr != nil {
+						_ = stream.Close()
+						replaceCodexResponseBody(resp, prefix)
+						logCodexPreflight(providerName, stage, "inspect_error", startedAt, firstEventAt, len(prefix))
+						return false, "", inspectErr
+					} else if retry {
+						return finishDecision(true, reason)
+					}
 					return finishPassthrough("size_passthrough", true)
 				}
 			}
@@ -2535,6 +2561,15 @@ func codexResponseCapacityFailure(ctx context.Context, resp *xrequest.Response, 
 				matched = capacityErr
 				return true, true, capacityErr.Code
 			}
+			// Some gateways put the capacity sentence directly in the SSE
+			// data field instead of returning a JSON error object.
+			if isCodexCapacityMessage(strings.ToLower(string(payload))) {
+				matched = &codexProviderCapacityError{
+					Code:    "model_at_capacity",
+					Message: strings.TrimSpace(string(payload)),
+				}
+				return true, true, matched.Code
+			}
 			if !gjson.ValidBytes(payload) {
 				return false, false, ""
 			}
@@ -2631,6 +2666,12 @@ func codexCapacityErrorFromResponseBody(body []byte) *codexProviderCapacityError
 		if capacityErr := codexCapacityErrorFromPayload(payload); capacityErr != nil {
 			return capacityErr
 		}
+		if isCodexCapacityMessage(strings.ToLower(string(payload))) {
+			return &codexProviderCapacityError{
+				Code:    "model_at_capacity",
+				Message: strings.TrimSpace(string(payload)),
+			}
+		}
 	}
 	// A few OpenAI-compatible gateways collapse the error into a plain text
 	// HTTP 200 body.  It cannot be an actual Responses/Chat completion when it
@@ -2679,7 +2720,10 @@ func codexCapacityErrorFromPayload(payload []byte) *codexProviderCapacityError {
 		message := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, errorPath+".message").String()))
 		// 兜底：上游可能省略或更换错误码（如 OpenAI 原生 model_at_capacity 之外的变体），
 		// 只要失败事件里出现容量文案且尚未产生任何输出，就按容量错误处理。
-		if code != "" && isCodexCapacityMessage(message) {
+		if isCodexCapacityMessage(message) {
+			if code == "" {
+				code = "model_at_capacity"
+			}
 			return &codexProviderCapacityError{
 				Code:    code,
 				Message: strings.TrimSpace(gjson.GetBytes(payload, errorPath+".message").String()),
