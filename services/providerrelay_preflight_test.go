@@ -218,6 +218,31 @@ func TestCodexCapacityPreflightTimeoutInspectsBufferedPrefix(t *testing.T) {
 	_ = writer.Close()
 }
 
+func TestCodexCapacityPreflightRunsAfterHistoryFailOpen(t *testing.T) {
+	body := strings.Join([]string{
+		"event: response.failed",
+		`data: {"type":"response.failed","response":{"status":"failed","error":{"code":"model_at_capacity","message":"Selected model is at capacity. Please try a different model."}}}`,
+		"",
+	}, "\n")
+	resp := newCodexPreflightTestResponse(
+		http.StatusOK,
+		"text/event-stream",
+		&replayResponseBody{
+			Reader:   strings.NewReader(body),
+			Closer:   io.NopCloser(strings.NewReader("")),
+			failOpen: true,
+		},
+	)
+
+	capacityErr, err := codexResponseCapacityFailure(context.Background(), resp, true, "history-fail-open-provider")
+	if err != nil {
+		t.Fatalf("capacity preflight error: %v", err)
+	}
+	if capacityErr == nil || capacityErr.Code != "model_at_capacity" {
+		t.Fatalf("capacity error = %#v, want model_at_capacity", capacityErr)
+	}
+}
+
 func TestCodexHistoryPreflightSizeLimitPassesThroughByteExact(t *testing.T) {
 	useCodexPreflightTimeout(t, time.Second)
 
