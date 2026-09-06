@@ -2788,8 +2788,6 @@ func codexPayloadHasOutput(payload []byte) bool {
 	}
 	eventType := gjson.GetBytes(payload, "type").String()
 	return strings.HasPrefix(eventType, "response.output_text.") ||
-		strings.HasPrefix(eventType, "response.output_item.") ||
-		strings.HasPrefix(eventType, "response.content_part.") ||
 		strings.HasPrefix(eventType, "response.function_call_arguments.") ||
 		strings.HasPrefix(eventType, "response.custom_tool_call_input.") ||
 		strings.HasPrefix(eventType, "response.reasoning")

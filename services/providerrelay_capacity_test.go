@@ -512,3 +512,26 @@ func TestCodexDegradationBufferDetectsCapacityAfterOutput(t *testing.T) {
 		t.Fatalf("capacity response leaked to client: %q", recorder.Body.String())
 	}
 }
+
+func TestCodexCapacityPreflightIgnoresOutputMetadataBeforeFailure(t *testing.T) {
+	body := strings.Join([]string{
+		"event: response.output_item.added",
+		`data: {"type":"response.output_item.added","item":{"type":"message"}}`,
+		"",
+		"event: response.failed",
+		`data: {"type":"response.failed","response":{"status":"failed","error":{"code":"model_at_capacity","message":"Selected model is at capacity. Please try a different model."}}}`,
+		"",
+	}, "\n")
+	resp := newCodexPreflightTestResponse(
+		http.StatusOK,
+		"text/event-stream",
+		io.NopCloser(strings.NewReader(body)),
+	)
+	capacityErr, err := codexResponseCapacityFailure(context.Background(), resp, true, "metadata-capacity-provider")
+	if err != nil {
+		t.Fatalf("capacity preflight error: %v", err)
+	}
+	if capacityErr == nil || capacityErr.Code != "model_at_capacity" {
+		t.Fatalf("capacity error = %#v, want model_at_capacity", capacityErr)
+	}
+}
