@@ -2150,7 +2150,7 @@ func inspectCodexResponsePreflight(
 	if resp == nil || resp.RawResponse == nil || resp.RawResponse.Body == nil {
 		return false, "", nil
 	}
-	if codexResponsePreflightFailedOpen(resp) {
+	if codexResponsePreflightFailedOpen(resp) && stage != "capacity" {
 		return false, "", nil
 	}
 
