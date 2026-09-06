@@ -2160,6 +2160,7 @@ func inspectCodexResponsePreflight(
 	lineBuffer := make([]byte, 0, 8*1024)
 	currentEventType := ""
 	firstEventAt := time.Time{}
+	sawOutput := false
 	mode := codexPreflightModeUnknown
 	defaultMode := codexPreflightModeUnknown
 	contentType := strings.ToLower(resp.RawResponse.Header.Get("Content-Type"))
@@ -2222,6 +2223,9 @@ func inspectCodexResponsePreflight(
 		if inspectSSE == nil {
 			return false, false, ""
 		}
+		if codexPayloadHasOutput(payload) || codexSSEEventHasOutput(currentEventType) {
+			sawOutput = true
+		}
 		done, retry, reason := inspectSSE(payload)
 		if done {
 			return done, retry, reason
@@ -2236,6 +2240,15 @@ func inspectCodexResponsePreflight(
 		return false, false, ""
 	}
 
+	preflightTimeout := codexResponsePreflightTimeout
+	if stage == "capacity" {
+		// Capacity failures often arrive after several metadata events. Allow
+		// repeated bounded waits (8x the normal preflight window) while no
+		// actual output has appeared, so a late response.failed event can still
+		// trigger provider retry without delaying ordinary streams past their
+		// first delta.
+		preflightTimeout *= 8
+	}
 	timer := time.NewTimer(codexResponsePreflightTimeout)
 	defer timer.Stop()
 	for {
@@ -2246,6 +2259,10 @@ func inspectCodexResponsePreflight(
 			logCodexPreflight(providerName, stage, "client_canceled", startedAt, firstEventAt, len(prefix))
 			return false, "", ctx.Err()
 		case <-timer.C:
+			if stage == "capacity" && !sawOutput && time.Since(startedAt) < preflightTimeout {
+				timer.Reset(codexResponsePreflightTimeout)
+				continue
+			}
 			// A slow upstream may have already delivered a complete capacity
 			// error event before the bounded preflight timer fired. Inspect the
 			// buffered prefix once more instead of fail-opening that error as a

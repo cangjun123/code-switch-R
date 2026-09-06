@@ -241,6 +241,30 @@ func TestCodexCapacityPreflightTimeoutDetectsTruncatedFailure(t *testing.T) {
 	_ = writer.Close()
 }
 
+func TestCodexCapacityPreflightWaitsForLateFailureBeforeOutput(t *testing.T) {
+	useCodexPreflightTimeout(t, 20*time.Millisecond)
+	reader, writer := io.Pipe()
+	resp := newCodexPreflightTestResponse(http.StatusOK, "text/event-stream", reader)
+	resultCh := make(chan *codexProviderCapacityError, 1)
+	go func() {
+		capacityErr, _ := codexResponseCapacityFailure(context.Background(), resp, true, "late-capacity-provider")
+		resultCh <- capacityErr
+	}()
+	_, _ = io.WriteString(writer, "event: response.created\ndata: {\"type\":\"response.created\"}\n\n")
+	time.Sleep(35 * time.Millisecond)
+	late := "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"model_at_capacity\",\"message\":\"Selected model is at capacity. Please try a different model.\"}}}\n\n"
+	_, _ = io.WriteString(writer, late)
+	select {
+	case capacityErr := <-resultCh:
+		if capacityErr == nil || capacityErr.Code != "model_at_capacity" {
+			t.Fatalf("capacity error = %#v, want model_at_capacity", capacityErr)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("late capacity failure was not detected")
+	}
+	_ = writer.Close()
+}
+
 func TestCodexCapacityPreflightRunsAfterHistoryFailOpen(t *testing.T) {
 	body := strings.Join([]string{
 		"event: response.failed",
