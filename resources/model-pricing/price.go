@@ -89,47 +89,21 @@ func KnownOpenAIModelPrices() ([]KnownModelPrice, error) {
 }
 
 func loadKnownOpenAIModelPrices() {
-	raw := make(map[string]PricingEntry)
-	if err := json.Unmarshal(pricingFile, &raw); err != nil {
-		openAIErr = fmt.Errorf("parse pricing file for OpenAI prices: %w", err)
-		return
-	}
-	merged := make(map[string]KnownModelPrice)
-	for model, entry := range raw {
-		if entry.LiteLLMProvider != "openai" || (entry.Mode != "chat" && entry.Mode != "responses") {
-			continue
-		}
-		output := perTokenPriceToMillion(entry.OutputCostPerToken)
-		reasoning := perTokenPriceToMillion(entry.OutputCostPerReasoningToken)
-		if reasoning == "0" {
-			reasoning = output
-		}
-		merged[model] = KnownModelPrice{
-			Model: model, Input: perTokenPriceToMillion(entry.InputCostPerToken),
-			CachedInput: perTokenPriceToMillion(entry.CacheReadInputTokenCost),
-			Output:      output, ReasoningOutput: reasoning,
-		}
-	}
-
 	var supplemental bundledOpenAIPriceFile
 	if err := json.Unmarshal(openAIPriceFile, &supplemental); err != nil {
 		openAIErr = fmt.Errorf("parse bundled OpenAI pricing file: %w", err)
 		return
 	}
+	openAIPrices = make([]KnownModelPrice, 0, len(supplemental.Models))
 	for model, price := range supplemental.Models {
 		reasoning := price.ReasoningOutput
 		if reasoning == "" {
 			reasoning = price.Output
 		}
-		merged[model] = KnownModelPrice{
+		openAIPrices = append(openAIPrices, KnownModelPrice{
 			Model: model, Input: price.Input, CachedInput: price.CachedInput,
 			Output: price.Output, ReasoningOutput: reasoning,
-		}
-	}
-
-	openAIPrices = make([]KnownModelPrice, 0, len(merged))
-	for _, price := range merged {
-		openAIPrices = append(openAIPrices, price)
+		})
 	}
 	sort.Slice(openAIPrices, func(i, j int) bool { return openAIPrices[i].Model < openAIPrices[j].Model })
 }
