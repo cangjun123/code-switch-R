@@ -200,7 +200,7 @@ func TestRelayQuotaBuiltinPricesCanBeOverriddenAndRestored(t *testing.T) {
 			t.Fatalf("database after initialization: %v", err)
 		}
 	}
-	const model = "gpt-5.3-codex"
+	const model = "gpt-5.6-luna"
 	if _, err := db.Exec("DELETE FROM relay_model_price WHERE model = ?", model); err != nil {
 		t.Fatalf("clear model override: %v", err)
 	}
@@ -217,15 +217,20 @@ func TestRelayQuotaBuiltinPricesCanBeOverriddenAndRestored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list built-in prices: %v", err)
 	}
-	if len(prices) < 100 {
-		t.Fatalf("expected the complete bundled OpenAI price list, got %d entries", len(prices))
+	if len(prices) != 5 {
+		t.Fatalf("expected exactly 5 curated OpenAI price list entries, got %d entries: %+v", len(prices), prices)
 	}
 	builtin := relayQuotaTestFindPrice(prices, model)
-	if builtin == nil || builtin.Source != "builtin" || builtin.Input != "1.75" || builtin.CachedInput != "0.175" || builtin.Output != "14" || builtin.ReasoningOutput != "14" {
+	if builtin == nil || builtin.Source != "builtin" || builtin.Input != "1" || builtin.CachedInput != "0.1" || builtin.Output != "6" || builtin.ReasoningOutput != "6" {
 		t.Fatalf("unexpected built-in price: %+v", builtin)
 	}
-	if relayQuotaTestFindPrice(prices, "gpt-5.6") == nil {
-		t.Fatal("newer bundled OpenAI prices were not listed")
+	for _, expectedModel := range []string{"gpt-5.5", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-astra"} {
+		if relayQuotaTestFindPrice(prices, expectedModel) == nil {
+			t.Fatalf("expected curated model %s was not listed", expectedModel)
+		}
+	}
+	if relayQuotaTestFindPrice(prices, "gpt-4") != nil || relayQuotaTestFindPrice(prices, "gpt-5.3-codex") != nil {
+		t.Fatal("unselected models were unexpectedly listed in built-in prices")
 	}
 	now := time.Now().Unix()
 	if _, err := db.Exec(`
@@ -245,7 +250,7 @@ func TestRelayQuotaBuiltinPricesCanBeOverriddenAndRestored(t *testing.T) {
 	}
 
 	record, priced, err := quota.lookupModelPrice(model)
-	if err != nil || !priced || record.InputNano != 1_750_000_000 || record.OutputNano != 14_000_000_000 {
+	if err != nil || !priced || record.InputNano != 1_000_000_000 || record.OutputNano != 6_000_000_000 {
 		t.Fatalf("lookup built-in price: record=%+v priced=%v err=%v", record, priced, err)
 	}
 	custom, err := quota.UpsertModelPrice(RelayModelPrice{
@@ -265,7 +270,7 @@ func TestRelayQuotaBuiltinPricesCanBeOverriddenAndRestored(t *testing.T) {
 		t.Fatalf("restore model override: %v", err)
 	}
 	record, priced, err = quota.lookupModelPrice(model)
-	if err != nil || !priced || record.InputNano != 1_750_000_000 {
+	if err != nil || !priced || record.InputNano != 1_000_000_000 {
 		t.Fatalf("built-in price was not restored: record=%+v priced=%v err=%v", record, priced, err)
 	}
 
