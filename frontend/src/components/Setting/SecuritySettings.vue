@@ -65,6 +65,7 @@ const accessBusyId = ref('')
 const modelPrices = ref<CodexRelayModelPrice[]>([])
 const unpricedModels = ref<CodexRelayUnpricedModel[]>([])
 const pricesLoading = ref(false)
+const pricesCollapsed = ref(true)
 const priceBusyModel = ref('')
 const priceDraft = ref<CodexRelayModelPrice>({
   model: '', input: '0', cachedInput: '0', output: '0', reasoningOutput: '0',
@@ -362,6 +363,7 @@ const handleRefreshQuota = async (key: CodexRelayKeyListItem) => {
 }
 
 const editPrice = (price: CodexRelayModelPrice) => {
+  pricesCollapsed.value = false
   priceDraft.value = {
     model: price.model,
     input: price.input,
@@ -394,15 +396,14 @@ const handleSavePrice = async () => {
   }
 }
 
-const handleDeletePrice = async (price: CodexRelayModelPrice) => {
-  const restoreDefault = !!price.canRestoreDefault
+const handleDeletePrice = async (price: CodexRelayModelPrice, restoreDefault = false) => {
   const confirmKey = restoreDefault ? 'auth.security.restorePriceConfirm' : 'auth.security.deletePriceConfirm'
   if (!window.confirm(t(confirmKey, { model: price.model }))) {
     return
   }
   priceBusyModel.value = price.model
   try {
-    await deleteCodexRelayModelPrice(price.model)
+    await deleteCodexRelayModelPrice(price.model, restoreDefault)
     if (priceDraft.value.model === price.model) clearPriceDraft()
     await loadPrices()
     showToast(t(restoreDefault ? 'auth.security.priceRestored' : 'auth.security.priceDeleted'), 'success')
@@ -821,37 +822,60 @@ onMounted(async () => {
           <h3 class="security-card-title">{{ t('auth.security.pricesTitle') }}</h3>
           <p class="security-card-description">{{ t('auth.security.pricesDescription') }}</p>
         </div>
+        <button
+          type="button"
+          class="security-btn secondary"
+          @click="pricesCollapsed = !pricesCollapsed"
+        >
+          {{ pricesCollapsed ? t('common.expand') : t('common.collapse') }}
+        </button>
       </div>
-      <div v-if="unpricedModels.length" class="unpriced-warning">
-        {{ t('auth.security.unpricedWarning', { count: unpricedModels.length }) }}
-        <span v-for="model in unpricedModels" :key="model.model" class="unpriced-model">{{ model.model }}</span>
-      </div>
-      <div class="price-editor">
-        <input v-model="priceDraft.model" class="base-input" :placeholder="t('auth.security.modelName')" />
-        <input v-model="priceDraft.input" class="base-input" inputmode="decimal" :placeholder="t('auth.security.inputPrice')" />
-        <input v-model="priceDraft.cachedInput" class="base-input" inputmode="decimal" :placeholder="t('auth.security.cachedInputPrice')" />
-        <input v-model="priceDraft.output" class="base-input" inputmode="decimal" :placeholder="t('auth.security.outputPrice')" />
-        <input v-model="priceDraft.reasoningOutput" class="base-input" inputmode="decimal" :placeholder="t('auth.security.reasoningPrice')" />
-        <button class="security-btn" :disabled="pricesLoading" @click="handleSavePrice">{{ t('auth.security.savePrice') }}</button>
-        <button class="security-btn secondary" :disabled="pricesLoading" @click="clearPriceDraft">{{ t('common.cancel') }}</button>
-      </div>
-      <div v-if="pricesLoading" class="security-empty">{{ t('auth.security.loadingPrices') }}</div>
-      <div v-else-if="modelPrices.length === 0" class="security-empty">{{ t('auth.security.emptyPrices') }}</div>
-      <div v-else class="price-list">
-        <article v-for="price in modelPrices" :key="price.model" class="price-row">
-          <div class="price-model">
-            <strong>{{ price.model }}</strong>
-            <span class="price-source" :class="price.source">{{ t(price.source === 'custom' ? 'auth.security.priceSourceCustom' : 'auth.security.priceSourceBuiltin') }}</span>
-          </div>
-          <span>{{ t('auth.security.inputShort') }} {{ price.input }}</span>
-          <span>{{ t('auth.security.cachedShort') }} {{ price.cachedInput }}</span>
-          <span>{{ t('auth.security.outputShort') }} {{ price.output }}</span>
-          <span>{{ t('auth.security.reasoningShort') }} {{ price.reasoningOutput }}</span>
-          <div class="security-key-actions">
-            <button class="security-btn secondary" @click="editPrice(price)">{{ t('auth.security.editPrice') }}</button>
-            <button v-if="price.source === 'custom'" class="security-btn danger" :disabled="priceBusyModel === price.model" @click="handleDeletePrice(price)">{{ t(price.canRestoreDefault ? 'auth.security.restorePrice' : 'auth.security.deletePrice') }}</button>
-          </div>
-        </article>
+      <div v-show="!pricesCollapsed" class="prices-card-body">
+        <div v-if="unpricedModels.length" class="unpriced-warning">
+          {{ t('auth.security.unpricedWarning', { count: unpricedModels.length }) }}
+          <span v-for="model in unpricedModels" :key="model.model" class="unpriced-model">{{ model.model }}</span>
+        </div>
+        <div class="price-editor">
+          <input v-model="priceDraft.model" class="base-input" :placeholder="t('auth.security.modelName')" />
+          <input v-model="priceDraft.input" class="base-input" inputmode="decimal" :placeholder="t('auth.security.inputPrice')" />
+          <input v-model="priceDraft.cachedInput" class="base-input" inputmode="decimal" :placeholder="t('auth.security.cachedInputPrice')" />
+          <input v-model="priceDraft.output" class="base-input" inputmode="decimal" :placeholder="t('auth.security.outputPrice')" />
+          <input v-model="priceDraft.reasoningOutput" class="base-input" inputmode="decimal" :placeholder="t('auth.security.reasoningPrice')" />
+          <button class="security-btn" :disabled="pricesLoading" @click="handleSavePrice">{{ t('auth.security.savePrice') }}</button>
+          <button class="security-btn secondary" :disabled="pricesLoading" @click="clearPriceDraft">{{ t('common.cancel') }}</button>
+        </div>
+        <div v-if="pricesLoading" class="security-empty">{{ t('auth.security.loadingPrices') }}</div>
+        <div v-else-if="modelPrices.length === 0" class="security-empty">{{ t('auth.security.emptyPrices') }}</div>
+        <div v-else class="price-list">
+          <article v-for="price in modelPrices" :key="price.model" class="price-row">
+            <div class="price-model">
+              <strong>{{ price.model }}</strong>
+              <span class="price-source" :class="price.source">{{ t(price.source === 'custom' ? 'auth.security.priceSourceCustom' : 'auth.security.priceSourceBuiltin') }}</span>
+            </div>
+            <span>{{ t('auth.security.inputShort') }} {{ price.input }}</span>
+            <span>{{ t('auth.security.cachedShort') }} {{ price.cachedInput }}</span>
+            <span>{{ t('auth.security.outputShort') }} {{ price.output }}</span>
+            <span>{{ t('auth.security.reasoningShort') }} {{ price.reasoningOutput }}</span>
+            <div class="security-key-actions">
+              <button class="security-btn secondary" @click="editPrice(price)">{{ t('auth.security.editPrice') }}</button>
+              <button
+                v-if="price.source === 'custom' && price.canRestoreDefault"
+                class="security-btn secondary"
+                :disabled="priceBusyModel === price.model"
+                @click="handleDeletePrice(price, true)"
+              >
+                {{ t('auth.security.restorePrice') }}
+              </button>
+              <button
+                class="security-btn danger"
+                :disabled="priceBusyModel === price.model"
+                @click="handleDeletePrice(price, false)"
+              >
+                {{ t('auth.security.deletePrice') }}
+              </button>
+            </div>
+          </article>
+        </div>
       </div>
     </div>
   </section>
@@ -860,6 +884,11 @@ onMounted(async () => {
 <style scoped>
 .security-card {
   padding: 22px;
+  display: grid;
+  gap: 20px;
+}
+
+.prices-card-body {
   display: grid;
   gap: 20px;
 }

@@ -204,7 +204,13 @@ func TestRelayQuotaBuiltinPricesCanBeOverriddenAndRestored(t *testing.T) {
 	if _, err := db.Exec("DELETE FROM relay_model_price WHERE model = ?", model); err != nil {
 		t.Fatalf("clear model override: %v", err)
 	}
-	defer func() { _, _ = db.Exec("DELETE FROM relay_model_price WHERE model = ?", model) }()
+	if _, err := db.Exec("DELETE FROM relay_deleted_model_price WHERE model = ?", model); err != nil {
+		t.Fatalf("clear deleted model: %v", err)
+	}
+	defer func() {
+		_, _ = db.Exec("DELETE FROM relay_model_price WHERE model = ?", model)
+		_, _ = db.Exec("DELETE FROM relay_deleted_model_price WHERE model = ?", model)
+	}()
 
 	quota := NewRelayQuotaService()
 	prices, err := quota.ListModelPrices()
@@ -255,12 +261,28 @@ func TestRelayQuotaBuiltinPricesCanBeOverriddenAndRestored(t *testing.T) {
 	if err != nil || !priced || record.InputNano != 9_000_000_000 || record.ReasoningNano != 19_000_000_000 {
 		t.Fatalf("custom override did not win: record=%+v priced=%v err=%v", record, priced, err)
 	}
-	if err := quota.DeleteModelPrice(model); err != nil {
-		t.Fatalf("delete model override: %v", err)
+	if err := quota.RestoreModelPrice(model); err != nil {
+		t.Fatalf("restore model override: %v", err)
 	}
 	record, priced, err = quota.lookupModelPrice(model)
 	if err != nil || !priced || record.InputNano != 1_750_000_000 {
 		t.Fatalf("built-in price was not restored: record=%+v priced=%v err=%v", record, priced, err)
+	}
+
+	// Now test deleting the model entirely (even though it's built-in)
+	if err := quota.DeleteModelPrice(model); err != nil {
+		t.Fatalf("delete built-in model price: %v", err)
+	}
+	record, priced, err = quota.lookupModelPrice(model)
+	if err != nil || priced {
+		t.Fatalf("deleted built-in model should not be priced: record=%+v priced=%v err=%v", record, priced, err)
+	}
+	pricesAfterDelete, err := quota.ListModelPrices()
+	if err != nil {
+		t.Fatalf("list prices after delete: %v", err)
+	}
+	if relayQuotaTestFindPrice(pricesAfterDelete, model) != nil {
+		t.Fatalf("deleted built-in model %s still appeared in ListModelPrices", model)
 	}
 }
 

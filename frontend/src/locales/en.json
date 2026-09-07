@@ -140,7 +140,9 @@
   "common": {
     "save": "Save",
     "saving": "Saving...",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "expand": "Expand",
+    "collapse": "Collapse"
   },
   "auth": {
     "eyebrow": "Admin Access Control",
