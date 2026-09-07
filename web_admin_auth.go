@@ -834,15 +834,26 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 		if model == "" {
 			model = strings.TrimSpace(c.Query("model"))
 		}
+		restore := c.Query("restore") == "true" || c.Query("restore") == "1"
 		if model == "" {
 			var request struct {
-				Model string `json:"model"`
+				Model   string `json:"model"`
+				Restore bool   `json:"restore"`
 			}
 			if err := c.ShouldBindJSON(&request); err == nil {
 				model = strings.TrimSpace(request.Model)
+				if request.Restore {
+					restore = true
+				}
 			}
 		}
-		if err := rt.relayQuota.DeleteModelPrice(model); err != nil {
+		var err error
+		if restore {
+			err = rt.relayQuota.RestoreModelPrice(model)
+		} else {
+			err = rt.relayQuota.DeleteModelPrice(model)
+		}
+		if err != nil {
 			status := http.StatusBadRequest
 			if strings.Contains(err.Error(), "未找到") {
 				status = http.StatusNotFound

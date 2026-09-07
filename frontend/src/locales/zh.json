@@ -140,7 +140,9 @@
   "common": {
     "save": "保存",
     "saving": "保存中...",
-    "cancel": "取消"
+    "cancel": "取消",
+    "expand": "展开",
+    "collapse": "收起"
   },
   "auth": {
     "eyebrow": "管理端访问控制",

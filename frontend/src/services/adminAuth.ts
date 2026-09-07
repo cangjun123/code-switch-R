@@ -324,10 +324,11 @@ export async function upsertCodexRelayModelPrice(price: CodexRelayModelPrice): P
   })
 }
 
-export async function deleteCodexRelayModelPrice(model: string): Promise<void> {
+export async function deleteCodexRelayModelPrice(model: string, restoreDefault = false): Promise<void> {
   // Use the query form so model identifiers containing '/' remain routable by
   // Gin's path parameter matcher.
-  await adminRequest<void>(`/api/admin/relay-model-prices?model=${encodeURIComponent(model)}`, {
+  const url = `/api/admin/relay-model-prices?model=${encodeURIComponent(model)}${restoreDefault ? '&restore=1' : ''}`
+  await adminRequest<void>(url, {
     method: 'DELETE',
   })
 }

@@ -666,6 +666,10 @@ func ensureRelayQuotaTables() error {
 			last_seen_at INTEGER NOT NULL DEFAULT 0,
 			call_count INTEGER NOT NULL DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS relay_deleted_model_price (
+			model TEXT PRIMARY KEY,
+			deleted_at INTEGER NOT NULL DEFAULT 0
+		)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -916,6 +920,11 @@ func (s *RelayQuotaService) lookupModelPrice(model string) (*relayModelPriceReco
 		&price.Model, &price.InputNano, &price.CachedInputNano, &price.OutputNano,
 		&price.ReasoningNano, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
+		var deletedCount int
+		_ = db.QueryRow(`SELECT COUNT(*) FROM relay_deleted_model_price WHERE model = ?`, model).Scan(&deletedCount)
+		if deletedCount > 0 {
+			return nil, false, nil
+		}
 		return lookupBuiltinRelayModelPrice(model)
 	}
 	if err != nil {
@@ -1264,6 +1273,7 @@ func (s *RelayQuotaService) UpsertModelPrice(input RelayModelPrice) (*RelayModel
 	if err != nil {
 		return nil, err
 	}
+	_, _ = db.Exec(`DELETE FROM relay_deleted_model_price WHERE model = ?`, model)
 	result := RelayModelPrice{
 		Model: model, Input: formatRelayNanoUSD(parsed[0]), CachedInput: formatRelayNanoUSD(parsed[1]),
 		Output: formatRelayNanoUSD(parsed[2]), ReasoningOutput: formatRelayNanoUSD(parsed[3]),
@@ -1289,8 +1299,27 @@ func (s *RelayQuotaService) ListModelPrices() ([]RelayModelPrice, error) {
 	if err != nil {
 		return nil, err
 	}
+	deletedRows, err := db.Query(`SELECT model FROM relay_deleted_model_price`)
+	if err != nil {
+		return nil, err
+	}
+	defer deletedRows.Close()
+	deletedModels := make(map[string]struct{})
+	for deletedRows.Next() {
+		var m string
+		if err := deletedRows.Scan(&m); err == nil && m != "" {
+			deletedModels[m] = struct{}{}
+		}
+	}
+	if err := deletedRows.Err(); err != nil {
+		return nil, err
+	}
+
 	merged := make(map[string]RelayModelPrice, len(builtin))
 	for model, price := range builtin {
+		if _, deleted := deletedModels[model]; deleted {
+			continue
+		}
 		merged[model] = relayModelPriceResponse(price, "builtin", false, s.currentLocation())
 	}
 
@@ -1321,6 +1350,14 @@ func (s *RelayQuotaService) ListModelPrices() ([]RelayModelPrice, error) {
 }
 
 func (s *RelayQuotaService) DeleteModelPrice(model string) error {
+	return s.DeleteModelPriceEx(model, false)
+}
+
+func (s *RelayQuotaService) RestoreModelPrice(model string) error {
+	return s.DeleteModelPriceEx(model, true)
+}
+
+func (s *RelayQuotaService) DeleteModelPriceEx(model string, restoreDefault bool) error {
 	if s == nil {
 		return errors.New("额度服务不可用")
 	}
@@ -1337,7 +1374,17 @@ func (s *RelayQuotaService) DeleteModelPrice(model string) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(`DELETE FROM relay_model_price WHERE model = ?`, model)
+	if _, err := db.Exec(`DELETE FROM relay_model_price WHERE model = ?`, model); err != nil {
+		return err
+	}
+	if restoreDefault {
+		_, err = db.Exec(`DELETE FROM relay_deleted_model_price WHERE model = ?`, model)
+		return err
+	}
+	_, err = db.Exec(`
+		INSERT INTO relay_deleted_model_price(model, deleted_at) VALUES (?, ?)
+		ON CONFLICT(model) DO UPDATE SET deleted_at = excluded.deleted_at
+	`, model, time.Now().Unix())
 	return err
 }
 
@@ -1365,6 +1412,21 @@ func (s *RelayQuotaService) ListUnpricedModels() ([]RelayUnpricedModel, error) {
 	if err != nil {
 		return nil, err
 	}
+	deletedRows, err := db.Query(`SELECT model FROM relay_deleted_model_price`)
+	if err != nil {
+		return nil, err
+	}
+	defer deletedRows.Close()
+	deletedModels := make(map[string]struct{})
+	for deletedRows.Next() {
+		var m string
+		if err := deletedRows.Scan(&m); err == nil && m != "" {
+			deletedModels[m] = struct{}{}
+		}
+	}
+	if err := deletedRows.Err(); err != nil {
+		return nil, err
+	}
 	rows, err := db.Query(`
 		SELECT seen.model, seen.first_seen_at, seen.last_seen_at, seen.call_count
 		FROM relay_unpriced_model_seen AS seen
@@ -1383,7 +1445,9 @@ func (s *RelayQuotaService) ListUnpricedModels() ([]RelayUnpricedModel, error) {
 			return nil, err
 		}
 		if _, priced := builtin[model]; priced {
-			continue
+			if _, deleted := deletedModels[model]; !deleted {
+				continue
+			}
 		}
 		result = append(result, RelayUnpricedModel{
 			Model:       model,
