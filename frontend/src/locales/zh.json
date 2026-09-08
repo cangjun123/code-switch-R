@@ -793,7 +793,7 @@
         "application": "应用设置",
         "trayPanel": "托盘弹窗",
         "exterior": "外观设置",
-        "security": "安全设置",
+        "security": "账号和 Keys",
         "blacklist": "拉黑配置",
         "dataImport": "数据导入",
         "connectivity": "连通性检测",
