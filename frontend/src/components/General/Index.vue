@@ -6,6 +6,7 @@ import ListItem from '../Setting/ListRow.vue'
 import LanguageSwitcher from '../Setting/LanguageSwitcher.vue'
 import ThemeSetting from '../Setting/ThemeSetting.vue'
 import SecuritySettings from '../Setting/SecuritySettings.vue'
+import CollapsibleSection from '../common/CollapsibleSection.vue'
 import { fetchAppSettings, saveAppSettings, type AppSettings } from '../../services/appSettings'
 import { getBlacklistSettings, updateBlacklistSettings, getLevelBlacklistEnabled, setLevelBlacklistEnabled, getBlacklistEnabled, setBlacklistEnabled, type BlacklistSettings } from '../../services/settings'
 import { fetchConfigImportStatus, importFromPath, type ConfigImportStatus } from '../../services/configImport'
@@ -558,9 +559,11 @@ onMounted(async () => {
     </div>
 
     <div class="general-page">
-      <section>
-        <h2 class="mac-section-title">{{ $t('components.general.title.application') }}</h2>
-        <div class="mac-panel">
+      <CollapsibleSection
+        :title="$t('components.general.title.application')"
+        storage-key="application"
+        :default-collapsed="false"
+      >
           <ListItem :label="$t('components.general.label.heatmap')">
             <label class="mac-switch">
               <input
@@ -700,13 +703,13 @@ onMounted(async () => {
               <span class="hint-text">{{ $t('components.general.label.roundRobinHint') }}</span>
             </div>
           </ListItem>
-        </div>
-      </section>
+      </CollapsibleSection>
 
-      <section>
-        <h2 class="mac-section-title">{{ $t('components.general.title.codexDegradation') }}</h2>
-        <div class="mac-panel">
-          <ListItem :label="$t('components.general.label.codexDegradation')">
+      <CollapsibleSection
+        :title="$t('components.general.title.codexDegradation')"
+        storage-key="codexDegradation"
+      >
+        <ListItem :label="$t('components.general.label.codexDegradation')">
             <div class="toggle-with-hint">
               <label class="mac-switch">
                 <input
@@ -746,52 +749,52 @@ onMounted(async () => {
               <span class="hint-text">{{ $t('components.general.label.codexDegradationThresholdHint') }}</span>
             </div>
           </ListItem>
-        </div>
-      </section>
+      </CollapsibleSection>
 
-      <section>
-        <h2 class="mac-section-title">{{ $t('components.general.title.codexTrace') }}</h2>
-        <div class="mac-panel">
-          <ListItem :label="$t('components.general.label.codexTrace')">
-            <div class="toggle-with-hint">
-              <label class="mac-switch">
-                <input
-                  type="checkbox"
-                  :disabled="settingsLoading || saveBusy"
-                  v-model="codexTraceEnabled"
-                  @change="persistAppSettings"
-                />
-                <span></span>
-              </label>
-              <span class="hint-text">{{ $t('components.general.label.codexTraceHint') }}</span>
-            </div>
-          </ListItem>
-        </div>
-      </section>
-
-      <section>
-        <h2 class="mac-section-title">{{ $t('components.general.title.codexCapacity') }}</h2>
-        <div class="mac-panel">
-          <ListItem :label="$t('components.general.label.codexCapacityPreflightMaxWait')">
-            <div class="toggle-with-hint">
+      <CollapsibleSection
+        :title="$t('components.general.title.codexTrace')"
+        storage-key="codexTrace"
+      >
+        <ListItem :label="$t('components.general.label.codexTrace')">
+          <div class="toggle-with-hint">
+            <label class="mac-switch">
               <input
-                type="number"
-                class="mac-input"
-                min="2"
-                max="120"
+                type="checkbox"
                 :disabled="settingsLoading || saveBusy"
-                v-model.number="codexCapacityPreflightMaxWaitSec"
+                v-model="codexTraceEnabled"
                 @change="persistAppSettings"
               />
-              <span class="hint-text">{{ $t('components.general.label.codexCapacityPreflightMaxWaitHint') }}</span>
-            </div>
-          </ListItem>
-        </div>
-      </section>
+              <span></span>
+            </label>
+            <span class="hint-text">{{ $t('components.general.label.codexTraceHint') }}</span>
+          </div>
+        </ListItem>
+      </CollapsibleSection>
 
-      <section>
-        <h2 class="mac-section-title">{{ $t('components.general.title.logsPolling') }}</h2>
-        <div class="mac-panel">
+      <CollapsibleSection
+        :title="$t('components.general.title.codexCapacity')"
+        storage-key="codexCapacity"
+      >
+        <ListItem :label="$t('components.general.label.codexCapacityPreflightMaxWait')">
+          <div class="toggle-with-hint">
+            <input
+              type="number"
+              class="mac-input"
+              min="2"
+              max="120"
+              :disabled="settingsLoading || saveBusy"
+              v-model.number="codexCapacityPreflightMaxWaitSec"
+              @change="persistAppSettings"
+            />
+            <span class="hint-text">{{ $t('components.general.label.codexCapacityPreflightMaxWaitHint') }}</span>
+          </div>
+        </ListItem>
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        :title="$t('components.general.title.logsPolling')"
+        storage-key="logsPolling"
+      >
           <ListItem :label="$t('components.general.label.logsRefreshInterval')">
             <div class="toggle-with-hint">
               <input
@@ -820,34 +823,34 @@ onMounted(async () => {
               <span class="hint-text">{{ $t('components.general.label.logsFastRefreshIntervalHint') }}</span>
             </div>
           </ListItem>
-        </div>
-      </section>
+      </CollapsibleSection>
 
-      <section>
-        <h2 class="mac-section-title">{{ $t('components.general.title.connectivity') }}</h2>
-        <div class="mac-panel">
-          <ListItem :label="$t('components.general.label.autoConnectivityTest')">
-            <div class="toggle-with-hint">
-              <label class="mac-switch">
-                <input
-                  type="checkbox"
-                  :disabled="settingsLoading || saveBusy"
-                  v-model="autoConnectivityTestEnabled"
-                  @change="persistAppSettings"
-                />
-                <span></span>
-              </label>
-              <span class="hint-text">{{ $t('components.general.label.autoConnectivityTestHint') }}</span>
-            </div>
-          </ListItem>
-        </div>
-      </section>
+      <CollapsibleSection
+        :title="$t('components.general.title.connectivity')"
+        storage-key="connectivity"
+      >
+        <ListItem :label="$t('components.general.label.autoConnectivityTest')">
+          <div class="toggle-with-hint">
+            <label class="mac-switch">
+              <input
+                type="checkbox"
+                :disabled="settingsLoading || saveBusy"
+                v-model="autoConnectivityTestEnabled"
+                @change="persistAppSettings"
+              />
+              <span></span>
+            </label>
+            <span class="hint-text">{{ $t('components.general.label.autoConnectivityTestHint') }}</span>
+          </div>
+        </ListItem>
+      </CollapsibleSection>
 
       <SecuritySettings />
 
-      <section>
-        <h2 class="mac-section-title">{{ $t('components.general.title.blacklist') }}</h2>
-        <div class="mac-panel">
+      <CollapsibleSection
+        :title="$t('components.general.title.blacklist')"
+        storage-key="blacklist"
+      >
           <ListItem :label="$t('components.general.label.enableBlacklist')">
             <div class="toggle-with-hint">
               <label class="mac-switch">
@@ -911,12 +914,12 @@ onMounted(async () => {
               {{ blacklistSaving ? $t('components.general.label.saving') : $t('components.general.label.save') }}
             </button>
           </ListItem>
-        </div>
-      </section>
+      </CollapsibleSection>
 
-      <section>
-        <h2 class="mac-section-title">{{ $t('components.general.title.dataImport') }}</h2>
-        <div class="mac-panel">
+      <CollapsibleSection
+        :title="$t('components.general.title.dataImport')"
+        storage-key="dataImport"
+      >
           <ListItem :label="$t('components.general.import.configPath')">
             <input
               type="text"
@@ -949,20 +952,19 @@ onMounted(async () => {
               {{ importing ? $t('components.general.import.importing') : $t('components.general.import.importBtn') }}
             </button>
           </ListItem>
-        </div>
-      </section>
+      </CollapsibleSection>
 
-      <section>
-        <h2 class="mac-section-title">{{ $t('components.general.title.exterior') }}</h2>
-        <div class="mac-panel">
-          <ListItem :label="$t('components.general.label.language')">
-            <LanguageSwitcher />
-          </ListItem>
-          <ListItem :label="$t('components.general.label.theme')">
-            <ThemeSetting />
-          </ListItem>
-        </div>
-      </section>
+      <CollapsibleSection
+        :title="$t('components.general.title.exterior')"
+        storage-key="exterior"
+      >
+        <ListItem :label="$t('components.general.label.language')">
+          <LanguageSwitcher />
+        </ListItem>
+        <ListItem :label="$t('components.general.label.theme')">
+          <ThemeSetting />
+        </ListItem>
+      </CollapsibleSection>
     </div>
   </div>
 </template>

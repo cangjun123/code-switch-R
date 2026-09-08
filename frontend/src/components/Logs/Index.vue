@@ -322,7 +322,12 @@
           </div>
         </div>
         <div v-if="logDetailModal.item.error_message" class="log-detail-section">
-          <h3>{{ t('components.logs.detail.errorTitle') }}</h3>
+          <div class="log-detail-error-header">
+            <h3>{{ t('components.logs.detail.errorTitle') }}</h3>
+            <button type="button" class="log-detail-copy-btn" :class="{ failed: errorCopyFailed }" @click="copyErrorToClipboard">
+              {{ errorCopyFailed ? t('components.logs.detail.copyFailed') : errorCopied ? t('components.logs.detail.copied') : t('components.logs.detail.copy') }}
+            </button>
+          </div>
           <pre class="log-detail-error">{{ logDetailModal.item.error_message }}</pre>
         </div>
       </div>
@@ -352,6 +357,8 @@ import {
   type RequestLogMaintenanceInfo,
 } from '../../services/logs'
 import { fetchAppSettings } from '../../services/appSettings'
+import { showToast } from '../../utils/toast'
+import { copyText } from '../../utils/clipboard'
 import {
   Chart,
   CategoryScale,
@@ -422,6 +429,35 @@ const openDetailModal = (item: RequestLog) => {
 const closeDetailModal = () => {
   logDetailModal.open = false
   logDetailModal.item = null
+  errorCopied.value = false
+  errorCopyFailed.value = false
+}
+
+// 错误信息一键复制
+const errorCopied = ref(false)
+const errorCopyFailed = ref(false)
+
+const copyErrorToClipboard = async () => {
+  const message = logDetailModal.item?.error_message
+  if (!message) {
+    return
+  }
+  try {
+    await copyText(message)
+    errorCopyFailed.value = false
+    errorCopied.value = true
+    setTimeout(() => {
+      errorCopied.value = false
+    }, 2000)
+  } catch (error) {
+    console.error('failed to copy error message', error)
+    errorCopied.value = false
+    errorCopyFailed.value = true
+    showToast(t('components.logs.detail.copyFailed'), 'error')
+    setTimeout(() => {
+      errorCopyFailed.value = false
+    }, 2000)
+  }
 }
 
 // 打开金额明细弹窗
@@ -1341,12 +1377,46 @@ html.dark .cost-detail-item__name {
   font-size: 0.8rem;
   cursor: help;
 }
+/* 详情弹窗内容允许选中复制（弹窗头部的关闭按钮等不受影响） */
 .log-detail-modal {
   min-width: 420px;
   max-width: 640px;
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: auto;
+}
+.log-detail-error-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 0.5rem;
+}
+.log-detail-error-header h3 {
+  margin: 0;
+}
+.log-detail-copy-btn {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--mac-text-secondary);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.log-detail-copy-btn:hover {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--mac-text);
+}
+.log-detail-copy-btn.failed {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.45);
 }
 .log-detail-grid {
   display: grid;
