@@ -15,6 +15,9 @@ export interface BlacklistStatus {
   blacklistLevel: number          // 当前黑名单等级 (0-5)
   lastRecoveredAt?: string        // 最后恢复时间（ISO 时间字符串）
   forgivenessRemaining: number    // 距离宽恕还剩多少秒（3小时倒计时）
+
+  // 永不拉黑：该 provider 已开启免疫标志，拉黑记录视作无效
+  neverBlacklist?: boolean
 }
 
 // 黑名单配置接口

@@ -360,6 +360,15 @@
                 >
                   BL{{ getProviderBlacklistStatus(card.name)!.blacklistLevel }}
                 </span>
+                <!-- 永不拉黑徽章 -->
+                <span
+                  v-if="card.neverBlacklist"
+                  class="never-blacklist-badge"
+                  :class="{ dark: resolvedTheme === 'dark' }"
+                  :title="t('components.main.blacklist.neverBlacklistHint')"
+                >
+                  🛡️
+                </span>
                 <button
                   v-if="card.officialSite"
                   class="card-site"
@@ -916,6 +925,21 @@
                     </span>
                   </div>
                   <span class="field-hint">{{ t('components.main.form.hints.connectivityAutoBlacklist') }}</span>
+                </div>
+
+                <!-- 永不拉黑 -->
+                <div v-if="modalState.tabId !== 'others' && modalState.tabId !== 'gemini'" class="form-field switch-field">
+                  <span>{{ t('components.main.form.labels.neverBlacklist') }}</span>
+                  <div class="switch-inline">
+                    <label class="mac-switch">
+                      <input type="checkbox" v-model="modalState.form.neverBlacklist" />
+                      <span></span>
+                    </label>
+                    <span class="switch-text">
+                      {{ modalState.form.neverBlacklist ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
+                    </span>
+                  </div>
+                  <span class="field-hint">{{ t('components.main.form.hints.neverBlacklist') }}</span>
                 </div>
 
                 <!-- 高级配置提示 -->
@@ -1645,6 +1669,7 @@ const serializeProviders = (providers: AutomationCard[]) =>
     // 确保可用性配置正确序列化
     availabilityMonitorEnabled: !!provider.availabilityMonitorEnabled,
     connectivityAutoBlacklist: !!provider.connectivityAutoBlacklist,
+    neverBlacklist: !!provider.neverBlacklist,
     availabilityConfig: provider.availabilityConfig
       ? {
           testModel: provider.availabilityConfig.testModel || '',
@@ -2572,6 +2597,7 @@ type VendorForm = {
   // === 可用性监控配置（新） ===
   availabilityMonitorEnabled?: boolean
   connectivityAutoBlacklist?: boolean
+  neverBlacklist?: boolean
   availabilityConfig?: {
     testModel?: string
     testEndpoint?: string
@@ -2677,6 +2703,7 @@ const defaultFormValues = (platform?: string): VendorForm => ({
   // 可用性监控配置（新）
   availabilityMonitorEnabled: false,
   connectivityAutoBlacklist: false,
+  neverBlacklist: false, // 永不拉黑开关
   availabilityConfig: {
     testModel: '',
     testEndpoint: getDefaultEndpoint(platform || 'claude', 'auto', 'auto'),
@@ -2808,6 +2835,7 @@ const openEditModal = (card: AutomationCard) => {
     availabilityMonitorEnabled:
       card.availabilityMonitorEnabled ?? card.connectivityCheck ?? false,
     connectivityAutoBlacklist: card.connectivityAutoBlacklist ?? false,
+    neverBlacklist: card.neverBlacklist ?? false,
     availabilityConfig: {
       testModel:
         card.availabilityConfig?.testModel || card.connectivityTestModel || '',
@@ -2932,6 +2960,7 @@ const submitModal = async (): Promise<boolean> => {
       // 可用性监控配置（新）
       availabilityMonitorEnabled: !!modalState.form.availabilityMonitorEnabled,
       connectivityAutoBlacklist: !!modalState.form.connectivityAutoBlacklist,
+      neverBlacklist: !!modalState.form.neverBlacklist,
       availabilityConfig: {
         testModel: modalState.form.availabilityConfig?.testModel || '',
         testEndpoint:
@@ -2982,6 +3011,7 @@ const submitModal = async (): Promise<boolean> => {
       // 可用性监控配置（新）
       availabilityMonitorEnabled: !!modalState.form.availabilityMonitorEnabled,
       connectivityAutoBlacklist: !!modalState.form.connectivityAutoBlacklist,
+      neverBlacklist: !!modalState.form.neverBlacklist,
       availabilityConfig: {
         testModel: modalState.form.availabilityConfig?.testModel || '',
         testEndpoint:
@@ -3587,6 +3617,24 @@ const confirmDeleteCliTool = async () => {
 /* 黑名单等级徽章与调度等级徽章的间距 */
 .card-title-row .blacklist-level-badge {
   margin-left: 4px;
+}
+
+/* 永不拉黑徽章（盾牌） */
+.never-blacklist-badge {
+  margin-left: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1;
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.never-blacklist-badge.dark {
+  background: rgba(59, 130, 246, 0.22);
 }
 
 /* Level 配色方案：从绿色（高优先级）到红色（低优先级）*/

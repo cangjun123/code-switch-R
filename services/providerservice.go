@@ -133,6 +133,12 @@ type Provider struct {
 	// 默认为 true（即上游支持 count_tokens）。
 	SupportsCountTokens *bool `json:"supportsCountTokens,omitempty"`
 
+	// 永不拉黑开关 - 在 Provider 编辑页面配置
+	// 为 true 时，拉黑模式下该 provider 永远不会被自动拉黑：
+	// 失败不计入连续失败计数，已有的拉黑记录也视作未拉黑。
+	// 用于兜底账号：保证拉黑模式全挂时仍有一个可用出口。
+	NeverBlacklist bool `json:"neverBlacklist,omitempty"`
+
 	// ========== 旧字段（已废弃，仅用于读取迁移） ==========
 	// 这些字段在保存时不再写入，但读取时会自动迁移到新字段
 
@@ -464,6 +470,24 @@ func (ps *ProviderService) LoadProviders(kind string) ([]Provider, error) {
 	return append([]Provider(nil), envelope.Providers...), nil
 }
 
+// IsNeverBlacklist 检查指定 provider 是否设置了"永不拉黑"。
+// platform 为黑名单/relay 使用的 platform 值（claude/codex/gpt-image/...），
+// 与文件 kind 的差异由 providerFilePath 内部归一化处理。
+// 查不到 provider（如已删除、gemini 等无配置文件的来源）时返回 false（安全兜底）。
+// 走 LoadProviders 的 mtime 缓存，热路径开销可忽略。
+func (ps *ProviderService) IsNeverBlacklist(platform string, providerName string) bool {
+	providers, err := ps.LoadProviders(platform)
+	if err != nil {
+		return false
+	}
+	for _, p := range providers {
+		if p.Name == providerName {
+			return p.NeverBlacklist
+		}
+	}
+	return false
+}
+
 // loadProvidersNoLock 内部加载方法，在持有锁的情况下调用（避免递归加锁）
 // 执行配置加载和迁移，如有迁移则直接保存（不再加锁）
 // 仅在已持有 ps.mu 锁的上下文中调用（如 DuplicateProvider）
@@ -656,6 +680,7 @@ func (ps *ProviderService) DuplicateProvider(kind string, sourceID int64) (*Prov
 		// 可用性监控配置
 		AvailabilityMonitorEnabled: source.AvailabilityMonitorEnabled,
 		ConnectivityAutoBlacklist:  false, // 副本默认关闭自动拉黑
+		NeverBlacklist:             false, // 副本默认关闭永不拉黑
 	}
 
 	// 6. 深拷贝 map（避免共享引用）

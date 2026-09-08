@@ -13,6 +13,7 @@ import (
 type BlacklistService struct {
 	settingsService     *SettingsService
 	notificationService *NotificationService
+	providerService     *ProviderService // 可选：用于查询 provider 的"永不拉黑"标志
 }
 
 // BlacklistStatus 黑名单状态（用于前端展示）
@@ -30,6 +31,9 @@ type BlacklistStatus struct {
 	BlacklistLevel       int        `json:"blacklistLevel"`       // 当前黑名单等级 (0-5)
 	LastRecoveredAt      *time.Time `json:"lastRecoveredAt"`      // 最后恢复时间
 	ForgivenessRemaining int        `json:"forgivenessRemaining"` // 距离宽恕还剩多少秒（3小时倒计时）
+
+	// 永不拉黑：该 provider 已开启免疫标志，拉黑记录视作无效（前端据此隐藏拉黑横幅）
+	NeverBlacklist bool `json:"neverBlacklist"`
 }
 
 func NewBlacklistService(settingsService *SettingsService, notificationService *NotificationService) *BlacklistService {
@@ -39,8 +43,28 @@ func NewBlacklistService(settingsService *SettingsService, notificationService *
 	}
 }
 
+// SetProviderService 注入 provider 服务。可选依赖：为 nil 时"永不拉黑"不生效，
+// 所有 provider 保持原有拉黑行为（便于测试时独立构造 BlacklistService）。
+func (bs *BlacklistService) SetProviderService(ps *ProviderService) {
+	bs.providerService = ps
+}
+
+// isNeverBlacklist 判断 provider 是否免疫拉黑（永不拉黑标志开启）。
+// providerService 未注入或查不到 provider 时返回 false（安全兜底）。
+func (bs *BlacklistService) isNeverBlacklist(platform string, providerName string) bool {
+	if bs.providerService == nil {
+		return false
+	}
+	return bs.providerService.IsNeverBlacklist(platform, providerName)
+}
+
 // RecordSuccess 记录 provider 成功，清零连续失败计数，执行降级和宽恕逻辑
 func (bs *BlacklistService) RecordSuccess(platform string, providerName string) error {
+	// 永不拉黑的 provider 不会产生失败记录，无需清零/降级
+	if bs.isNeverBlacklist(platform, providerName) {
+		return nil
+	}
+
 	db, err := xdb.DB("default")
 	if err != nil {
 		return fmt.Errorf("获取数据库连接失败: %w", err)
@@ -168,6 +192,12 @@ func (bs *BlacklistService) RecordSuccess(platform string, providerName string) 
 
 // RecordFailure 记录 provider 失败，连续失败次数达到阈值时自动拉黑（支持等级拉黑）
 func (bs *BlacklistService) RecordFailure(platform string, providerName string) error {
+	// 永不拉黑的 provider：失败不计入连续失败计数，直接跳过
+	if bs.isNeverBlacklist(platform, providerName) {
+		log.Printf("🛡️ Provider %s/%s 已设置永不拉黑，跳过失败记录", platform, providerName)
+		return nil
+	}
+
 	// 检查拉黑功能是否启用
 	if !bs.settingsService.IsBlacklistEnabled() {
 		log.Printf("🚫 拉黑功能已关闭，跳过 provider %s/%s 的失败记录", platform, providerName)
@@ -448,6 +478,11 @@ func (bs *BlacklistService) getLevelDuration(level int, config *BlacklistLevelCo
 
 // IsBlacklisted 检查 provider 是否在黑名单中
 func (bs *BlacklistService) IsBlacklisted(platform string, providerName string) (bool, *time.Time) {
+	// 永不拉黑的 provider 视作永远未拉黑（已有拉黑记录也立即免疫）
+	if bs.isNeverBlacklist(platform, providerName) {
+		return false, nil
+	}
+
 	// 如果拉黑功能已关闭，始终返回未拉黑
 	if !bs.settingsService.IsBlacklistEnabled() {
 		return false, nil
@@ -736,6 +771,13 @@ func (bs *BlacklistService) GetBlacklistStatus(platform string) ([]BlacklistStat
 			if s.IsBlacklisted {
 				s.RemainingSeconds = int(blacklistedUntil.Time.Sub(now).Seconds())
 			}
+		}
+
+		// 永不拉黑标志：前端据此隐藏拉黑横幅（数据库中的记录视作无效）
+		s.NeverBlacklist = bs.isNeverBlacklist(s.Platform, s.ProviderName)
+		if s.NeverBlacklist {
+			s.IsBlacklisted = false
+			s.RemainingSeconds = 0
 		}
 		if lastFailureAt.Valid {
 			s.LastFailureAt = &lastFailureAt.Time
