@@ -28,6 +28,7 @@ import {
 import { extractErrorMessage } from '../../utils/error'
 import { showToast } from '../../utils/toast'
 import { copyText } from '../../utils/clipboard'
+import CollapsibleSection from '../common/CollapsibleSection.vue'
 
 const { t } = useI18n()
 const authState = useAdminAuthState()
@@ -524,8 +525,10 @@ onMounted(async () => {
 </script>
 
 <template>
-  <section>
-    <h2 class="mac-section-title">{{ t('components.general.title.security') }}</h2>
+  <CollapsibleSection
+    :title="t('components.general.title.security')"
+    storage-key="security"
+  >
     <p class="mac-section-description">{{ t('auth.security.description') }}</p>
 
     <div class="mac-panel security-card">
@@ -932,7 +935,7 @@ onMounted(async () => {
         </div>
       </div>
     </div>
-  </section>
+  </CollapsibleSection>
 </template>
 
 <style scoped>

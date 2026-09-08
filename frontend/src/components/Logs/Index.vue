@@ -1394,9 +1394,13 @@ html.dark .cost-detail-item__name {
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 0.5rem;
+  /* 弹窗空间不足时允许 h3 收缩，保住按钮完整显示 */
+  min-width: 0;
 }
 .log-detail-error-header h3 {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .log-detail-copy-btn {
   border: 1px solid rgba(148, 163, 184, 0.35);
@@ -1409,6 +1413,13 @@ html.dark .cost-detail-item__name {
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
+  flex-shrink: 0;
+  /* 内容完整可见：不裁切、不压缩 */
+  white-space: nowrap;
+  overflow: visible;
+  height: auto;
+  min-height: 0;
+  line-height: 1.4;
 }
 .log-detail-copy-btn:hover {
   background: rgba(148, 163, 184, 0.15);
