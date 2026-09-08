@@ -1332,8 +1332,8 @@ func (prs *ProviderRelayService) forwardRequest(
 				platform, model, provider, relay_key_id, http_code,
 				input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
 				reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
-				is_degraded, resend_count
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				is_degraded, resend_count, error_message
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			requestLog.Platform,
 			requestLog.Model,
@@ -1351,6 +1351,7 @@ func (prs *ProviderRelayService) forwardRequest(
 			requestLog.ClientIP,
 			boolToInt(requestLog.IsDegraded),
 			requestLog.ResendCount,
+			requestLog.ErrorMessage,
 		)
 
 		if err != nil {
@@ -1452,16 +1453,19 @@ func (prs *ProviderRelayService) forwardRequest(
 		// 尝试从响应体提取供应商原始错误信息
 		if resp != nil {
 			if upstreamBody := extractUpstreamError(resp); upstreamBody != "" {
+				setRequestLogError(requestLog, upstreamBody)
 				if kind == ProviderKindCodex {
 					CodexParseTokenUsageFromResponse(resp.String(), requestLog)
 				}
 				return false, fmt.Errorf("upstream status %d: %s", resp.StatusCode(), upstreamBody)
 			}
 		}
+		setRequestLogError(requestLog, err.Error())
 		return false, err
 	}
 
 	if resp == nil {
+		setRequestLogError(requestLog, "empty response")
 		return false, fmt.Errorf("empty response")
 	}
 
@@ -1486,11 +1490,13 @@ func (prs *ProviderRelayService) forwardRequest(
 			}
 		}
 		if errMsg != "" {
+			setRequestLogError(requestLog, errMsg)
 			if kind == ProviderKindCodex {
 				CodexParseTokenUsageFromResponse(resp.String(), requestLog)
 			}
 			return false, fmt.Errorf("upstream status %d: %s", status, errMsg)
 		}
+		setRequestLogError(requestLog, fmt.Sprintf("upstream status %d", status))
 		return false, fmt.Errorf("upstream status %d", status)
 	}
 
@@ -1560,6 +1566,7 @@ func (prs *ProviderRelayService) forwardRequest(
 			if codexStreamLacksTerminalEvent(&responseObservation, kind, endpoint, streamed) {
 				// 截断：不 commit session（避免粘连到坏 provider），记 provider 失败
 				fmt.Printf("[WARN] Provider %s Codex SSE 流截断（json_payloads=%d 无终止事件），记为失败\n", provider.Name, responseObservation.jsonPayloads)
+				setRequestLogError(requestLog, "SSE 流截断：无终止事件")
 				return true, errStreamTruncated
 			}
 			responseObservation.commitIfSuccessful()
@@ -1573,6 +1580,7 @@ func (prs *ProviderRelayService) forwardRequest(
 			// 上游读错误（unexpected EOF 等）：流中途断开，部分响应已透传无法重发，
 			// 但必须记 provider 失败——否则客户端自行重试时会路由回同一个坏 provider。
 			fmt.Printf("[WARN] Provider %s 上游流中断（%v），部分响应已透传，记为失败\n", provider.Name, copyErr)
+			setRequestLogError(requestLog, "上游流中断: "+copyErr.Error())
 			return true, fmt.Errorf("%w: %v", errStreamTruncated, copyErr)
 		}
 		return true, nil
@@ -1585,6 +1593,7 @@ func (prs *ProviderRelayService) forwardRequest(
 			if codexStreamLacksTerminalEvent(&responseObservation, kind, endpoint, streamed) {
 				// 截断：不 commit session（避免粘连到坏 provider），记 provider 失败
 				fmt.Printf("[WARN] Provider %s Codex SSE 流截断（json_payloads=%d 无终止事件），记为失败\n", provider.Name, responseObservation.jsonPayloads)
+				setRequestLogError(requestLog, "SSE 流截断：无终止事件")
 				return true, errStreamTruncated
 			}
 			responseObservation.commitIfSuccessful()
@@ -1599,6 +1608,7 @@ func (prs *ProviderRelayService) forwardRequest(
 			// 但必须记 provider 失败——否则客户端（Claude Code 报 stream disconnected）
 			// 自行重试时会路由回同一个坏 provider，反复拿到同样的断流碎片。
 			fmt.Printf("[WARN] Provider %s 上游流中断（%v），部分响应已透传，记为失败\n", provider.Name, copyErr)
+			setRequestLogError(requestLog, "上游流中断: "+copyErr.Error())
 			return true, fmt.Errorf("%w: %v", errStreamTruncated, copyErr)
 		}
 		// 只要provider返回了2xx状态码，就算成功（复制失败是客户端问题，不是provider问题）
@@ -1607,11 +1617,13 @@ func (prs *ProviderRelayService) forwardRequest(
 
 	// 尝试从响应体提取供应商原始错误信息
 	if upstreamBody := extractUpstreamError(resp); upstreamBody != "" {
+		setRequestLogError(requestLog, upstreamBody)
 		if kind == ProviderKindCodex {
 			CodexParseTokenUsageFromResponse(resp.String(), requestLog)
 		}
 		return false, fmt.Errorf("upstream status %d: %s", status, upstreamBody)
 	}
+	setRequestLogError(requestLog, fmt.Sprintf("upstream status %d", status))
 	return false, fmt.Errorf("upstream status %d", status)
 }
 
@@ -3111,6 +3123,29 @@ func writeCodexNamespaceJSONResponse(w http.ResponseWriter, resp *xrequest.Respo
 }
 
 // extractUpstreamError 从供应商响应中提取原始错误信息（最多 512 字节）
+// truncateErrorMessage 截断错误摘要，避免超长错误体撑爆 request_log。
+const requestLogErrorMessageMaxBytes = 512
+
+func truncateErrorMessage(msg string) string {
+	msg = strings.TrimSpace(msg)
+	if len(msg) <= requestLogErrorMessageMaxBytes {
+		return msg
+	}
+	return msg[:requestLogErrorMessageMaxBytes] + "..."
+}
+
+// setRequestLogError 记录失败请求的错误摘要（已截断），仅保留首个错误。
+func setRequestLogError(log *ReqeustLog, msg string) {
+	if log == nil {
+		return
+	}
+	msg = truncateErrorMessage(msg)
+	if msg == "" || log.ErrorMessage != "" {
+		return
+	}
+	log.ErrorMessage = msg
+}
+
 func extractUpstreamError(resp *xrequest.Response) string {
 	if resp == nil {
 		return ""
@@ -3301,6 +3336,7 @@ func ensureRequestLogTableWithDB(db *sql.DB) error {
 		{name: "client_ip", definition: "TEXT"},
 		{name: "is_degraded", definition: "INTEGER DEFAULT 0"},
 		{name: "resend_count", definition: "INTEGER DEFAULT 0"},
+		{name: "error_message", definition: "TEXT"},
 	}
 	for _, column := range requiredColumns {
 		if err := ensureRequestLogColumn(db, column.name, column.definition); err != nil {
@@ -3471,6 +3507,9 @@ type ReqeustLog struct {
 	CreatedAt             string  `json:"created_at"`
 	IsDegraded            bool    `json:"is_degraded"`
 	ResendCount           int     `json:"resend_count"`
+	// ErrorMessage 失败请求的错误摘要（上游响应体或传输错误），最长 512 字节，
+	// 供日志页点击行查看详情定位问题；成功请求为空。
+	ErrorMessage string `json:"error_message,omitempty"`
 	InputCost             float64 `json:"input_cost"`
 	OutputCost            float64 `json:"output_cost"`
 	ReasoningCost         float64 `json:"reasoning_cost"`
@@ -3807,14 +3846,14 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 					platform, model, provider, relay_key_id, http_code,
 					input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
 					reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
-					is_degraded, resend_count
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					is_degraded, resend_count, error_message
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`,
 				requestLog.Platform, requestLog.Model, requestLog.Provider, requestLog.RelayKeyID, requestLog.HttpCode,
 				requestLog.InputTokens, requestLog.OutputTokens, requestLog.CacheCreateTokens,
 				requestLog.CacheReadTokens, requestLog.ReasoningTokens,
 				boolToInt(requestLog.IsStream), requestLog.DurationSec, requestLog.FirstTokenDurationSec, requestLog.ClientIP,
-				boolToInt(requestLog.IsDegraded), requestLog.ResendCount,
+				boolToInt(requestLog.IsDegraded), requestLog.ResendCount, requestLog.ErrorMessage,
 			)
 		}()
 
@@ -4055,6 +4094,7 @@ func (prs *ProviderRelayService) forwardGeminiRequest(
 	// 创建 HTTP 请求
 	req, err := http.NewRequest("POST", targetURL, bytes.NewReader(bodyBytes))
 	if err != nil {
+		setRequestLogError(requestLog, fmt.Sprintf("创建请求失败: %v", err))
 		return false, fmt.Sprintf("创建请求失败: %v", err), false
 	}
 
@@ -4077,6 +4117,7 @@ func (prs *ProviderRelayService) forwardGeminiRequest(
 
 	if err != nil {
 		fmt.Printf("[Gemini]   ✗ 失败: %s | 错误: %v | 耗时: %.2fs\n", provider.Name, err, providerDuration)
+		setRequestLogError(requestLog, fmt.Sprintf("请求失败: %v", err))
 		return false, fmt.Sprintf("请求失败: %v", err), false
 	}
 	defer resp.Body.Close()
@@ -4088,6 +4129,7 @@ func (prs *ProviderRelayService) forwardGeminiRequest(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errorBody, _ := io.ReadAll(resp.Body)
 		fmt.Printf("[Gemini]   ✗ 失败: %s | HTTP %d | 耗时: %.2fs\n", provider.Name, resp.StatusCode, providerDuration)
+		setRequestLogError(requestLog, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(errorBody)))
 		return false, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(errorBody)), false
 	}
 
@@ -4922,15 +4964,18 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 			}
 			if resp != nil {
 				if upstreamBody := extractUpstreamError(resp); upstreamBody != "" {
+					setRequestLogError(attemptLog, upstreamBody)
 					CodexParseTokenUsageFromResponse(resp.String(), attemptLog)
 					finalize(attemptLog, attemptStart)
 					return false, fmt.Errorf("upstream status %d: %s", resp.StatusCode(), upstreamBody)
 				}
 			}
+			setRequestLogError(attemptLog, postErr.Error())
 			finalize(attemptLog, attemptStart)
 			return false, postErr
 		}
 		if resp == nil {
+			setRequestLogError(attemptLog, "empty response")
 			finalize(attemptLog, attemptStart)
 			return false, fmt.Errorf("empty response")
 		}
@@ -4948,6 +4993,7 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 					errMsg = upstreamBody
 				}
 			}
+			setRequestLogError(attemptLog, errMsg)
 			CodexParseTokenUsageFromResponse(resp.String(), attemptLog)
 			finalize(attemptLog, attemptStart)
 			if errMsg != "" {
@@ -4959,10 +5005,12 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 		// 非 2xx：上游失败，交回外层调度（不在此拉黑）
 		if status != 0 && (status < http.StatusOK || status >= http.StatusMultipleChoices) {
 			if upstreamBody := extractUpstreamError(resp); upstreamBody != "" {
+				setRequestLogError(attemptLog, upstreamBody)
 				CodexParseTokenUsageFromResponse(resp.String(), attemptLog)
 				finalize(attemptLog, attemptStart)
 				return false, fmt.Errorf("upstream status %d: %s", status, upstreamBody)
 			}
+			setRequestLogError(attemptLog, fmt.Sprintf("upstream status %d", status))
 			finalize(attemptLog, attemptStart)
 			return false, fmt.Errorf("upstream status %d", status)
 		}
@@ -5229,13 +5277,13 @@ func writeAttemptLog(log *ReqeustLog, start time.Time) {
 			platform, model, provider, relay_key_id, http_code,
 			input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
 			reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
-			is_degraded, resend_count
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			is_degraded, resend_count, error_message
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		log.Platform, log.Model, log.Provider, log.RelayKeyID, log.HttpCode,
 		log.InputTokens, log.OutputTokens, log.CacheCreateTokens, log.CacheReadTokens,
 		log.ReasoningTokens, boolToInt(log.IsStream), log.DurationSec, log.FirstTokenDurationSec, log.ClientIP,
-		boolToInt(log.IsDegraded), log.ResendCount,
+		boolToInt(log.IsDegraded), log.ResendCount, log.ErrorMessage,
 	)
 	if err != nil {
 		fmt.Printf("写入 request_log 失败: %v\n", err)

@@ -748,6 +748,14 @@
       "tokenDetail": {
         "title": "Today's Token Breakdown"
       },
+      "detail": {
+        "title": "Request Details",
+        "hint": "Click to view request details",
+        "hasError": "This request failed. Click for error details",
+        "errorTitle": "Error Message",
+        "degraded": "Degraded Resend",
+        "degradedYes": "Yes"
+      },
       "maintenance": {
         "title": "Log Maintenance",
         "subtitle": "Inspect request_log size and remove expired rows.",

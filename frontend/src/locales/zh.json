@@ -749,6 +749,14 @@
       "tokenDetail": {
         "title": "今日 Token 明细"
       },
+      "detail": {
+        "title": "请求详情",
+        "hint": "点击查看请求详情",
+        "hasError": "该请求失败，点击查看错误详情",
+        "errorTitle": "错误信息",
+        "degraded": "降智重发",
+        "degradedYes": "是"
+      },
       "maintenance": {
         "title": "日志维护",
         "subtitle": "查看 request_log 规模并清理过期日志。",

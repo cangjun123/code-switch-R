@@ -132,6 +132,7 @@ func (ls *LogService) ListRequestLogs(platform string, provider string, limit in
 			DurationSec:           record.GetFloat64("duration_sec"),
 			FirstTokenDurationSec: record.GetFloat64("first_token_duration_sec"),
 			ClientIP:              record.GetString("client_ip"),
+			ErrorMessage:          record.GetString("error_message"),
 			Status:                requestLogStatusCompleted,
 		}
 		ls.decorateCost(&logEntry)

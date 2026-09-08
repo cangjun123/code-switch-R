@@ -132,7 +132,13 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="item in pagedLogs" :key="item.id" :class="{ 'processing-row': isProcessingLog(item) }">
+          <tr
+            v-for="item in pagedLogs"
+            :key="item.id"
+            :class="[{ 'processing-row': isProcessingLog(item) }, 'log-detail-row']"
+            :title="t('components.logs.detail.hint')"
+            @click="openDetailModal(item)"
+          >
             <td>{{ formatTime(item.created_at) }}</td>
             <td>{{ item.platform || '—' }}</td>
             <td>{{ item.provider || '—' }}</td>
@@ -141,6 +147,7 @@
             <td :class="['code', httpCodeClassForLog(item)]">
               <span v-if="isProcessingLog(item)" class="processing-tag">{{ t('components.logs.status.processing') }}</span>
               <span v-else>{{ item.http_code || '—' }}</span>
+              <span v-if="item.error_message" class="error-flag" :title="t('components.logs.detail.hasError')">⚠</span>
             </td>
             <td><span :class="['stream-tag', item.is_stream ? 'on' : 'off']">{{ formatStream(item.is_stream) }}</span></td>
             <td><span :class="['duration-tag', durationColorForLog(item, item.first_token_duration_sec)]">{{ formatFirstTokenDuration(item) }}</span></td>
@@ -229,6 +236,97 @@
         </div>
       </div>
     </BaseModal>
+
+    <!-- 请求详情弹窗 -->
+    <BaseModal
+      :open="logDetailModal.open"
+      :title="t('components.logs.detail.title')"
+      @close="closeDetailModal"
+    >
+      <div v-if="logDetailModal.item" class="log-detail-modal">
+        <dl class="log-detail-grid">
+          <div class="log-detail-field">
+            <dt>{{ t('components.logs.table.time') }}</dt>
+            <dd>{{ formatTime(logDetailModal.item.created_at) }}</dd>
+          </div>
+          <div class="log-detail-field">
+            <dt>{{ t('components.logs.table.platform') }}</dt>
+            <dd>{{ logDetailModal.item.platform || '—' }}</dd>
+          </div>
+          <div class="log-detail-field">
+            <dt>{{ t('components.logs.table.provider') }}</dt>
+            <dd>{{ logDetailModal.item.provider || '—' }}</dd>
+          </div>
+          <div class="log-detail-field">
+            <dt>{{ t('components.logs.table.model') }}</dt>
+            <dd>{{ logDetailModal.item.model || '—' }}</dd>
+          </div>
+          <div class="log-detail-field">
+            <dt>{{ t('components.logs.table.clientIp') }}</dt>
+            <dd>{{ logDetailModal.item.client_ip || '—' }}</dd>
+          </div>
+          <div class="log-detail-field">
+            <dt>{{ t('components.logs.table.httpCode') }}</dt>
+            <dd :class="['code', httpCodeClassForLog(logDetailModal.item)]">
+              {{ isProcessingLog(logDetailModal.item) ? t('components.logs.status.processing') : (logDetailModal.item.http_code || '—') }}
+            </dd>
+          </div>
+          <div class="log-detail-field">
+            <dt>{{ t('components.logs.table.stream') }}</dt>
+            <dd>{{ formatStream(logDetailModal.item.is_stream) }}</dd>
+          </div>
+          <div class="log-detail-field">
+            <dt>{{ t('components.logs.table.firstToken') }}</dt>
+            <dd>{{ formatFirstTokenDuration(logDetailModal.item) }}</dd>
+          </div>
+          <div class="log-detail-field">
+            <dt>{{ t('components.logs.table.duration') }}</dt>
+            <dd>{{ formatDuration(logDetailModal.item.duration_sec) }}</dd>
+          </div>
+          <div class="log-detail-field" v-if="logDetailModal.item.relay_key_id">
+            <dt>Relay Key</dt>
+            <dd class="mono-text">{{ logDetailModal.item.relay_key_id }}</dd>
+          </div>
+          <div class="log-detail-field" v-if="logDetailModal.item.is_degraded">
+            <dt>{{ t('components.logs.detail.degraded') }}</dt>
+            <dd>{{ t('components.logs.detail.degradedYes') }} (resend: {{ logDetailModal.item.resend_count }})</dd>
+          </div>
+        </dl>
+        <div class="log-detail-section">
+          <h3>{{ t('components.logs.table.tokens') }}</h3>
+          <div class="log-detail-tokens">
+            <div class="log-detail-field">
+              <dt>{{ t('components.logs.tokenLabels.input') }}</dt>
+              <dd>{{ formatLogTokenNumber(logDetailModal.item, logDetailModal.item.input_tokens) }}</dd>
+            </div>
+            <div class="log-detail-field">
+              <dt>{{ t('components.logs.tokenLabels.output') }}</dt>
+              <dd>{{ formatLogTokenNumber(logDetailModal.item, logDetailModal.item.output_tokens) }}</dd>
+            </div>
+            <div class="log-detail-field">
+              <dt>{{ t('components.logs.tokenLabels.reasoning') }}</dt>
+              <dd>{{ formatLogTokenNumber(logDetailModal.item, logDetailModal.item.reasoning_tokens) }}</dd>
+            </div>
+            <div class="log-detail-field">
+              <dt>{{ t('components.logs.tokenLabels.cacheWrite') }}</dt>
+              <dd>{{ formatLogTokenNumber(logDetailModal.item, logDetailModal.item.cache_create_tokens) }}</dd>
+            </div>
+            <div class="log-detail-field">
+              <dt>{{ t('components.logs.tokenLabels.cacheRead') }}</dt>
+              <dd>{{ formatLogTokenNumber(logDetailModal.item, logDetailModal.item.cache_read_tokens) }}</dd>
+            </div>
+            <div class="log-detail-field" v-if="logDetailModal.item.has_pricing">
+              <dt>{{ t('components.logs.tokenLabels.cost') }}</dt>
+              <dd>{{ formatCurrency(logDetailModal.item.total_cost) }}</dd>
+            </div>
+          </div>
+        </div>
+        <div v-if="logDetailModal.item.error_message" class="log-detail-section">
+          <h3>{{ t('components.logs.detail.errorTitle') }}</h3>
+          <pre class="log-detail-error">{{ logDetailModal.item.error_message }}</pre>
+        </div>
+      </div>
+    </BaseModal>
   </div>
 </template>
 
@@ -304,6 +402,27 @@ const tokenDetailModal = reactive<{
 }>({
   open: false,
 })
+
+// 请求详情弹窗状态
+const logDetailModal = reactive<{
+  open: boolean
+  item: RequestLog | null
+}>({
+  open: false,
+  item: null,
+})
+
+// 打开请求详情弹窗
+const openDetailModal = (item: RequestLog) => {
+  logDetailModal.item = item
+  logDetailModal.open = true
+}
+
+// 关闭请求详情弹窗
+const closeDetailModal = () => {
+  logDetailModal.open = false
+  logDetailModal.item = null
+}
 
 // 打开金额明细弹窗
 const openCostDetailModal = async () => {
@@ -1208,6 +1327,79 @@ html.dark .cost-detail-item__name {
   font-weight: 600;
   color: #f97316;
   font-variant-numeric: tabular-nums;
+}
+
+/* 请求详情弹窗 */
+.log-detail-row {
+  cursor: pointer;
+}
+.log-detail-row:hover {
+  background: rgba(148, 163, 184, 0.08);
+}
+.error-flag {
+  margin-left: 6px;
+  font-size: 0.8rem;
+  cursor: help;
+}
+.log-detail-modal {
+  min-width: 420px;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.log-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.6rem 1rem;
+  margin: 0;
+}
+.log-detail-field dt {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--mac-text-secondary);
+  margin-bottom: 2px;
+}
+.log-detail-field dd {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--mac-text);
+  word-break: break-all;
+  white-space: normal;
+}
+.mono-text {
+  font-family: 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+}
+.log-detail-section h3 {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--mac-text-secondary);
+  margin: 0 0 0.5rem;
+}
+.log-detail-tokens {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.6rem 1rem;
+}
+.log-detail-error {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  border-radius: 8px;
+  color: #f87171;
+  font-family: 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 260px;
+  overflow-y: auto;
 }
 
 /* Token 弹窗 */
