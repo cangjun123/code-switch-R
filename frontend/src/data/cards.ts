@@ -43,6 +43,8 @@ export type AutomationCard = {
   availabilityMonitorEnabled?: boolean
   // 连通性自动拉黑：检测失败时是否自动拉黑该供应商
   connectivityAutoBlacklist?: boolean
+  // 永不拉黑：开启后该供应商不会被自动拉黑（失败不计入，已有拉黑记录也视作未拉黑）
+  neverBlacklist?: boolean
   // 可用性高级配置：测试模型、端点和超时
   availabilityConfig?: {
     testModel?: string      // 测试用模型

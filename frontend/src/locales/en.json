@@ -524,6 +524,7 @@
           "level": "Priority Level",
           "availabilityMonitor": "Availability Monitoring",
           "connectivityAutoBlacklist": "Auto-Blacklist on Failure",
+          "neverBlacklist": "Never Blacklist",
           "availabilityTestModel": "Test Model (optional)",
           "availabilityTestEndpoint": "Test Endpoint (optional)",
           "availabilityTimeout": "Timeout (ms)",
@@ -565,6 +566,7 @@
           "dropResponsesTemperature": "Used only for /responses. When enabled, relay will remove top-level temperature for upstreams that reject this field.",
           "availabilityMonitor": "Enable background health checks for this provider. Checks are performed periodically to monitor availability.",
           "connectivityAutoBlacklist": "Automatically blacklist this provider if health checks fail repeatedly",
+          "neverBlacklist": "This provider will never be auto-blacklisted: failures do not count toward the threshold, and any existing blacklist entry is treated as expired. Ideal as a fallback provider in blacklist mode.",
           "availabilityAdvancedConfig": "Advanced configuration (test model, endpoint, timeout) can be edited on the Availability page",
           "availabilityTestModel": "Model to use for health checks. Leave empty to use platform default.",
           "availabilityTestEndpoint": "API endpoint for health checks. Leave empty to use platform default.",
@@ -668,7 +670,8 @@
         "resetLevelSuccess": "{name} level has been reset",
         "resetLevelFailed": "Failed to reset level",
         "levelHint": "Has failure record",
-        "levelTitle": "Blacklist Level L{level}"
+        "levelTitle": "Blacklist Level L{level}",
+        "neverBlacklistHint": "Never blacklist: this provider will not be auto-blacklisted"
       },
       "errors": {
         "loadAppSettingsFailed": "Failed to load application settings",
@@ -744,6 +747,14 @@
       },
       "tokenDetail": {
         "title": "Today's Token Breakdown"
+      },
+      "detail": {
+        "title": "Request Details",
+        "hint": "Click to view request details",
+        "hasError": "This request failed. Click for error details",
+        "errorTitle": "Error Message",
+        "degraded": "Degraded Resend",
+        "degradedYes": "Yes"
       },
       "maintenance": {
         "title": "Log Maintenance",

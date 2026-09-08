@@ -35,6 +35,10 @@ export type RequestLog = {
   ephemeral_1h_cost?: number
   has_pricing?: boolean
   status?: 'processing' | 'completed' | string
+  error_message?: string  // 失败请求的错误摘要（成功请求为空）
+  relay_key_id?: string   // 使用的 relay key
+  is_degraded?: boolean | number  // 降智重发标记
+  resend_count?: number   // 重发次数
 }
 
 type RequestLogQuery = {

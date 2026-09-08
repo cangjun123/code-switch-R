@@ -66,7 +66,7 @@ func TestEnsureRequestLogTableMigratesLegacyColumns(t *testing.T) {
 		t.Fatalf("iterate pragma rows: %v", err)
 	}
 
-	for _, column := range []string{"cache_create_tokens", "cache_read_tokens", "reasoning_tokens", "client_ip", "first_token_duration_sec"} {
+	for _, column := range []string{"cache_create_tokens", "cache_read_tokens", "reasoning_tokens", "client_ip", "first_token_duration_sec", "error_message"} {
 		if !columns[column] {
 			t.Fatalf("expected migrated column %q to exist", column)
 		}

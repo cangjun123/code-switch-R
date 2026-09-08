@@ -525,6 +525,7 @@
           "level": "优先级分组",
           "availabilityMonitor": "可用性监控",
           "connectivityAutoBlacklist": "失败自动拉黑",
+          "neverBlacklist": "永不拉黑",
           "availabilityTestModel": "测试模型（可选）",
           "availabilityTestEndpoint": "测试端点（可选）",
           "availabilityTimeout": "超时时间（毫秒）",
@@ -566,6 +567,7 @@
           "dropResponsesTemperature": "仅用于 /responses。启用后，会移除顶层 temperature，用于兼容不支持该字段的上游。",
           "availabilityMonitor": "启用后会定期进行健康检查，监控此供应商的可用性状态",
           "connectivityAutoBlacklist": "健康检查失败时自动拉黑该供应商",
+          "neverBlacklist": "开启后该供应商永远不会被自动拉黑：失败不计入连续失败计数，已有的拉黑记录也立即视作未拉黑。适合作为拉黑模式下的兜底账号。",
           "availabilityAdvancedConfig": "高级配置（测试模型、端点、超时）可在可用性页面中编辑",
           "availabilityTestModel": "用于健康检查的模型，留空则使用平台默认模型",
           "availabilityTestEndpoint": "用于健康检查的 API 端点，留空则使用平台默认端点",
@@ -669,7 +671,8 @@
         "resetLevelSuccess": "已清零 {name} 的等级",
         "resetLevelFailed": "清零等级失败，请稍后重试",
         "levelHint": "有失败记录",
-        "levelTitle": "黑名单等级 L{level}"
+        "levelTitle": "黑名单等级 L{level}",
+        "neverBlacklistHint": "永不拉黑：该供应商不会被自动拉黑"
       },
       "errors": {
         "loadAppSettingsFailed": "加载应用设置失败",
@@ -745,6 +748,14 @@
       },
       "tokenDetail": {
         "title": "今日 Token 明细"
+      },
+      "detail": {
+        "title": "请求详情",
+        "hint": "点击查看请求详情",
+        "hasError": "该请求失败，点击查看错误详情",
+        "errorTitle": "错误信息",
+        "degraded": "降智重发",
+        "degradedYes": "是"
       },
       "maintenance": {
         "title": "日志维护",
