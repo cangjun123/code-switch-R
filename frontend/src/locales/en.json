@@ -261,6 +261,7 @@
       "providerAccess": "Provider access",
       "restrictProviders": "Restrict accessible Codex providers",
       "selectedProviders": "Selected only",
+      "selectedProvidersCount": "{count} selected",
       "allProviders": "All providers",
       "providerDisabled": "Disabled",
       "providerUnavailable": "Deleted",
@@ -753,6 +754,9 @@
         "hint": "Click to view request details",
         "hasError": "This request failed. Click for error details",
         "errorTitle": "Error Message",
+        "copy": "Copy error",
+        "copied": "Copied",
+        "copyFailed": "Copy failed. Please select and copy manually",
         "degraded": "Degraded Resend",
         "degradedYes": "Yes"
       },

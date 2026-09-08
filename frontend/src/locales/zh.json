@@ -261,6 +261,7 @@
       "providerAccess": "Provider 访问范围",
       "restrictProviders": "限制可访问的 Codex Provider",
       "selectedProviders": "仅限已选择",
+      "selectedProvidersCount": "仅限已选 {count} 个",
       "allProviders": "全部 Provider",
       "providerDisabled": "未启用",
       "providerUnavailable": "已删除",
@@ -754,6 +755,9 @@
         "hint": "点击查看请求详情",
         "hasError": "该请求失败，点击查看错误详情",
         "errorTitle": "错误信息",
+        "copy": "复制错误信息",
+        "copied": "已复制",
+        "copyFailed": "复制失败，请手动选中复制",
         "degraded": "降智重发",
         "degradedYes": "是"
       },

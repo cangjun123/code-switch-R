@@ -27,6 +27,7 @@ import {
 } from '../../services/adminAuth'
 import { extractErrorMessage } from '../../utils/error'
 import { showToast } from '../../utils/toast'
+import { copyText } from '../../utils/clipboard'
 
 const { t } = useI18n()
 const authState = useAdminAuthState()
@@ -67,6 +68,18 @@ const unpricedModels = ref<CodexRelayUnpricedModel[]>([])
 const pricesLoading = ref(false)
 const pricesCollapsed = ref(true)
 const priceBusyModel = ref('')
+// 展开的 key 行（默认全部折叠，仅显示关键信息）
+const expandedKeyIds = ref<Set<string>>(new Set())
+
+const toggleKeyExpanded = (key: CodexRelayKeyListItem) => {
+  const next = new Set(expandedKeyIds.value)
+  if (next.has(key.id)) {
+    next.delete(key.id)
+  } else {
+    next.add(key.id)
+  }
+  expandedKeyIds.value = next
+}
 const priceDraft = ref<CodexRelayModelPrice>({
   model: '', input: '0', cachedInput: '0', output: '0', reasoningOutput: '0',
 })
@@ -83,31 +96,27 @@ const formatDateTime = (value: string) => {
   return date.toLocaleString()
 }
 
-const copyToClipboard = async (value: string) => {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value)
-    return
-  }
-
-  const textArea = document.createElement('textarea')
-  textArea.value = value
-  textArea.style.position = 'fixed'
-  textArea.style.opacity = '0'
-  document.body.appendChild(textArea)
-  textArea.focus()
-  textArea.select()
-
-  const success = document.execCommand('copy')
-  document.body.removeChild(textArea)
-  if (!success) {
-    throw new Error(t('auth.errors.copyFailed'))
-  }
-}
+const copyToClipboard = copyText
 
 const loadKeys = async () => {
   keysLoading.value = true
   try {
-    keys.value = await listCodexRelayKeys()
+    const updated = await listCodexRelayKeys()
+    keys.value = updated
+    // 只清理已删除 key 的草稿；存活 key 的草稿保留，避免覆盖用户未保存的编辑。
+    // （新建 key 的草稿在 loadKeys 前不存在，下次渲染时按服务器数据惰性初始化，
+    // 因此无需重建存活草稿即可修复"新建 key 访问范围为空"的问题。）
+    const knownIds = new Set(updated.map((key) => key.id))
+    for (const id of Object.keys(accessDrafts.value)) {
+      if (!knownIds.has(id)) {
+        delete accessDrafts.value[id]
+      }
+    }
+    for (const id of Object.keys(quotaDrafts.value)) {
+      if (!knownIds.has(id)) {
+        delete quotaDrafts.value[id]
+      }
+    }
   } catch (error) {
     showToast(extractErrorMessage(error, t('auth.security.loadKeysFailed')), 'error')
   } finally {
@@ -690,128 +699,173 @@ onMounted(async () => {
         {{ t('auth.security.empty') }}
       </div>
       <div v-else class="security-key-list">
-        <article v-for="key in keys" :key="key.id" class="security-key-row">
-          <div class="security-key-meta">
-            <div v-if="editingNameId === key.id" class="key-name-editor">
-              <input
-                v-model="nameDrafts[key.id]"
-                class="base-input"
-                type="text"
-                maxlength="128"
-                autofocus
-                :aria-label="t('auth.security.keyName')"
-                :disabled="nameBusyId === key.id"
-                @keyup.enter="handleUpdateKeyName(key)"
-                @keyup.esc="cancelEditKeyName(key)"
-              />
-              <button class="security-btn secondary key-name-button" :disabled="nameBusyId === key.id" @click="handleUpdateKeyName(key)">
-                {{ nameBusyId === key.id ? t('auth.security.savingKeyName') : t('auth.security.saveKeyName') }}
-              </button>
-              <button class="security-btn secondary key-name-button" :disabled="nameBusyId === key.id" @click="cancelEditKeyName(key)">
-                {{ t('common.cancel') }}
-              </button>
+        <article
+          v-for="key in keys"
+          :key="key.id"
+          :class="['security-key-row', { collapsed: !expandedKeyIds.has(key.id) }]"
+        >
+          <!-- 折叠态摘要行：名称、掩码 key、额度、provider 范围 -->
+          <div
+            v-if="!expandedKeyIds.has(key.id)"
+            class="key-collapsed-summary"
+            role="button"
+            tabindex="0"
+            :aria-expanded="expandedKeyIds.has(key.id)"
+            :title="t('common.expand')"
+            @click="toggleKeyExpanded(key)"
+            @keydown.enter.prevent="toggleKeyExpanded(key)"
+            @keydown.space.prevent="toggleKeyExpanded(key)"
+          >
+            <div class="key-collapsed-main">
+              <strong class="key-collapsed-name">{{ key.name }}</strong>
+              <code class="security-key-value">{{ key.maskedKey }}</code>
             </div>
-            <div v-else class="key-name-display">
-              <strong>{{ key.name }}</strong>
-              <button class="security-btn secondary key-name-button" :disabled="keyBusyId === key.id || nameBusyId !== ''" @click="beginEditKeyName(key)">
-                {{ t('auth.security.editKeyName') }}
-              </button>
-            </div>
-            <span>{{ formatDateTime(key.createdAt) }}</span>
-          </div>
-          <code class="security-key-value">{{ key.maskedKey }}</code>
-          <div class="security-key-actions">
-            <button
-              class="security-btn secondary"
-              :disabled="keyBusyId === key.id || nameBusyId === key.id"
-              @click="handleCopyExistingKey(key.id)"
-            >
-              {{ t('auth.security.copy') }}
-            </button>
-            <button
-              class="security-btn danger"
-              :disabled="keyBusyId === key.id || nameBusyId === key.id"
-              @click="handleDeleteKey(key)"
-            >
-              {{ t('auth.security.delete') }}
-            </button>
-          </div>
-          <div class="quota-editor">
-            <div class="quota-summary">
-              <span v-if="draftForKey(key).mode === 'token'">{{ t('auth.security.tokenUsage') }}: {{ key.quota?.tokenUsed ?? 0 }} / {{ key.tokenLimit || t('auth.security.unlimited') }}</span>
-              <span v-else>{{ t('auth.security.usdUsage') }}: ${{ key.quota?.usdUsed ?? '0' }} / {{ key.usdLimit === '0' ? t('auth.security.unlimited') : `$${key.usdLimit}` }}</span>
-              <span>{{ t('auth.security.period') }}: {{ t(`auth.security.period${(key.quotaPeriod || 'once').charAt(0).toUpperCase()}${(key.quotaPeriod || 'once').slice(1)}`) }}</span>
-              <span v-if="key.quota?.resetAt">{{ t('auth.security.nextReset') }}: {{ formatDateTime(key.quota.resetAt) }} ({{ key.quota.serverTimezone }})</span>
+            <div class="key-collapsed-meta">
+              <!-- 直接读服务器状态（与草稿的 mode 派生逻辑相同），不受未保存编辑影响 -->
+              <span v-if="(key.tokenLimit ?? 0) > 0 && (key.usdLimit || '0') === '0'">
+                {{ t('auth.security.tokenUsage') }}: {{ key.quota?.tokenUsed ?? 0 }} / {{ key.tokenLimit || t('auth.security.unlimited') }}
+              </span>
+              <span v-else>
+                {{ t('auth.security.usdUsage') }}: ${{ key.quota?.usdUsed ?? '0' }} / {{ key.usdLimit === '0' ? t('auth.security.unlimited') : `$${key.usdLimit}` }}
+              </span>
+              <span class="key-collapsed-scope">
+                {{ (key.allowedProviderIds?.length ?? 0) > 0
+                  ? t('auth.security.selectedProvidersCount', { count: key.allowedProviderIds.length })
+                  : t('auth.security.allProviders') }}
+              </span>
               <strong v-if="key.quota?.blocked" class="quota-blocked">{{ t('auth.security.quotaBlocked') }}</strong>
             </div>
-            <div class="quota-edit-fields">
-              <div class="quota-mode-toggle" role="radiogroup" :aria-label="t('auth.security.quotaType')">
-                <label :class="{ active: draftForKey(key).mode === 'usd' }">
-                  <input v-model="draftForKey(key).mode" type="radio" value="usd" />
-                  <span>{{ t('auth.security.quotaTypeUsd') }}</span>
-                </label>
-                <label :class="{ active: draftForKey(key).mode === 'token' }">
-                  <input v-model="draftForKey(key).mode" type="radio" value="token" />
-                  <span>{{ t('auth.security.quotaTypeToken') }}</span>
-                </label>
-              </div>
-              <input v-if="draftForKey(key).mode === 'token'" v-model="draftForKey(key).tokenLimit" class="base-input" type="number" min="0" step="1" :aria-label="t('auth.security.tokenLimit')" />
-              <input v-else v-model="draftForKey(key).usdLimit" class="base-input" inputmode="decimal" :aria-label="t('auth.security.usdLimit')" />
-              <select v-model="draftForKey(key).period" class="base-input" :aria-label="t('auth.security.period')">
-                <option value="once">{{ t('auth.security.periodOnce') }}</option>
-                <option value="daily">{{ t('auth.security.periodDaily') }}</option>
-                <option value="weekly">{{ t('auth.security.periodWeekly') }}</option>
-                <option value="monthly">{{ t('auth.security.periodMonthly') }}</option>
-              </select>
-              <button
-                class="security-btn secondary"
-                :disabled="quotaBusyId === key.id || quotaRefreshBusyId !== ''"
-                @click="handleRefreshQuota(key)"
-              >
-                {{ quotaRefreshBusyId === key.id ? t('auth.security.refreshingQuota') : t('auth.security.refreshQuota') }}
-              </button>
-              <button class="security-btn secondary" :disabled="quotaBusyId === key.id || quotaRefreshBusyId === key.id" @click="handleUpdateQuota(key)">{{ t('auth.security.saveQuota') }}</button>
-              <button class="security-btn secondary" :disabled="quotaBusyId === key.id || quotaRefreshBusyId === key.id" @click="handleResetQuota(key)">{{ t('auth.security.resetQuota') }}</button>
-            </div>
+            <span class="key-expand-chevron" aria-hidden="true">▸</span>
           </div>
-          <fieldset class="provider-access-editor" :aria-label="t('auth.security.providerAccess')">
-            <div class="provider-access-header">
-              <label class="provider-access-toggle">
-                <input
-                  v-model="accessDraftForKey(key).restricted"
-                  type="checkbox"
+
+          <!-- 展开态：完整编辑 -->
+          <template v-else>
+            <div class="key-expanded-header">
+              <div class="security-key-meta">
+                <div v-if="editingNameId === key.id" class="key-name-editor">
+                  <input
+                    v-model="nameDrafts[key.id]"
+                    class="base-input"
+                    type="text"
+                    maxlength="128"
+                    autofocus
+                    :aria-label="t('auth.security.keyName')"
+                    :disabled="nameBusyId === key.id"
+                    @keyup.enter="handleUpdateKeyName(key)"
+                    @keyup.esc="cancelEditKeyName(key)"
+                  />
+                  <button class="security-btn secondary key-name-button" :disabled="nameBusyId === key.id" @click="handleUpdateKeyName(key)">
+                    {{ nameBusyId === key.id ? t('auth.security.savingKeyName') : t('auth.security.saveKeyName') }}
+                  </button>
+                  <button class="security-btn secondary key-name-button" :disabled="nameBusyId === key.id" @click="cancelEditKeyName(key)">
+                    {{ t('common.cancel') }}
+                  </button>
+                </div>
+                <div v-else class="key-name-display">
+                  <strong>{{ key.name }}</strong>
+                  <button class="security-btn secondary key-name-button" :disabled="keyBusyId === key.id || nameBusyId !== ''" @click="beginEditKeyName(key)">
+                    {{ t('auth.security.editKeyName') }}
+                  </button>
+                </div>
+                <span>{{ formatDateTime(key.createdAt) }}</span>
+              </div>
+              <code class="security-key-value">{{ key.maskedKey }}</code>
+              <div class="security-key-actions">
+                <button
+                  class="security-btn secondary"
+                  :disabled="keyBusyId === key.id || nameBusyId === key.id"
+                  @click="handleCopyExistingKey(key.id)"
+                >
+                  {{ t('auth.security.copy') }}
+                </button>
+                <button class="security-btn danger"
+                  :disabled="keyBusyId === key.id || nameBusyId === key.id"
+                  @click="handleDeleteKey(key)"
+                >
+                  {{ t('auth.security.delete') }}
+                </button>
+                <button class="security-btn secondary key-collapse-toggle" type="button" @click="toggleKeyExpanded(key)">
+                  {{ t('common.collapse') }}
+                </button>
+              </div>
+            </div>
+            <div class="quota-editor">
+              <div class="quota-summary">
+                <span v-if="draftForKey(key).mode === 'token'">{{ t('auth.security.tokenUsage') }}: {{ key.quota?.tokenUsed ?? 0 }} / {{ key.tokenLimit || t('auth.security.unlimited') }}</span>
+                <span v-else>{{ t('auth.security.usdUsage') }}: ${{ key.quota?.usdUsed ?? '0' }} / {{ key.usdLimit === '0' ? t('auth.security.unlimited') : `$${key.usdLimit}` }}</span>
+                <span>{{ t('auth.security.period') }}: {{ t(`auth.security.period${(key.quotaPeriod || 'once').charAt(0).toUpperCase()}${(key.quotaPeriod || 'once').slice(1)}`) }}</span>
+                <span v-if="key.quota?.resetAt">{{ t('auth.security.nextReset') }}: {{ formatDateTime(key.quota.resetAt) }} ({{ key.quota.serverTimezone }})</span>
+                <strong v-if="key.quota?.blocked" class="quota-blocked">{{ t('auth.security.quotaBlocked') }}</strong>
+              </div>
+              <div class="quota-edit-fields">
+                <div class="quota-mode-toggle" role="radiogroup" :aria-label="t('auth.security.quotaType')">
+                  <label :class="{ active: draftForKey(key).mode === 'usd' }">
+                    <input v-model="draftForKey(key).mode" type="radio" value="usd" />
+                    <span>{{ t('auth.security.quotaTypeUsd') }}</span>
+                  </label>
+                  <label :class="{ active: draftForKey(key).mode === 'token' }">
+                    <input v-model="draftForKey(key).mode" type="radio" value="token" />
+                    <span>{{ t('auth.security.quotaTypeToken') }}</span>
+                  </label>
+                </div>
+                <input v-if="draftForKey(key).mode === 'token'" v-model="draftForKey(key).tokenLimit" class="base-input" type="number" min="0" step="1" :aria-label="t('auth.security.tokenLimit')" />
+                <input v-else v-model="draftForKey(key).usdLimit" class="base-input" inputmode="decimal" :aria-label="t('auth.security.usdLimit')" />
+                <select v-model="draftForKey(key).period" class="base-input" :aria-label="t('auth.security.period')">
+                  <option value="once">{{ t('auth.security.periodOnce') }}</option>
+                  <option value="daily">{{ t('auth.security.periodDaily') }}</option>
+                  <option value="weekly">{{ t('auth.security.periodWeekly') }}</option>
+                  <option value="monthly">{{ t('auth.security.periodMonthly') }}</option>
+                </select>
+                <button
+                  class="security-btn secondary"
+                  :disabled="quotaBusyId === key.id || quotaRefreshBusyId !== ''"
+                  @click="handleRefreshQuota(key)"
+                >
+                  {{ quotaRefreshBusyId === key.id ? t('auth.security.refreshingQuota') : t('auth.security.refreshQuota') }}
+                </button>
+                <button class="security-btn secondary" :disabled="quotaBusyId === key.id || quotaRefreshBusyId === key.id" @click="handleUpdateQuota(key)">{{ t('auth.security.saveQuota') }}</button>
+                <button class="security-btn secondary" :disabled="quotaBusyId === key.id || quotaRefreshBusyId === key.id" @click="handleResetQuota(key)">{{ t('auth.security.resetQuota') }}</button>
+              </div>
+            </div>
+            <fieldset class="provider-access-editor" :aria-label="t('auth.security.providerAccess')">
+              <div class="provider-access-header">
+                <label class="provider-access-toggle">
+                  <input
+                    v-model="accessDraftForKey(key).restricted"
+                    type="checkbox"
+                    :disabled="accessBusyId === key.id"
+                  />
+                  <span>{{ t('auth.security.restrictProviders') }}</span>
+                </label>
+                <span class="provider-access-state">
+                  {{ accessDraftForKey(key).restricted ? t('auth.security.selectedProviders') : t('auth.security.allProviders') }}
+                </span>
+              </div>
+              <div v-if="accessDraftForKey(key).restricted" class="provider-options">
+                <label v-for="provider in providerOptionsForKey(key)" :key="provider.id" class="provider-option">
+                  <input
+                    v-model="accessDraftForKey(key).allowedProviderIds"
+                    type="checkbox"
+                    :value="provider.id"
+                    :disabled="accessBusyId === key.id"
+                  />
+                  <span>{{ provider.name }}</span>
+                  <small v-if="provider.unavailable">{{ t('auth.security.providerUnavailable') }}</small>
+                  <small v-else-if="!provider.enabled">{{ t('auth.security.providerDisabled') }}</small>
+                </label>
+                <span v-if="providerOptionsForKey(key).length === 0" class="provider-access-empty">{{ t('auth.security.noProviders') }}</span>
+              </div>
+              <div class="provider-access-actions">
+                <button
+                  class="security-btn secondary"
                   :disabled="accessBusyId === key.id"
-                />
-                <span>{{ t('auth.security.restrictProviders') }}</span>
-              </label>
-              <span class="provider-access-state">
-                {{ accessDraftForKey(key).restricted ? t('auth.security.selectedProviders') : t('auth.security.allProviders') }}
-              </span>
-            </div>
-            <div v-if="accessDraftForKey(key).restricted" class="provider-options">
-              <label v-for="provider in providerOptionsForKey(key)" :key="provider.id" class="provider-option">
-                <input
-                  v-model="accessDraftForKey(key).allowedProviderIds"
-                  type="checkbox"
-                  :value="provider.id"
-                  :disabled="accessBusyId === key.id"
-                />
-                <span>{{ provider.name }}</span>
-                <small v-if="provider.unavailable">{{ t('auth.security.providerUnavailable') }}</small>
-                <small v-else-if="!provider.enabled">{{ t('auth.security.providerDisabled') }}</small>
-              </label>
-              <span v-if="providerOptionsForKey(key).length === 0" class="provider-access-empty">{{ t('auth.security.noProviders') }}</span>
-            </div>
-            <div class="provider-access-actions">
-              <button
-                class="security-btn secondary"
-                :disabled="accessBusyId === key.id"
-                @click="handleUpdateProviderAccess(key)"
-              >
-                {{ t('auth.security.saveProviderAccess') }}
-              </button>
-            </div>
-          </fieldset>
+                  @click="handleUpdateProviderAccess(key)"
+                >
+                  {{ t('auth.security.saveProviderAccess') }}
+                </button>
+              </div>
+            </fieldset>
+          </template>
         </article>
       </div>
     </div>
@@ -1128,12 +1182,90 @@ onMounted(async () => {
 
 .security-key-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(200px, 0.9fr) auto;
   align-items: center;
   gap: 16px;
   padding: 14px 16px;
   border-radius: 18px;
   background: color-mix(in srgb, var(--mac-surface-strong) 82%, transparent);
+}
+
+/* 展开态沿用原三列布局 */
+.security-key-row:not(.collapsed) {
+  grid-template-columns: minmax(0, 1fr) minmax(200px, 0.9fr) auto;
+}
+
+/* 折叠态：单列摘要行 */
+.security-key-row.collapsed {
+  grid-template-columns: 1fr;
+  padding: 10px 16px;
+}
+
+.key-collapsed-summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.key-collapsed-summary:focus-visible {
+  outline: 2px solid var(--mac-accent);
+  outline-offset: 2px;
+}
+
+.key-collapsed-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.key-collapsed-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.key-collapsed-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: var(--mac-text-secondary);
+  font-size: 0.8rem;
+}
+
+.key-collapsed-scope {
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--mac-text) 10%, var(--mac-surface));
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.key-collapse-toggle {
+  min-height: 32px;
+  border-radius: 8px;
+  padding: 0 12px;
+  font-size: 0.76rem;
+  flex: 0 0 auto;
+}
+
+/* 展开态头部：名称编辑 + key + 操作按钮对齐 */
+.key-expanded-header {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(200px, 0.9fr) auto;
+  align-items: center;
+  gap: 16px;
+}
+
+.key-expand-chevron {
+  color: var(--mac-text-secondary);
+  font-size: 0.8rem;
+  flex: 0 0 auto;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .quota-editor {
@@ -1392,8 +1524,14 @@ onMounted(async () => {
 
 @media (max-width: 900px) {
   .security-grid,
-  .security-key-row {
+  .security-key-row:not(.collapsed),
+  .key-expanded-header {
     grid-template-columns: 1fr;
+  }
+
+  .key-collapsed-summary {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .security-card-header,

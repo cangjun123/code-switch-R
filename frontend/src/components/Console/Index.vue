@@ -2,6 +2,7 @@
 import { computed, ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { Call } from '@wailsio/runtime'
+import { copyText } from '../../utils/clipboard'
 
 interface ConsoleLog {
   timestamp: string
@@ -102,25 +103,7 @@ const formatLogLine = (log: ConsoleLog) => {
   return `[${formatTimestamp(log.timestamp)}] [${log.level}] ${log.message}`.trimEnd()
 }
 
-const copyToClipboard = async (value: string) => {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value)
-    return
-  }
-
-  const textArea = document.createElement('textarea')
-  textArea.value = value
-  textArea.style.position = 'fixed'
-  textArea.style.opacity = '0'
-  document.body.appendChild(textArea)
-  textArea.focus()
-  textArea.select()
-  const success = document.execCommand('copy')
-  document.body.removeChild(textArea)
-  if (!success) {
-    throw new Error('copy failed')
-  }
-}
+const copyToClipboard = copyText
 
 const setCopyStatus = (message: string) => {
   copyStatus.value = message
