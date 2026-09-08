@@ -501,9 +501,14 @@ func (prs *ProviderRelayService) registerRoutes(router gin.IRouter) {
 
 	router.POST("/v1/messages", claudeAuth, prs.proxyHandler("claude", "/v1/messages"))
 	router.POST("/v1/messages/count_tokens", claudeAuth, prs.proxyHandler("claude", "/v1/messages/count_tokens"))
+	// responses 路由双形式：官方 Codex CLI 请求不带 /v1（base_url 直指根），
+	// 但用户习惯把 base_url 配成 .../v1，客户端会请求 /v1/responses。两种都收。
 	router.POST("/responses", codexTrace, codexAuth, codexQuota, prs.proxyHandler("codex", "/responses"))
+	router.POST("/v1/responses", codexTrace, codexAuth, codexQuota, prs.proxyHandler("codex", "/responses"))
 	router.OPTIONS("/v1/chat/completions", prs.openAIChatCompletionsOptionsHandler())
 	router.POST("/v1/chat/completions", prs.openAIChatCompletionsCORSMiddleware(), codexTrace, codexAuth, codexQuota, prs.proxyHandler("codex", "/v1/chat/completions"))
+	// chat/completions 不带 v1 的兜底路由（少数客户端直接请求 /chat/completions）
+	router.POST("/chat/completions", prs.openAIChatCompletionsCORSMiddleware(), codexTrace, codexAuth, codexQuota, prs.proxyHandler("codex", "/v1/chat/completions"))
 	router.OPTIONS("/v1/quota", prs.codexQuotaOptionsHandler())
 	router.GET("/v1/quota", prs.codexQuotaCORSMiddleware(), codexAuth, prs.codexQuotaStatusHandler())
 	router.OPTIONS("/v1/images/generations", prs.openAIImagesOptionsHandler())
@@ -3253,10 +3258,72 @@ func ensureChatCompletionUsageOption(body []byte) []byte {
 	return encoded
 }
 
+// joinURL 拼接上游 URL，并规整 v1 段：最终路径恰好包含一个 v1。
+// 规则：
+//   - base 末尾的 /v1 段（可连续多个，大小写不敏感）先剥掉——用户把 APIURL
+//     配成 https://host/v1 不会拼出 /v1/v1/...
+//   - 端点若不带版本段（v1 / v1beta / v2 ...）且首段是已知 API 路由根
+//     （responses / chat / messages / models / images / tasks ...），补上 /v1——
+//     内部端点 /responses 发往上游时变成 /v1/responses
+//   - 其他自定义路径（如 Azure 风格 /openai/deployments/...）原样保留
 func joinURL(base string, endpoint string) string {
-	base = strings.TrimSuffix(base, "/")
-	endpoint = "/" + strings.TrimPrefix(endpoint, "/")
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	for {
+		idx := strings.LastIndex(base, "/")
+		if idx < 0 || !strings.EqualFold(base[idx+1:], "v1") {
+			break
+		}
+		base = base[:idx]
+	}
+
+	endpoint = "/" + strings.TrimLeft(strings.TrimSpace(endpoint), "/")
+	if !endpointHasVersionPrefix(endpoint) && endpointStartsWithAPIRoot(endpoint) {
+		endpoint = "/v1" + endpoint
+	}
 	return base + endpoint
+}
+
+// endpointHasVersionPrefix 端点首段是否为版本段（v1 / v1beta / v2 ...）
+func endpointHasVersionPrefix(endpoint string) bool {
+	return isVersionSegment(firstPathSegment(endpoint))
+}
+
+// endpointStartsWithAPIRoot 端点首段是否为已知 API 路由根（这些端点标准上都挂在 /v1 下）
+func endpointStartsWithAPIRoot(endpoint string) bool {
+	switch strings.ToLower(firstPathSegment(endpoint)) {
+	case "responses", "chat", "messages", "models", "images", "tasks",
+		"completions", "embeddings", "count_tokens", "moderations":
+		return true
+	}
+	return false
+}
+
+func firstPathSegment(endpoint string) string {
+	seg := strings.TrimPrefix(strings.TrimLeft(endpoint, "/"), "/")
+	if idx := strings.Index(seg, "/"); idx >= 0 {
+		seg = seg[:idx]
+	}
+	return seg
+}
+
+// isVersionSegment 判断路径段是否形如 v1 / v1beta / v2（字母 v + 数字，可带字母后缀）
+func isVersionSegment(seg string) bool {
+	if len(seg) < 2 || (seg[0] != 'v' && seg[0] != 'V') {
+		return false
+	}
+	hasDigit := false
+	for i := 1; i < len(seg); i++ {
+		c := seg[i]
+		switch {
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		case (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'):
+			// 字母后缀（如 beta）合法，但必须已有数字在前（v1beta）
+		default:
+			return false
+		}
+	}
+	return hasDigit
 }
 
 func boolToInt(b bool) int {
