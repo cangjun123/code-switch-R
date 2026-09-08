@@ -385,14 +385,9 @@ func (cts *ConnectivityTestService) truncateMessage(msg string) string {
 	return msg
 }
 
-// buildTargetURL 根据用户配置的端点构建目标 URL
+// buildTargetURL 根据用户配置的端点构建目标 URL（v1 段规整与 relay 转发一致）
 func (cts *ConnectivityTestService) buildTargetURL(provider *Provider, platform string) string {
-	baseURL := strings.TrimSuffix(provider.APIURL, "/")
-	endpoint := cts.getEffectiveEndpoint(provider, platform)
-	if !strings.HasPrefix(endpoint, "/") {
-		endpoint = "/" + endpoint
-	}
-	return baseURL + endpoint
+	return joinURL(provider.APIURL, cts.getEffectiveEndpoint(provider, platform))
 }
 
 func (cts *ConnectivityTestService) getEffectiveModel(provider *Provider, platform string) string {

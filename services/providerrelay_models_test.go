@@ -305,8 +305,8 @@ func TestCodexResponsesRequireManagedKey(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("期望 POST 请求，收到 %s", r.Method)
 		}
-		if r.URL.Path != "/responses" {
-			t.Errorf("期望路径 /responses，收到 %s", r.URL.Path)
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("期望路径 /v1/responses，收到 %s", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer provider-api-key" {
 			t.Errorf("上游 Authorization 头不正确，期望 'Bearer provider-api-key'，收到 %q", got)
@@ -485,8 +485,8 @@ func TestCodexResponsesRouteSkipsChatOnlyProviders(t *testing.T) {
 	var responsesHits int
 	responsesServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		responsesHits++
-		if r.URL.Path != "/responses" {
-			t.Errorf("期望路径 /responses，收到 %s", r.URL.Path)
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("期望路径 /v1/responses，收到 %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"resp_ok","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"pong"}]}]}`))
@@ -566,8 +566,8 @@ func TestCodexResponsesBridgeInstructionsWhenProviderEnabled(t *testing.T) {
 	var upstreamHits int
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits++
-		if r.URL.Path != "/responses" {
-			t.Errorf("期望路径 /responses，收到 %s", r.URL.Path)
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("期望路径 /v1/responses，收到 %s", r.URL.Path)
 		}
 
 		body, err := io.ReadAll(r.Body)
@@ -644,8 +644,8 @@ func TestCodexResponsesForceStoreFalseWhenProviderEnabled(t *testing.T) {
 	var upstreamHits int
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits++
-		if r.URL.Path != "/responses" {
-			t.Errorf("期望路径 /responses，收到 %s", r.URL.Path)
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("期望路径 /v1/responses，收到 %s", r.URL.Path)
 		}
 
 		body, err := io.ReadAll(r.Body)
@@ -716,8 +716,8 @@ func TestCodexResponsesDropMaxOutputTokensWhenProviderEnabled(t *testing.T) {
 	var upstreamHits int
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits++
-		if r.URL.Path != "/responses" {
-			t.Errorf("期望路径 /responses，收到 %s", r.URL.Path)
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("期望路径 /v1/responses，收到 %s", r.URL.Path)
 		}
 
 		body, err := io.ReadAll(r.Body)
@@ -789,8 +789,8 @@ func TestCodexResponsesDropTemperatureWhenProviderEnabled(t *testing.T) {
 	var upstreamHits int
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits++
-		if r.URL.Path != "/responses" {
-			t.Errorf("期望路径 /responses，收到 %s", r.URL.Path)
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("期望路径 /v1/responses，收到 %s", r.URL.Path)
 		}
 
 		body, err := io.ReadAll(r.Body)
@@ -862,8 +862,8 @@ func TestCodexResponsesDropConfiguredFieldsWhenProviderEnabled(t *testing.T) {
 	var upstreamHits int
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits++
-		if r.URL.Path != "/responses" {
-			t.Errorf("期望路径 /responses，收到 %s", r.URL.Path)
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("期望路径 /v1/responses，收到 %s", r.URL.Path)
 		}
 
 		body, err := io.ReadAll(r.Body)

@@ -546,12 +546,8 @@ func (hcs *HealthCheckService) checkProvider(ctx context.Context, provider Provi
 		return result
 	}
 
-	// 构建目标 URL
-	baseURL := strings.TrimSuffix(provider.APIURL, "/")
-	if !strings.HasPrefix(endpoint, "/") {
-		endpoint = "/" + endpoint
-	}
-	targetURL := baseURL + endpoint
+	// 构建目标 URL（v1 段规整与 relay 转发一致）
+	targetURL := joinURL(provider.APIURL, endpoint)
 
 	// 创建 HTTP 请求
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(reqBody))
