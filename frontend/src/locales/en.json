@@ -754,7 +754,7 @@
         "hint": "Click to view request details",
         "hasError": "This request failed. Click for error details",
         "errorTitle": "Error Message",
-        "copy": "Copy error",
+        "copy": "Copy",
         "copied": "Copied",
         "copyFailed": "Copy failed. Please select and copy manually",
         "degraded": "Degraded Resend",
