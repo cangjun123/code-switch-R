@@ -52,6 +52,56 @@
         </div>
       </section>
 
+      <!-- Antigravity / 云端接入信息 -->
+      <section class="automation-section antigravity-section">
+        <div class="section-header">
+          <h2 class="section-title">{{ t('components.gemini.antigravity.title') }}</h2>
+        </div>
+        <p class="antigravity-lead">{{ t('components.gemini.antigravity.lead') }}</p>
+
+        <div v-if="antigravity.error" class="antigravity-error">
+          {{ t('components.gemini.antigravity.loadFailed') }}
+        </div>
+
+        <template v-else>
+          <div class="antigravity-field">
+            <div class="field-head">
+              <span class="field-label">{{ t('components.gemini.antigravity.baseUrlLabel') }}</span>
+              <BaseButton variant="outline" size="sm" :disabled="!antigravity.baseUrl" @click="copyWithToast(antigravity.baseUrl, 'baseUrl')">
+                {{ antigravity.copiedField === 'baseUrl' ? t('components.gemini.antigravity.copied') : t('components.gemini.antigravity.copy') }}
+              </BaseButton>
+            </div>
+            <code class="field-value">{{ antigravity.baseUrl || '...' }}</code>
+            <p class="field-hint">{{ t('components.gemini.antigravity.baseUrlHint') }}</p>
+          </div>
+
+          <div class="antigravity-field">
+            <div class="field-head">
+              <span class="field-label">{{ t('components.gemini.antigravity.apiKeyLabel') }}</span>
+            </div>
+            <div class="field-head key-row">
+              <code class="field-value">{{ antigravity.maskedKey || t('components.gemini.antigravity.keyPlaceholder') }}</code>
+              <BaseButton variant="outline" size="sm" :disabled="keyBusy" @click="copyRelayKey">
+                {{ t('components.gemini.antigravity.copy') }}
+              </BaseButton>
+            </div>
+            <p class="field-hint">{{ t('components.gemini.antigravity.apiKeyHint') }}</p>
+          </div>
+
+          <div class="antigravity-field">
+            <div class="field-head">
+              <span class="field-label">agy</span>
+              <BaseButton variant="outline" size="sm" :disabled="!antigravity.baseUrl" @click="copySnippet">
+                {{ t('components.gemini.antigravity.copySnippet') }}
+              </BaseButton>
+            </div>
+            <pre class="field-snippet">export GOOGLE_GEMINI_BASE_URL={{ antigravity.baseUrl || '<base-url>' }}
+export GEMINI_API_KEY=<relay-key>
+# ~/.gemini/antigravity-cli/settings.json → {"modelProvider": "gemini"}</pre>
+          </div>
+        </template>
+      </section>
+
       <!-- 预设供应商 -->
       <section class="automation-section">
         <div class="section-header">
@@ -269,6 +319,11 @@ import BaseButton from '../common/BaseButton.vue'
 import BaseModal from '../common/BaseModal.vue'
 import BaseInput from '../common/BaseInput.vue'
 import lobeIcons from '../../icons/lobeIconMap'
+import { copyText } from '../../utils/clipboard'
+import { showToast } from '../../utils/toast'
+import { extractErrorMessage } from '../../utils/error'
+import { fetchGeminiProxyStatus } from '../../services/geminiSettings'
+import { listCodexRelayKeys, getCodexRelayKeySecret, type CodexRelayKeyListItem } from '../../services/adminAuth'
 import {
   GetPresets,
   GetProviders,
@@ -317,6 +372,77 @@ const confirmState = reactive({
   open: false,
   provider: null as BindingGeminiProvider | null,
 })
+
+// Antigravity / 云端接入信息
+const antigravity = reactive({
+  baseUrl: '',
+  relayKey: null as CodexRelayKeyListItem | null,
+  maskedKey: '',
+  error: false,
+  copiedField: '',
+})
+const keyBusy = ref(false)
+
+const loadAntigravityInfo = async () => {
+  antigravity.error = false
+  try {
+    const [proxyStatus, keys] = await Promise.all([
+      fetchGeminiProxyStatus(),
+      listCodexRelayKeys(),
+    ])
+    antigravity.baseUrl = proxyStatus.base_url || ''
+    antigravity.relayKey = keys.find(k => k.enabled) ?? null
+    antigravity.maskedKey = antigravity.relayKey?.maskedKey ?? ''
+  } catch (err) {
+    console.error('Failed to load Antigravity access info:', err)
+    antigravity.error = true
+  }
+}
+
+const copyWithToast = async (text: string, field: string) => {
+  try {
+    await copyText(text)
+    antigravity.copiedField = field
+    showToast(t('components.gemini.antigravity.copied'), 'success')
+    setTimeout(() => {
+      if (antigravity.copiedField === field) {
+        antigravity.copiedField = ''
+      }
+    }, 2000)
+  } catch (error) {
+    showToast(extractErrorMessage(error, t('components.gemini.antigravity.copyFailed')), 'error')
+  }
+}
+
+const copyRelayKey = async () => {
+  if (!antigravity.relayKey) return
+  keyBusy.value = true
+  try {
+    const secret = await getCodexRelayKeySecret(antigravity.relayKey.id)
+    await copyWithToast(secret, 'apiKey')
+  } catch (error) {
+    showToast(extractErrorMessage(error, t('components.gemini.antigravity.copyFailed')), 'error')
+  } finally {
+    keyBusy.value = false
+  }
+}
+
+const copySnippet = async () => {
+  let secret = ''
+  if (antigravity.relayKey) {
+    try {
+      secret = await getCodexRelayKeySecret(antigravity.relayKey.id)
+    } catch {
+      secret = '<relay-key>'
+    }
+  }
+  const snippet = [
+    `export GOOGLE_GEMINI_BASE_URL=${antigravity.baseUrl || '<base-url>'}`,
+    `export GEMINI_API_KEY=${secret || '<relay-key>'}`,
+    `# ~/.gemini/antigravity-cli/settings.json → {"modelProvider": "gemini"}`,
+  ].join('\n')
+  await copyWithToast(snippet, 'snippet')
+}
 
 const goHome = () => router.push('/')
 const goToSettings = () => router.push('/settings')
@@ -504,12 +630,86 @@ const confirmDelete = async () => {
 
 onMounted(() => {
   reload()
+  loadAntigravityInfo()
 })
 </script>
 
 <style scoped>
 .status-section {
   margin-bottom: 24px;
+}
+
+.antigravity-section {
+  margin-bottom: 24px;
+}
+
+.antigravity-lead {
+  font-size: 13px;
+  color: var(--mac-text-secondary);
+  margin: 0 0 16px;
+}
+
+.antigravity-error {
+  font-size: 13px;
+  color: #ef4444;
+  padding: 12px 16px;
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 10px;
+}
+
+.antigravity-field {
+  padding: 14px 16px;
+  background: var(--mac-surface);
+  border: 1px solid var(--mac-border);
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+
+.field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.field-head.key-row {
+  margin-bottom: 0;
+}
+
+.field-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mac-text);
+}
+
+.field-value {
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--mac-text);
+  background: var(--mac-surface-strong);
+  padding: 4px 8px;
+  border-radius: 6px;
+  word-break: break-all;
+}
+
+.field-hint {
+  font-size: 12px;
+  color: var(--mac-text-tertiary);
+  margin: 6px 0 0;
+}
+
+.field-snippet {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--mac-text);
+  background: var(--mac-surface-strong);
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .status-card {

@@ -325,6 +325,75 @@ func extractCodexRelayKey(req *http.Request) string {
 	return ""
 }
 
+// extractGeminiRelayKey 提取 Gemini 路由的 relay key
+// Gemini 客户端（如 Antigravity CLI）通过 x-goog-api-key 头或 ?key= 查询参数携带 key
+func extractGeminiRelayKey(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+
+	if key := strings.TrimSpace(req.Header.Get("x-goog-api-key")); key != "" {
+		return key
+	}
+	if key := strings.TrimSpace(req.URL.Query().Get("key")); key != "" {
+		return key
+	}
+	if key := strings.TrimSpace(req.Header.Get(codexRelayKeyHeader)); key != "" {
+		return key
+	}
+	if key := strings.TrimSpace(req.Header.Get("X-API-Key")); key != "" {
+		return key
+	}
+	if auth := strings.TrimSpace(req.Header.Get("Authorization")); auth != "" {
+		return extractBearerToken(auth)
+	}
+
+	return ""
+}
+
+func (prs *ProviderRelayService) geminiRelayAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if prs.codexRelayKeys == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "gemini relay key service is unavailable"})
+			c.Abort()
+			return
+		}
+
+		if _, err := prs.codexRelayKeys.EnsureDefaultKey(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize gemini relay keys"})
+			c.Abort()
+			return
+		}
+
+		candidate := extractGeminiRelayKey(c.Request)
+		key, err := prs.codexRelayKeys.FindKey(candidate)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to validate gemini relay key"})
+			c.Abort()
+			return
+		}
+		if key == nil {
+			c.Header("WWW-Authenticate", "Bearer realm=\"code-switch-gemini\"")
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error": "invalid gemini relay api key",
+			})
+			c.Abort()
+			return
+		}
+		setRelayKeyContext(c, key)
+
+		// 清理客户端传来的认证头（含 x-goog-api-key），避免 relay key 泄漏给上游
+		// 上游认证由 provider 配置在 forwardGeminiRequest 中统一注入
+		c.Request.Header.Del("Authorization")
+		c.Request.Header.Del("X-Api-Key")
+		c.Request.Header.Del("x-api-key")
+		c.Request.Header.Del(codexRelayKeyHeader)
+		c.Request.Header.Del("x-goog-api-key")
+
+		c.Next()
+	}
+}
+
 func extractBearerToken(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {

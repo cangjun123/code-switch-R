@@ -521,8 +521,13 @@ func (prs *ProviderRelayService) registerRoutes(router gin.IRouter) {
 	router.GET("/v1/models", codexAuth, prs.modelsHandler("claude"))
 
 	// Gemini API 端点（使用专门的路径前缀避免与 Claude 冲突）
-	router.POST("/gemini/v1beta/*any", prs.geminiProxyHandler("/v1beta"))
-	router.POST("/gemini/v1/*any", prs.geminiProxyHandler("/v1"))
+	// 与 Claude/Codex 一致强制 relay key 认证（Antigravity CLI 通过 x-goog-api-key 头或 ?key= 携带）
+	geminiAuth := prs.geminiRelayAuthMiddleware()
+	router.POST("/gemini/v1beta/*any", geminiAuth, prs.geminiProxyHandler("/v1beta"))
+	router.POST("/gemini/v1/*any", geminiAuth, prs.geminiProxyHandler("/v1"))
+	// 模型列表端点（客户端启动探测 / 运维验证用）
+	router.GET("/gemini/v1beta/models", geminiAuth, prs.geminiModelsHandler("/v1beta"))
+	router.GET("/gemini/v1/models", geminiAuth, prs.geminiModelsHandler("/v1"))
 
 	// 自定义 CLI 工具端点（路由格式: /custom/:toolId/v1/messages）
 	// toolId 用于区分不同的 CLI 工具，对应 provider kind 为 "custom:{toolId}"
@@ -3819,8 +3824,12 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 		fullPath := c.Param("any")
 		endpoint := apiVersion + fullPath
 
-		// 保留查询参数（如 ?alt=sse, ?key= 等）
+		// 保留查询参数（如 ?alt=sse），但剔除客户端的 key=，避免 relay key 泄漏给上游
 		query := c.Request.URL.RawQuery
+		if values, err := url.ParseQuery(query); err == nil {
+			values.Del("key")
+			query = values.Encode()
+		}
 		if query != "" {
 			endpoint = endpoint + "?" + query
 		}
@@ -3894,6 +3903,7 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 			InputTokens:  0,
 			OutputTokens: 0,
 			ClientIP:     clientIPFromRequest(c.Request),
+			RelayKeyID:   relayKeyIDFromContext(c),
 		}
 		start := time.Now()
 		activeRequestID := defaultActiveRequestTracker.Start(requestLog, start)
@@ -3984,7 +3994,7 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 						fmt.Printf("[Gemini] [拉黑模式] Provider: %s (Level %d) | 重试 %d/%d\n",
 							provider.Name, level, retryCount+1, maxRetryPerProvider)
 
-						ok, errMsg, responseWritten := prs.forwardGeminiRequest(c, &provider, endpoint, bodyBytes, isStream, requestLog, start)
+						ok, errMsg, responseWritten := prs.forwardGeminiRequest(c, &provider, http.MethodPost, endpoint, bodyBytes, isStream, requestLog, start)
 						if ok {
 							fmt.Printf("[Gemini] ✓ 成功: %s | 重试 %d 次\n", provider.Name, retryCount+1)
 							_ = prs.blacklistService.RecordSuccess("gemini", provider.Name)
@@ -4067,7 +4077,7 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 				requestLog.Model = provider.Model
 				defaultActiveRequestTracker.Update(requestLog.ActiveRequestID, requestLog)
 
-				ok, errMsg, responseWritten := prs.forwardGeminiRequest(c, &provider, endpoint, bodyBytes, isStream, requestLog, start)
+				ok, errMsg, responseWritten := prs.forwardGeminiRequest(c, &provider, http.MethodPost, endpoint, bodyBytes, isStream, requestLog, start)
 				if ok {
 					_ = prs.blacklistService.RecordSuccess("gemini", provider.Name)
 					// 记录最后使用的供应商
@@ -4135,6 +4145,7 @@ func extractGeminiModelFromEndpoint(endpoint string) string {
 func (prs *ProviderRelayService) forwardGeminiRequest(
 	c *gin.Context,
 	provider *GeminiProvider,
+	method string,
 	endpoint string,
 	bodyBytes []byte,
 	isStream bool,
@@ -4159,22 +4170,28 @@ func (prs *ProviderRelayService) forwardGeminiRequest(
 	defaultActiveRequestTracker.Update(requestLog.ActiveRequestID, requestLog)
 
 	// 创建 HTTP 请求
-	req, err := http.NewRequest("POST", targetURL, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequest(method, targetURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		setRequestLogError(requestLog, fmt.Sprintf("创建请求失败: %v", err))
 		return false, fmt.Sprintf("创建请求失败: %v", err), false
 	}
 
-	// 复制请求头
+	// 复制请求头，但剔除客户端认证头，由 provider 配置统一注入上游认证
 	for key, values := range c.Request.Header {
+		lk := strings.ToLower(key)
+		if lk == "authorization" || lk == "x-goog-api-key" {
+			continue
+		}
 		for _, value := range values {
 			req.Header.Add(key, value)
 		}
 	}
 
-	// 设置 API Key
+	// 始终覆盖上游 API Key：provider 配置为空时也删除，防止客户端 key 透传
 	if provider.APIKey != "" {
 		req.Header.Set("x-goog-api-key", provider.APIKey)
+	} else {
+		req.Header.Del("x-goog-api-key")
 	}
 
 	// 发送请求
@@ -4252,6 +4269,86 @@ func parseGeminiUsageMetadata(body []byte, reqLog *ReqeustLog) {
 		return
 	}
 	mergeGeminiUsageMetadata(usage, reqLog)
+}
+
+// geminiModelsHandler 处理 GET /gemini/{v1beta|v1}/models 模型列表请求
+// 客户端（如 Antigravity CLI）启动探测 / 运维验证用；不需要 Level 分组降级和重试循环
+func (prs *ProviderRelayService) geminiModelsHandler(apiVersion string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		fmt.Printf("[Gemini] 收到模型列表请求: %s/models\n", apiVersion)
+
+		// 过滤可用的 providers（启用 + BaseURL 配置 + 未被拉黑）
+		providers := prs.geminiService.GetProviders()
+		var activeProviders []GeminiProvider
+		for _, p := range providers {
+			if !p.Enabled || p.BaseURL == "" {
+				continue
+			}
+			if isBlacklisted, _ := prs.blacklistService.IsBlacklisted("gemini", p.Name); isBlacklisted {
+				continue
+			}
+			activeProviders = append(activeProviders, p)
+		}
+		if len(activeProviders) == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "no active gemini provider (all disabled or blacklisted)"})
+			return
+		}
+
+		// 请求日志
+		requestLog := &ReqeustLog{
+			Platform:     "gemini",
+			InputTokens:  0,
+			OutputTokens: 0,
+			ClientIP:     clientIPFromRequest(c.Request),
+			RelayKeyID:   relayKeyIDFromContext(c),
+		}
+		requestLog.Model = "models"
+		start := time.Now()
+		activeRequestID := defaultActiveRequestTracker.Start(requestLog, start)
+		requestLog.ActiveRequestID = activeRequestID
+
+		// 保存日志的 defer
+		defer func() {
+			requestLog.DurationSec = time.Since(start).Seconds()
+			defer defaultActiveRequestTracker.Finish(activeRequestID)
+			if GlobalDBQueueLogs == nil {
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = GlobalDBQueueLogs.ExecBatchCtx(ctx, `
+				INSERT INTO request_log (
+					platform, model, provider, relay_key_id, http_code,
+					input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
+					reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
+					is_degraded, resend_count, error_message
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`,
+				requestLog.Platform, requestLog.Model, requestLog.Provider, requestLog.RelayKeyID, requestLog.HttpCode,
+				requestLog.InputTokens, requestLog.OutputTokens, requestLog.CacheCreateTokens,
+				requestLog.CacheReadTokens, requestLog.ReasoningTokens,
+				boolToInt(requestLog.IsStream), requestLog.DurationSec, requestLog.FirstTokenDurationSec, requestLog.ClientIP,
+				boolToInt(requestLog.IsDegraded), requestLog.ResendCount, requestLog.ErrorMessage,
+			)
+		}()
+
+		// 顺序尝试，首个成功即返回
+		// 【重要】models 是探测端点，不参与黑名单状态机：
+		// 多数上游代理只转发 generateContent、不实现 GET models（返回 404），
+		// 计入失败会把推理正常的 provider 拉黑，影响主链路
+		var lastError string
+		for i := range activeProviders {
+			provider := activeProviders[i]
+			ok, errMsg, _ := prs.forwardGeminiRequest(c, &provider, http.MethodGet, apiVersion+"/models", nil, false, requestLog, start)
+			if ok {
+				return
+			}
+			fmt.Printf("[Gemini] 模型列表失败: %s | 错误: %s\n", provider.Name, errMsg)
+			lastError = errMsg
+		}
+
+		c.JSON(http.StatusBadGateway, gin.H{"error": "all gemini providers failed: " + lastError})
+	}
 }
 
 // customCliProxyHandler 处理自定义 CLI 工具的 API 请求

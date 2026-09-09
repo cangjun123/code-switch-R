@@ -183,6 +183,26 @@ gpt-image-2 -> upstream-image-model
 claude-* -> gpt-5.4
 ```
 
+## Antigravity CLI (agy) 接入
+
+Gemini 路由 (`/gemini/v1beta/*`、`/gemini/v1/*`) 与 Claude/Codex 一样强制 relay key 认证。本地设备上的 Antigravity CLI 按以下三步接入：
+
+1. 在 Web 管理界面「安全设置」中创建/复制 relay key（Gemini 页面的「Antigravity / 云端接入信息」卡片也可直接复制）。
+2. 在本地设置环境变量（注意 URL 到 `/gemini` 为止，客户端会自动追加 `/v1beta/...`，多写会 404）：
+
+   ```bash
+   export GOOGLE_GEMINI_BASE_URL="https://your-server:18100/gemini"
+   export GEMINI_API_KEY="csk_你的relay_key"
+   ```
+
+   写入 `~/.zshrc` / `~/.bashrc` 持久化；Windows PowerShell 用 `$env:GOOGLE_GEMINI_BASE_URL = "..."`。
+3. 确认 `~/.gemini/antigravity-cli/settings.json` 中包含 `{"modelProvider": "gemini"}`，然后启动 `agy`。
+
+备注：
+
+- relay key 通过 `x-goog-api-key` 请求头或 `?key=` 查询参数携带均可，服务端会在转发前剥离，不会泄漏给上游。
+- Antigravity 桌面 IDE 官方暂不支持自定义端点 (BYOK)，仅 `agy` CLI 可用此方式接入。
+
 ## OpenAI Chat Completions
 
 OpenAI Chat Completions 兼容客户端可以直接请求：
