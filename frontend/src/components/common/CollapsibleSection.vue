@@ -70,13 +70,18 @@ const toggle = () => {
       <h2 class="mac-section-title">{{ title }}</h2>
       <span class="section-collapse-indicator" aria-hidden="true">{{ isCollapsed ? '▸' : '▾' }}</span>
     </div>
-    <div v-show="!isCollapsed" class="mac-panel">
+    <div v-show="!isCollapsed" class="mac-panel collapsible-section-body">
       <slot />
     </div>
   </section>
 </template>
 
 <style scoped>
+/* 面板内容内边距：避开 20px 圆角对首行首字符的裁切 */
+.collapsible-section-body {
+  padding: 12px 18px 14px;
+}
+
 .mac-section-header {
   display: flex;
   align-items: center;
