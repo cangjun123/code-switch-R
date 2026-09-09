@@ -67,7 +67,6 @@ const accessBusyId = ref('')
 const modelPrices = ref<CodexRelayModelPrice[]>([])
 const unpricedModels = ref<CodexRelayUnpricedModel[]>([])
 const pricesLoading = ref(false)
-const pricesCollapsed = ref(true)
 const priceBusyModel = ref('')
 // 展开的 key 行（默认全部折叠，仅显示关键信息）
 const expandedKeyIds = ref<Set<string>>(new Set())
@@ -373,7 +372,6 @@ const handleRefreshQuota = async (key: CodexRelayKeyListItem) => {
 }
 
 const editPrice = (price: CodexRelayModelPrice) => {
-  pricesCollapsed.value = false
   priceDraft.value = {
     model: price.model,
     input: price.input,
@@ -525,24 +523,22 @@ onMounted(async () => {
 </script>
 
 <template>
-  <CollapsibleSection
-    :title="t('components.general.title.security')"
-    storage-key="security"
-  >
-    <p class="mac-section-description">{{ t('auth.security.description') }}</p>
+  <div class="security-sections">
+    <CollapsibleSection
+      :title="t('auth.security.adminCardTitle')"
+      storage-key="securityAdmin"
+      :default-collapsed="true"
+    >
+      <p class="mac-section-description">
+        {{ t('auth.security.adminCardDescription', { username: authState.username || '--' }) }}
+      </p>
 
-    <div class="mac-panel security-card">
-      <div class="security-card-header">
-        <div>
-          <h3 class="security-card-title">{{ t('auth.security.adminCardTitle') }}</h3>
-          <p class="security-card-description">
-            {{ t('auth.security.adminCardDescription', { username: authState.username || '--' }) }}
-          </p>
+      <div class="mac-panel security-card">
+        <div class="security-card-header">
+          <span class="security-badge">{{ authState.username || '--' }}</span>
         </div>
-        <span class="security-badge">{{ authState.username || '--' }}</span>
-      </div>
 
-      <div class="security-grid">
+        <div class="security-grid">
         <label class="security-field">
           <span>{{ t('auth.fields.currentPassword') }}</span>
           <input
@@ -599,16 +595,17 @@ onMounted(async () => {
           {{ t('auth.security.logout') }}
         </button>
       </div>
-    </div>
-
-    <div class="mac-panel security-card">
-      <div class="security-card-header">
-        <div>
-          <h3 class="security-card-title">{{ t('auth.security.keysCardTitle') }}</h3>
-          <p class="security-card-description">{{ t('auth.security.keysCardDescription') }}</p>
-        </div>
       </div>
+    </CollapsibleSection>
 
+    <CollapsibleSection
+      :title="t('auth.security.keysCardTitle')"
+      storage-key="securityKeys"
+      :default-collapsed="true"
+    >
+      <p class="mac-section-description">{{ t('auth.security.keysCardDescription') }}</p>
+
+      <div class="mac-panel security-card">
       <div class="security-create-row">
         <label class="security-field security-field-grow">
           <span>{{ t('auth.security.createLabel') }}</span>
@@ -871,23 +868,18 @@ onMounted(async () => {
           </template>
         </article>
       </div>
-    </div>
-
-    <div class="mac-panel security-card">
-      <div class="security-card-header">
-        <div>
-          <h3 class="security-card-title">{{ t('auth.security.pricesTitle') }}</h3>
-          <p class="security-card-description">{{ t('auth.security.pricesDescription') }}</p>
-        </div>
-        <button
-          type="button"
-          class="security-btn secondary"
-          @click="pricesCollapsed = !pricesCollapsed"
-        >
-          {{ pricesCollapsed ? t('common.expand') : t('common.collapse') }}
-        </button>
       </div>
-      <div v-show="!pricesCollapsed" class="prices-card-body">
+    </CollapsibleSection>
+
+    <CollapsibleSection
+      :title="t('auth.security.pricesTitle')"
+      storage-key="securityPrices"
+      :default-collapsed="true"
+    >
+      <p class="mac-section-description">{{ t('auth.security.pricesDescription') }}</p>
+
+      <div class="mac-panel security-card">
+      <div class="prices-card-body">
         <div v-if="unpricedModels.length" class="unpriced-warning">
           {{ t('auth.security.unpricedWarning', { count: unpricedModels.length }) }}
           <span v-for="model in unpricedModels" :key="model.model" class="unpriced-model">{{ model.model }}</span>
@@ -934,11 +926,19 @@ onMounted(async () => {
           </article>
         </div>
       </div>
-    </div>
-  </CollapsibleSection>
+      </div>
+    </CollapsibleSection>
+  </div>
 </template>
 
 <style scoped>
+/* 三个平级折叠分区（管理员账号 / Codex API Keys / 模型价格）的容器间距 */
+.security-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
 .security-card {
   padding: 22px;
   display: grid;
@@ -959,17 +959,6 @@ onMounted(async () => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-}
-
-.security-card-title {
-  margin: 0;
-  font-size: 1rem;
-}
-
-.security-card-description {
-  margin: 6px 0 0;
-  color: var(--mac-text-secondary);
-  line-height: 1.6;
 }
 
 .security-badge {
