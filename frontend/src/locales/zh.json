@@ -755,7 +755,7 @@
         "hint": "点击查看请求详情",
         "hasError": "该请求失败，点击查看错误详情",
         "errorTitle": "错误信息",
-        "copy": "复制错误信息",
+        "copy": "复制",
         "copied": "已复制",
         "copyFailed": "复制失败，请手动选中复制",
         "degraded": "降智重发",
