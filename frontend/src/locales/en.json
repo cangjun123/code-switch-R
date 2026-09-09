@@ -1110,6 +1110,22 @@
         "cancel": "Cancel",
         "save": "Save",
         "delete": "Delete"
+      },
+      "antigravity": {
+        "title": "Antigravity / Cloud Access Info",
+        "lead": "Configure the following variables on your local machine for the Antigravity CLI (agy). The desktop IDE does not support custom endpoints yet.",
+        "baseUrlLabel": "GOOGLE_GEMINI_BASE_URL",
+        "baseUrlHint": "Ends at /gemini, no /v1beta (the client appends it automatically)",
+        "apiKeyLabel": "GEMINI_API_KEY",
+        "apiKeyHint": "Use the Relay Key below (managed in Security settings)",
+        "relayKeyLabel": "Relay Key",
+        "copy": "Copy",
+        "copySnippet": "Copy config snippet",
+        "copied": "Copied",
+        "copyFailed": "Copy failed",
+        "loadFailed": "Failed to load access info",
+        "settingsHint": "agy also requires {\"modelProvider\": \"gemini\"} in ~/.gemini/antigravity-cli/settings.json",
+        "keyPlaceholder": "Click copy to reveal the key"
       }
     },
     "skill": {

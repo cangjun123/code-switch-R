@@ -1111,6 +1111,22 @@
         "cancel": "取消",
         "save": "保存",
         "delete": "删除"
+      },
+      "antigravity": {
+        "title": "Antigravity / 云端接入信息",
+        "lead": "在本地设备上为 Antigravity CLI (agy) 配置以下变量即可接入本服务。桌面版 IDE 暂不支持自定义端点。",
+        "baseUrlLabel": "GOOGLE_GEMINI_BASE_URL",
+        "baseUrlHint": "到 /gemini 为止，不含 /v1beta（客户端会自动追加）",
+        "apiKeyLabel": "GEMINI_API_KEY",
+        "apiKeyHint": "使用下方 Relay Key（在安全设置中管理）",
+        "relayKeyLabel": "Relay Key",
+        "copy": "复制",
+        "copySnippet": "复制配置片段",
+        "copied": "已复制",
+        "copyFailed": "复制失败",
+        "loadFailed": "加载接入信息失败",
+        "settingsHint": "agy 还需 ~/.gemini/antigravity-cli/settings.json 中设置 {\"modelProvider\": \"gemini\"}",
+        "keyPlaceholder": "点击复制以获取密钥"
       }
     },
     "skill": {
