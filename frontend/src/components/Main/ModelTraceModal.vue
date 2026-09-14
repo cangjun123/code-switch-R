@@ -39,7 +39,7 @@
             v-for="(step, index) in progressSteps"
             :key="step.key"
             :class="['progress-step', {
-              active: progress.stage === step.key,
+              active: step.active,
               done: step.done
             }]"
           >
@@ -49,7 +49,7 @@
         </div>
         <div class="progress-detail">
           <span class="progress-detail-text" :key="progress.detail">{{ progress.detail }}</span>
-          <span class="progress-elapsed">{{ (progress.elapsedMs / 1000).toFixed(1) }}s</span>
+          <span class="progress-elapsed">{{ elapsedLabel }}</span>
         </div>
       </div>
 
@@ -194,7 +194,9 @@ const unsubscribeProgress = subscribeProgress((event) => {
 })
 onUnmounted(() => unsubscribeProgress())
 
-// 进度步骤条：sending → received → analyzing → done
+// 进度步骤条。后端 stage 到展示步骤的映射：
+// 挑战发出只占几毫秒，等待模型生成才是主体——所以 sending 阶段
+// 直接视为"发送"已完成、"生成回答"进行中，长等待期高亮第二步而非卡在第一步。
 const progressSteps = computed(() => {
   if (!progress.value) return []
   const order = ['sending', 'received', 'done'] as const
@@ -203,13 +205,50 @@ const progressSteps = computed(() => {
     received: t('components.main.modelTrace.stepReceived'),
     done: t('components.main.modelTrace.stepDone'),
   }
-  const currentIndex = order.indexOf(progress.value.stage as (typeof order)[number])
+  // stage -> 已完成的步骤数：sending(第0步完成,高亮第1步) / received(第1步完成,高亮第2步) / done(全部完成)
+  const completedByStage: Record<string, number> = {
+    sending: 1,
+    retrying: 1,
+    received: 2,
+    done: 3,
+    failed: 3,
+  }
+  const completed = completedByStage[progress.value.stage] ?? 1
   return order.map((key, index) => ({
     key,
     label: labels[key],
-    done: currentIndex >= 0 && index < currentIndex,
+    done: index < completed,
+    active: index === completed,
   }))
 })
+
+// 本地计时器：后端事件只在阶段切换时推送，几十秒的等待期内没有事件，
+// 事件里的 elapsedMs 会一直停在阶段开始时刻。用前端本地时钟自己走秒，
+// 展示时取 max(本地, 后端事件值) 防止倒退。
+const localElapsedMs = ref(0)
+let elapsedTimer: number | null = null
+
+const elapsedLabel = computed(() =>
+  `${(Math.max(localElapsedMs.value, progress.value?.elapsedMs ?? 0) / 1000).toFixed(1)}s`,
+)
+
+const startElapsedTimer = () => {
+  stopElapsedTimer()
+  localElapsedMs.value = 0
+  const startedAt = Date.now()
+  elapsedTimer = window.setInterval(() => {
+    localElapsedMs.value = Date.now() - startedAt
+  }, 100)
+}
+
+const stopElapsedTimer = () => {
+  if (elapsedTimer !== null) {
+    window.clearInterval(elapsedTimer)
+    elapsedTimer = null
+  }
+}
+
+onUnmounted(() => stopElapsedTimer())
 
 // 打开时加载指纹库模型列表
 watch(
@@ -251,6 +290,7 @@ const handleVerify = async () => {
   progress.value = null
   activeSessionId.value = ''
   activeRequest.value = { providerId: props.providerId, expectedModel: selectedModel.value }
+  startElapsedTimer()
   const seq = ++requestSeq.value
   try {
     const response = await verifyProviderModel(
@@ -280,6 +320,7 @@ const handleVerify = async () => {
     if (seq === requestSeq.value) {
       verifying.value = false
       activeRequest.value = null
+      stopElapsedTimer()
     }
   }
 }
