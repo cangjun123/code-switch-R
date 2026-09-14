@@ -102,8 +102,13 @@ type ModelTraceResult struct {
 
 // ModelTraceProgressEvent 鉴伪过程进度事件（modeltrace:progress）
 type ModelTraceProgressEvent struct {
-	// SessionID 一次 VerifyProviderModel 调用的唯一标识，前端据此区分事件归属
+	// SessionID 一次 VerifyProviderModel 调用的唯一标识，前端锁定会话后据此过滤
 	SessionID string `json:"sessionId"`
+	// ProviderID / ExpectedModel 用于前端在收到首个事件时归属会话
+	//（RPC 调用是阻塞的，前端在调用返回前无法得知 SessionID，
+	// 只能用请求参数匹配第一个事件，再锁定其 sessionId）
+	ProviderID    int64  `json:"providerId"`
+	ExpectedModel string `json:"expectedModel"`
 	// Stage 阶段：sending / received / analyzing / retrying / done / failed
 	Stage string `json:"stage"`
 	// Attempt 当前尝试序号（1 起）
@@ -117,17 +122,19 @@ type ModelTraceProgressEvent struct {
 }
 
 // emitProgress 推送进度事件（emitter 未注入时静默跳过）
-func (mts *ModelTraceService) emitProgress(sessionID, stage string, attempt int, start time.Time, detail string) {
+func (mts *ModelTraceService) emitProgress(sessionID string, providerID int64, expectedModel, stage string, attempt int, start time.Time, detail string) {
 	if mts.emitter == nil {
 		return
 	}
 	mts.emitter.Emit("modeltrace:progress", ModelTraceProgressEvent{
-		SessionID:   sessionID,
-		Stage:       stage,
-		Attempt:     attempt,
-		MaxAttempts: maxVerifyAttempts,
-		Detail:      detail,
-		ElapsedMs:   int(time.Since(start).Milliseconds()),
+		SessionID:     sessionID,
+		ProviderID:    providerID,
+		ExpectedModel: expectedModel,
+		Stage:         stage,
+		Attempt:       attempt,
+		MaxAttempts:   maxVerifyAttempts,
+		Detail:        detail,
+		ElapsedMs:     int(time.Since(start).Milliseconds()),
 	})
 }
 
@@ -185,14 +192,14 @@ func (mts *ModelTraceService) VerifyProviderModel(
 	// 每次调用一个会话 ID，前端据此过滤进度事件
 	sessionID := fmt.Sprintf("mt-%d-%s", providerID, modeltrace.NewSessionToken())
 	if apiModel != expectedModel {
-		mts.emitProgress(sessionID, "sending", 1, start,
+		mts.emitProgress(sessionID, providerID, expectedModel, "sending", 1, start,
 			fmt.Sprintf("已应用模型映射 %s → %s，正在发送数值生成挑战…", expectedModel, apiModel))
 	} else {
-		mts.emitProgress(sessionID, "sending", 1, start,
+		mts.emitProgress(sessionID, providerID, expectedModel, "sending", 1, start,
 			fmt.Sprintf("正在向 %s 发送数值生成挑战，模型需生成约 300 个随机整数，可能需要 1-2 分钟…", provider.Name))
 	}
 
-	result, attempts, rawOutput, verifyErr := mts.verifyWithRetries(sessionID, start, provider, platform, apiModel, bank)
+	result, attempts, rawOutput, verifyErr := mts.verifyWithRetries(sessionID, start, providerID, expectedModel, provider, platform, apiModel, bank)
 	result.ExpectedModel = expectedModel
 	result.Attempts = attempts
 	result.LatencyMs = int(time.Since(start).Milliseconds())
@@ -203,7 +210,7 @@ func (mts *ModelTraceService) VerifyProviderModel(
 		result.Success = false
 		result.Verdict = "error"
 		result.Message = verifyErr.Error()
-		mts.emitProgress(sessionID, "failed", attempts, start, verifyErr.Error())
+		mts.emitProgress(sessionID, providerID, expectedModel, "failed", attempts, start, verifyErr.Error())
 		return result
 	}
 
@@ -212,10 +219,10 @@ func (mts *ModelTraceService) VerifyProviderModel(
 	result.ExpectedMatched = result.TopModel == apiModel
 	if result.ExpectedMatched {
 		result.Verdict = "match"
-		mts.emitProgress(sessionID, "done", attempts, start, "检测完成：身份一致")
+		mts.emitProgress(sessionID, providerID, expectedModel, "done", attempts, start, "检测完成：身份一致")
 	} else {
 		result.Verdict = "mismatch"
-		mts.emitProgress(sessionID, "done", attempts, start, "检测完成：疑似偷换")
+		mts.emitProgress(sessionID, providerID, expectedModel, "done", attempts, start, "检测完成：疑似偷换")
 	}
 	return result
 }
@@ -232,7 +239,7 @@ const (
 
 // verifyWithRetries 发挑战直到拿到一条有效回答或用尽尝试次数 / 总预算。
 // 过程中的每个阶段通过 emitProgress 推送实时进度。
-func (mts *ModelTraceService) verifyWithRetries(sessionID string, start time.Time, provider *Provider, platform, apiModel string, bank *modeltrace.Bank) (ModelTraceResult, int, string, error) {
+func (mts *ModelTraceService) verifyWithRetries(sessionID string, start time.Time, providerID int64, expectedModel string, provider *Provider, platform, apiModel string, bank *modeltrace.Bank) (ModelTraceResult, int, string, error) {
 	challenges := modeltrace.GenerateChallenges(maxVerifyAttempts)
 	var lastRaw string
 	var lastErr error
@@ -242,23 +249,23 @@ func (mts *ModelTraceService) verifyWithRetries(sessionID string, start time.Tim
 	for _, challenge := range challenges {
 		attempts++
 		if attempts > 1 {
-			mts.emitProgress(sessionID, "retrying", attempts, start,
+			mts.emitProgress(sessionID, providerID, expectedModel, "retrying", attempts, start,
 				fmt.Sprintf("第 %d 次回答无效（%s），正在发送新的挑战…", attempts-1, lastErr))
 		}
-		mts.emitProgress(sessionID, "sending", attempts, start,
+		mts.emitProgress(sessionID, providerID, expectedModel, "sending", attempts, start,
 			fmt.Sprintf("正在发送第 %d/%d 次数值生成挑战（要求 %d 个整数）…",
 				attempts, maxVerifyAttempts, challenge.ExpectedCount))
 		text, err := mts.requestChallenge(budgetCtx, provider, platform, apiModel, challenge.Prompt)
 		if err != nil {
 			lastErr = err
 			if budgetCtx.Err() != nil {
-				mts.emitProgress(sessionID, "failed", attempts, start, "总时间预算耗尽，停止重试")
+				mts.emitProgress(sessionID, providerID, expectedModel, "failed", attempts, start, "总时间预算耗尽，停止重试")
 				break // 总预算耗尽，停止重试
 			}
 			continue
 		}
 		lastRaw = text
-		mts.emitProgress(sessionID, "received", attempts, start,
+		mts.emitProgress(sessionID, providerID, expectedModel, "received", attempts, start,
 			fmt.Sprintf("已收到回答（%d 字符），正在解析数字序列并计算指纹…", len([]rune(text))))
 		outputs := []modeltrace.Output{{
 			Text:          text,
