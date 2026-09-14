@@ -568,4 +568,145 @@ const showBlBadge = computed(() => {
   color: #ef4444 !important;
   background: rgba(239, 68, 68, 0.1) !important;
 }
+
+/* 黑名单横幅 (醒目的红色背景与警示边框) */
+.blacklist-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-top: 10px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-left: 4px solid #ef4444;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #dc2626;
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.08);
+}
+
+.blacklist-banner.dark,
+:global(.dark) .blacklist-banner {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.4);
+  border-left-color: #f87171;
+  color: #fca5a5;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.blacklist-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.blacklist-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.blacklist-text {
+  flex: 1;
+  font-weight: 600;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.blacklist-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.unblock-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1;
+}
+
+.unblock-btn.primary {
+  background: #ef4444;
+  flex: 1;
+}
+
+.unblock-btn.primary:hover {
+  background: #dc2626;
+  box-shadow: 0 2px 6px rgba(220, 38, 38, 0.4);
+}
+
+.unblock-btn.secondary {
+  background: rgba(107, 114, 128, 0.9);
+  flex: 1;
+}
+
+.unblock-btn.secondary:hover {
+  background: rgba(75, 85, 99, 1);
+}
+
+:global(.dark) .unblock-btn.secondary {
+  background: rgba(255, 255, 255, 0.18);
+  color: #f3f4f6;
+}
+
+:global(.dark) .unblock-btn.secondary:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.unblock-btn:active {
+  transform: scale(0.98);
+}
+
+/* 等级徽章（未拉黑但有降级） */
+.level-badge-standalone {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 10px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+:global(.dark) .level-badge-standalone {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.level-hint {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--mac-text-secondary);
+}
+
+.reset-level-mini {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: var(--mac-text-secondary);
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.reset-level-mini:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.15);
+}
 </style>

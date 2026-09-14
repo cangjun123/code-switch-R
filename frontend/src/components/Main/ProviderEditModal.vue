@@ -491,49 +491,58 @@ const modalTitle = computed(() =>
           <ModelMappingEditor v-model="form.modelMapping" />
         </div>
 
-        <!-- 可用性监控 -->
-        <div class="form-field switch-field">
-          <span>{{ t('components.main.form.labels.availabilityMonitor') }}</span>
-          <div class="switch-inline">
-            <label class="mac-switch">
-              <input type="checkbox" v-model="form.availabilityMonitorEnabled" />
-              <span></span>
-            </label>
-            <span class="switch-text">
-              {{ form.availabilityMonitorEnabled ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-            </span>
+        <!-- 可用性与拉黑策略开关组（统一对齐布局） -->
+        <div class="switch-card-group">
+          <!-- 可用性监控 -->
+          <div class="switch-card-row">
+            <div class="switch-label-col">
+              <span class="switch-title">{{ t('components.main.form.labels.availabilityMonitor') }}</span>
+              <span class="field-hint">{{ t('components.main.form.hints.availabilityMonitor') }}</span>
+            </div>
+            <div class="switch-inline">
+              <label class="mac-switch">
+                <input type="checkbox" v-model="form.availabilityMonitorEnabled" />
+                <span></span>
+              </label>
+              <span class="switch-text">
+                {{ form.availabilityMonitorEnabled ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
+              </span>
+            </div>
           </div>
-          <span class="field-hint">{{ t('components.main.form.hints.availabilityMonitor') }}</span>
-        </div>
 
-        <!-- 连通性自动拉黑 -->
-        <div v-if="form.availabilityMonitorEnabled" class="form-field switch-field">
-          <span>{{ t('components.main.form.labels.connectivityAutoBlacklist') }}</span>
-          <div class="switch-inline">
-            <label class="mac-switch">
-              <input type="checkbox" v-model="form.connectivityAutoBlacklist" />
-              <span></span>
-            </label>
-            <span class="switch-text">
-              {{ form.connectivityAutoBlacklist ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-            </span>
+          <!-- 连通性自动拉黑 -->
+          <div v-if="form.availabilityMonitorEnabled" class="switch-card-row">
+            <div class="switch-label-col">
+              <span class="switch-title">{{ t('components.main.form.labels.connectivityAutoBlacklist') }}</span>
+              <span class="field-hint">{{ t('components.main.form.hints.connectivityAutoBlacklist') }}</span>
+            </div>
+            <div class="switch-inline">
+              <label class="mac-switch">
+                <input type="checkbox" v-model="form.connectivityAutoBlacklist" />
+                <span></span>
+              </label>
+              <span class="switch-text">
+                {{ form.connectivityAutoBlacklist ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
+              </span>
+            </div>
           </div>
-          <span class="field-hint">{{ t('components.main.form.hints.connectivityAutoBlacklist') }}</span>
-        </div>
 
-        <!-- 永不拉黑 -->
-        <div v-if="tabId !== 'others' && tabId !== 'gemini'" class="form-field switch-field">
-          <span>{{ t('components.main.form.labels.neverBlacklist') }}</span>
-          <div class="switch-inline">
-            <label class="mac-switch">
-              <input type="checkbox" v-model="form.neverBlacklist" />
-              <span></span>
-            </label>
-            <span class="switch-text">
-              {{ form.neverBlacklist ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-            </span>
+          <!-- 永不拉黑 -->
+          <div v-if="tabId !== 'others' && tabId !== 'gemini'" class="switch-card-row">
+            <div class="switch-label-col">
+              <span class="switch-title">{{ t('components.main.form.labels.neverBlacklist') }}</span>
+              <span class="field-hint">{{ t('components.main.form.hints.neverBlacklist') }}</span>
+            </div>
+            <div class="switch-inline">
+              <label class="mac-switch">
+                <input type="checkbox" v-model="form.neverBlacklist" />
+                <span></span>
+              </label>
+              <span class="switch-text">
+                {{ form.neverBlacklist ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
+              </span>
+            </div>
           </div>
-          <span class="field-hint">{{ t('components.main.form.hints.neverBlacklist') }}</span>
         </div>
       </div>
 
@@ -616,5 +625,55 @@ const modalTitle = computed(() =>
   flex-direction: column;
   gap: 16px;
   min-height: 280px;
+}
+
+/* 开关组对齐卡片样式 */
+.switch-card-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.switch-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  background: var(--mac-surface-strong);
+  border: 1px solid var(--mac-border);
+  border-radius: 10px;
+  transition: all 0.15s ease;
+}
+
+.switch-card-row:hover {
+  border-color: rgba(10, 132, 255, 0.4);
+}
+
+.switch-label-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+}
+
+.switch-title {
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--mac-text);
+}
+
+.switch-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.switch-text {
+  min-width: 32px;
+  font-size: 0.85rem;
+  color: var(--mac-text-secondary);
 }
 </style>

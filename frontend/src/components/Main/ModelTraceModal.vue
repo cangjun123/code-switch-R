@@ -20,17 +20,7 @@
         </div>
       </div>
 
-      <!-- 操作按钮 -->
-      <div class="modeltrace-actions">
-        <BaseButton
-          type="button"
-          :disabled="!selectedModel || verifying"
-          @click="handleVerify"
-        >
-          <span v-if="verifying" class="btn-spinner"></span>
-          {{ verifying ? t('components.main.modelTrace.verifying') : t('components.main.modelTrace.verify') }}
-        </BaseButton>
-      </div>
+
 
       <!-- 实时进度（检测过程中） -->
       <div v-if="verifying && progress" class="modeltrace-progress">
@@ -129,7 +119,10 @@
       </div>
     </div>
 
-    <footer class="form-actions">
+    <footer class="form-actions modeltrace-footer">
+      <BaseButton variant="outline" type="button" @click="$emit('close')">
+        {{ t('components.main.modelTrace.close') }}
+      </BaseButton>
       <BaseButton
         v-if="result?.success"
         variant="outline"
@@ -139,8 +132,15 @@
       >
         {{ t('components.main.modelTrace.retry') }}
       </BaseButton>
-      <BaseButton variant="outline" type="button" @click="$emit('close')">
-        {{ t('components.main.modelTrace.close') }}
+      <BaseButton
+        v-if="!result?.success"
+        type="button"
+        variant="primary"
+        :disabled="!selectedModel || verifying"
+        @click="handleVerify"
+      >
+        <span v-if="verifying" class="btn-spinner"></span>
+        {{ verifying ? t('components.main.modelTrace.verifying') : t('components.main.modelTrace.verify') }}
       </BaseButton>
     </footer>
   </BaseModal>
@@ -426,9 +426,14 @@ const handleVerify = async () => {
   background: rgba(255, 255, 255, 0.06);
 }
 
-.modeltrace-actions {
+.modeltrace-footer {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--mac-border);
 }
 
 /* ===== 实时进度 ===== */
