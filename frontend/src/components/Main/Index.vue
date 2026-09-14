@@ -483,6 +483,32 @@
                 <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
             </button>
+            <!-- 模型真伪检测按钮 -->
+            <button
+              v-if="activeTab !== 'gpt-image'"
+              class="ghost-icon"
+              :data-tooltip="t('components.main.modelTrace.tooltip')"
+              @click.stop="openModelTrace(card)"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M12 3l7 3v5c0 4.6-3 8.4-7 9.5C8 19.4 5 15.6 5 11V6l7-3z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+                <path
+                  d="M9 11.5l2 2 4-4"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
             <button class="ghost-icon" :data-tooltip="t('components.main.form.editTitle')" @click="configure(card)">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path
@@ -1142,6 +1168,15 @@
           </BaseButton>
         </footer>
       </BaseModal>
+
+      <!-- 模型真伪检测弹窗 -->
+      <ModelTraceModal
+        :open="modelTraceState.open"
+        :platform="modelTraceState.platform"
+        :provider-id="modelTraceState.providerId"
+        :provider-name="modelTraceState.providerName"
+        @close="closeModelTrace"
+      />
     </div>
   </div>
 </template>
@@ -1162,6 +1197,7 @@ import ModelWhitelistEditor from '../common/ModelWhitelistEditor.vue'
 import ModelMappingEditor from '../common/ModelMappingEditor.vue'
 import CLIConfigEditor from '../common/CLIConfigEditor.vue'
 import CustomCliConfigEditor from '../common/CustomCliConfigEditor.vue'
+import ModelTraceModal from './ModelTraceModal.vue'
 import { LoadProviders, SaveProviders, DuplicateProvider } from '../../../bindings/codeswitch/services/providerservice'
 import { GetProviders as GetGeminiProviders, UpdateProvider as UpdateGeminiProvider, AddProvider as AddGeminiProvider, DeleteProvider as DeleteGeminiProvider, ReorderProviders as ReorderGeminiProviders } from '../../../bindings/codeswitch/services/geminiservice'
 import { fetchProxyStatus, enableProxy, disableProxy } from '../../services/claudeSettings'
@@ -2896,6 +2932,29 @@ const closeModal = () => {
 const closeConfirm = () => {
   confirmState.open = false
   confirmState.card = null
+}
+
+// 模型真伪检测弹窗状态
+const modelTraceState = reactive({
+  open: false,
+  platform: 'claude' as string,
+  providerId: 0,
+  providerName: '',
+})
+
+const openModelTrace = (card: AutomationCard) => {
+  // others 平台转换为后端 custom kind
+  const platform = activeTab.value === 'others' && selectedToolId.value
+    ? getCustomProviderKind(selectedToolId.value)
+    : activeTab.value
+  modelTraceState.platform = platform
+  modelTraceState.providerId = card.id
+  modelTraceState.providerName = card.name
+  modelTraceState.open = true
+}
+
+const closeModelTrace = () => {
+  modelTraceState.open = false
 }
 
 const submitModal = async (): Promise<boolean> => {
