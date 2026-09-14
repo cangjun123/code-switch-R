@@ -51,6 +51,10 @@
           <span class="progress-detail-text" :key="progress.detail">{{ progress.detail }}</span>
           <span class="progress-elapsed">{{ elapsedLabel }}</span>
         </div>
+        <!-- 模型实时生成内容（小窗滚动展示，证明模型确实在生成而非卡住） -->
+        <div v-if="streamText" ref="streamBoxRef" class="stream-box" aria-live="off">
+          <span class="stream-text">{{ streamText }}</span>
+        </div>
       </div>
 
       <!-- 检测结果 -->
@@ -147,6 +151,7 @@ import {
   getSupportedModels,
   verifyProviderModel,
   subscribeProgress,
+  subscribeStream,
   type ModelTraceModelOption,
   type ModelTraceResult,
   type ModelTraceProgress,
@@ -193,6 +198,26 @@ const unsubscribeProgress = subscribeProgress((event) => {
   progress.value = event
 })
 onUnmounted(() => unsubscribeProgress())
+
+// ===== 模型实时生成内容 =====
+// 后端以 SSE 流式拉取模型输出并节流推送片段；这里按 sessionId
+// 归属追加并滚动到最新。重试（新挑战）时清空重新展示。
+const streamText = ref('')
+const streamBoxRef = ref<HTMLElement | null>(null)
+
+const unsubscribeStream = subscribeStream((event) => {
+  if (event.sessionId !== activeSessionId.value) return
+  streamText.value += event.chunk
+  // 限制展示长度，避免长回答撑爆内存/渲染
+  if (streamText.value.length > 8000) {
+    streamText.value = streamText.value.slice(-8000)
+  }
+  requestAnimationFrame(() => {
+    const box = streamBoxRef.value
+    if (box) box.scrollTop = box.scrollHeight
+  })
+})
+onUnmounted(() => unsubscribeStream())
 
 // 进度步骤条。后端 stage 到展示步骤的映射：
 // 挑战发出只占几毫秒，等待模型生成才是主体——所以 sending 阶段
@@ -261,6 +286,7 @@ watch(
     progress.value = null
     activeSessionId.value = ''
     activeRequest.value = null
+    streamText.value = ''
     if (models.value.length === 0) {
       try {
         models.value = await getSupportedModels()
@@ -289,6 +315,7 @@ const handleVerify = async () => {
   result.value = null
   progress.value = null
   activeSessionId.value = ''
+  streamText.value = ''
   activeRequest.value = { providerId: props.providerId, expectedModel: selectedModel.value }
   startElapsedTimer()
   const seq = ++requestSeq.value
@@ -504,6 +531,37 @@ const handleVerify = async () => {
   font-variant-numeric: tabular-nums;
   opacity: 0.55;
   flex-shrink: 0;
+}
+
+/* ===== 模型实时生成内容小窗 ===== */
+.stream-box {
+  margin-top: 2px;
+  max-height: 88px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.05);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--mac-text, #374151);
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+:global(html.dark) .stream-box {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.stream-box::-webkit-scrollbar {
+  width: 4px;
+}
+
+.stream-box::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.2);
+  border-radius: 2px;
 }
 
 .modeltrace-result {

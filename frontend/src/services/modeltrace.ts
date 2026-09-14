@@ -72,13 +72,36 @@ export interface ModelTraceProgress {
 
 /**
  * 订阅鉴伪进度事件。返回取消订阅函数。
- * 注意：事件是全局广播的，回调里应按 sessionId 过滤归属。
+ * 事件是全局广播的，回调里应按 sessionId 过滤归属。
  */
 export const subscribeProgress = (
   callback: (progress: ModelTraceProgress) => void,
 ): (() => void) => {
   const unsubscribe = Events.On('modeltrace:progress', (event) => {
     const data = (event as unknown as { data: ModelTraceProgress }).data
+    if (data && typeof data === 'object') {
+      callback(data)
+    }
+  })
+  return () => unsubscribe()
+}
+
+/** 流式生成片段事件（modeltrace:stream） */
+export interface ModelTraceStreamChunk {
+  sessionId: string
+  chunk: string
+  totalChars: number
+}
+
+/**
+ * 订阅流式生成片段。返回取消订阅函数。
+ * 事件是全局广播的，回调里应按 sessionId 过滤归属。
+ */
+export const subscribeStream = (
+  callback: (chunk: ModelTraceStreamChunk) => void,
+): (() => void) => {
+  const unsubscribe = Events.On('modeltrace:stream', (event) => {
+    const data = (event as unknown as { data: ModelTraceStreamChunk }).data
     if (data && typeof data === 'object') {
       callback(data)
     }
