@@ -170,13 +170,26 @@ const verifying = ref(false)
 const result = ref<ModelTraceResult | null>(null)
 // 请求序号：弹窗重开/重试时递增，旧请求的迟到响应按序号丢弃，避免覆盖新结果
 const requestSeq = ref(0)
-// 当前会话的实时进度（按 sessionId 过滤后）
+// 当前会话的实时进度。归属规则：
+// RPC 调用是阻塞的，前端发起调用时还不知道后端生成的 sessionId，
+// 因此首个事件用 (providerId, expectedModel) 匹配归属，命中后锁定
+// 该 sessionId，后续事件只认这个 sessionId。
 const progress = ref<ModelTraceProgress | null>(null)
-
-// 订阅后端进度事件（全局广播，按 sessionId 归属过滤）
 const activeSessionId = ref('')
+const activeRequest = ref<{ providerId: number; expectedModel: string } | null>(null)
+
 const unsubscribeProgress = subscribeProgress((event) => {
-  if (event.sessionId !== activeSessionId.value) return
+  // 已锁定会话：只认该 sessionId 的事件
+  if (activeSessionId.value) {
+    if (event.sessionId !== activeSessionId.value) return
+    progress.value = event
+    return
+  }
+  // 未锁定：用请求参数匹配首个事件
+  const request = activeRequest.value
+  if (!request) return
+  if (event.providerId !== request.providerId || event.expectedModel !== request.expectedModel) return
+  activeSessionId.value = event.sessionId
   progress.value = event
 })
 onUnmounted(() => unsubscribeProgress())
@@ -208,6 +221,7 @@ watch(
     verifying.value = false
     progress.value = null
     activeSessionId.value = ''
+    activeRequest.value = null
     if (models.value.length === 0) {
       try {
         models.value = await getSupportedModels()
@@ -235,6 +249,8 @@ const handleVerify = async () => {
   verifying.value = true
   result.value = null
   progress.value = null
+  activeSessionId.value = ''
+  activeRequest.value = { providerId: props.providerId, expectedModel: selectedModel.value }
   const seq = ++requestSeq.value
   try {
     const response = await verifyProviderModel(
@@ -263,6 +279,7 @@ const handleVerify = async () => {
   } finally {
     if (seq === requestSeq.value) {
       verifying.value = false
+      activeRequest.value = null
     }
   }
 }

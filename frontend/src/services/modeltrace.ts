@@ -61,6 +61,8 @@ export const verifyProviderModel = async (
 /** 鉴伪过程进度事件（modeltrace:progress） */
 export interface ModelTraceProgress {
   sessionId: string
+  providerId: number
+  expectedModel: string
   stage: 'sending' | 'received' | 'analyzing' | 'retrying' | 'done' | 'failed'
   attempt: number
   maxAttempts: number
