@@ -145,12 +145,15 @@ const models = ref<ModelTraceModelOption[]>([])
 const selectedModel = ref('')
 const verifying = ref(false)
 const result = ref<ModelTraceResult | null>(null)
+// 请求序号：弹窗重开/重试时递增，旧请求的迟到响应按序号丢弃，避免覆盖新结果
+const requestSeq = ref(0)
 
 // 打开时加载指纹库模型列表
 watch(
   () => props.open,
   async (open) => {
     if (!open) return
+    requestSeq.value += 1 // 使在途旧请求失效
     result.value = null
     verifying.value = false
     if (models.value.length === 0) {
@@ -179,13 +182,17 @@ const handleVerify = async () => {
   if (!selectedModel.value || verifying.value) return
   verifying.value = true
   result.value = null
+  const seq = ++requestSeq.value
   try {
-    result.value = await verifyProviderModel(
+    const response = await verifyProviderModel(
       props.platform,
       props.providerId,
       selectedModel.value,
     )
+    if (seq !== requestSeq.value) return // 请求已过期（弹窗重开或重新发起），丢弃
+    result.value = response
   } catch (error) {
+    if (seq !== requestSeq.value) return
     result.value = {
       success: false,
       message: extractErrorMessage(error),
@@ -201,7 +208,9 @@ const handleVerify = async () => {
       probabilities: [],
     }
   } finally {
-    verifying.value = false
+    if (seq === requestSeq.value) {
+      verifying.value = false
+    }
   }
 }
 </script>

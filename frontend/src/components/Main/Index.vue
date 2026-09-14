@@ -485,7 +485,7 @@
             </button>
             <!-- 模型真伪检测按钮 -->
             <button
-              v-if="activeTab !== 'gpt-image'"
+              v-if="showModelTraceButton"
               class="ghost-icon"
               :data-tooltip="t('components.main.modelTrace.tooltip')"
               @click.stop="openModelTrace(card)"
@@ -2935,6 +2935,15 @@ const closeConfirm = () => {
 }
 
 // 模型真伪检测弹窗状态
+// 仅 claude / codex / others（已选自定义工具）平台支持：这些平台的 provider
+// 有配置文件与稳定 ID；Gemini 卡片 ID 是前端合成的（300+index），gpt-image 不在指纹场景
+const showModelTraceButton = computed(
+  () =>
+    activeTab.value === 'claude' ||
+    activeTab.value === 'codex' ||
+    (activeTab.value === 'others' && !!selectedToolId.value),
+)
+
 const modelTraceState = reactive({
   open: false,
   platform: 'claude' as string,

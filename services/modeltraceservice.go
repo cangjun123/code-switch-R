@@ -133,6 +133,15 @@ func (mts *ModelTraceService) VerifyProviderModel(
 
 	// 模型映射生效：外部模型名 -> provider 实际请求的内部模型名
 	apiModel := provider.GetEffectiveModel(expectedModel)
+	if apiModel != expectedModel && !bank.ContainsModel(apiModel) {
+		return ModelTraceResult{
+			Verdict:       "error",
+			ExpectedModel: expectedModel,
+			Message: fmt.Sprintf(
+				"该供应商把 %s 映射为 %s，映射目标不在指纹库覆盖范围内，无法比对真伪",
+				expectedModel, apiModel),
+		}
+	}
 
 	result, attempts, rawOutput, verifyErr := mts.verifyWithRetries(provider, platform, apiModel, bank)
 	result.ExpectedModel = expectedModel
@@ -148,7 +157,9 @@ func (mts *ModelTraceService) VerifyProviderModel(
 		return result
 	}
 
-	result.ExpectedMatched = result.TopModel == expectedModel
+	// 比对对象是映射后的 apiModel（provider 实际转发的模型）。
+	// 与外部名 expectedModel 比对会把用户自己配置的映射误判为"偷换"。
+	result.ExpectedMatched = result.TopModel == apiModel
 	if result.ExpectedMatched {
 		result.Verdict = "match"
 	} else {
@@ -157,20 +168,32 @@ func (mts *ModelTraceService) VerifyProviderModel(
 	return result
 }
 
-// maxVerifyAttempts 单次鉴伪最多尝试的挑战数（目标 1 条有效回答）
-const maxVerifyAttempts = 3
+const (
+	// maxVerifyAttempts 单次鉴伪最多尝试的挑战数（目标 1 条有效回答）
+	maxVerifyAttempts = 3
+	// verifyTotalBudget 整个鉴伪流程的总时间预算（含全部重试），
+	// 避免单次超时 × 重试次数导致长时间不可取消的阻塞
+	verifyTotalBudget = 4 * time.Minute
+	// perAttemptTimeout 单次挑战请求的超时（受总预算约束）
+	perAttemptTimeout = 2 * time.Minute
+)
 
-// verifyWithRetries 发挑战直到拿到一条有效回答或用尽尝试次数
+// verifyWithRetries 发挑战直到拿到一条有效回答或用尽尝试次数 / 总预算
 func (mts *ModelTraceService) verifyWithRetries(provider *Provider, platform, apiModel string, bank *modeltrace.Bank) (ModelTraceResult, int, string, error) {
 	challenges := modeltrace.GenerateChallenges(maxVerifyAttempts)
 	var lastRaw string
 	var lastErr error
 	attempts := 0
+	budgetCtx, cancel := context.WithTimeout(context.Background(), verifyTotalBudget)
+	defer cancel()
 	for _, challenge := range challenges {
 		attempts++
-		text, err := mts.requestChallenge(provider, platform, apiModel, challenge.Prompt)
+		text, err := mts.requestChallenge(budgetCtx, provider, platform, apiModel, challenge.Prompt)
 		if err != nil {
 			lastErr = err
+			if budgetCtx.Err() != nil {
+				break // 总预算耗尽，停止重试
+			}
 			continue
 		}
 		lastRaw = text
@@ -210,17 +233,21 @@ func (mts *ModelTraceService) verifyWithRetries(provider *Provider, platform, ap
 	return ModelTraceResult{}, attempts, lastRaw, lastErr
 }
 
-// completionAuthHeader 按认证方式返回 (header 名, header 值)
+// completionAuthHeader 按认证方式返回 (header 名, header 值)。
+// 语义与连通性测试一致：空值/bearer → Authorization: Bearer <key>；
+// x-api-key → x-api-key: <key>；其余（含 "custom" 与自定义 Header 名）→
+// 原样 Header 名 + 无前缀 key。
 func completionAuthHeader(authType, apiKey string) (string, string) {
-	switch strings.ToLower(strings.TrimSpace(authType)) {
+	authType = strings.TrimSpace(authType)
+	switch strings.ToLower(authType) {
 	case "x-api-key":
 		return "x-api-key", apiKey
-	case "bearer", "", "custom":
+	case "bearer", "":
 		return "Authorization", "Bearer " + apiKey
 	default:
-		// 自定义 Header 名
-		headerName := strings.TrimSpace(authType)
-		if headerName == "" {
+		// custom / 自定义 Header 名：与连通性测试一致，无 Bearer 前缀
+		headerName := authType
+		if headerName == "" || strings.EqualFold(headerName, "custom") {
 			headerName = "Authorization"
 		}
 		return headerName, apiKey
@@ -251,6 +278,22 @@ func buildOpenAIChallengeBody(model, prompt string) ([]byte, error) {
 		"model": model,
 		"messages": []challengeMessages{
 			{Role: "user", Content: content},
+		},
+	}
+	return json.Marshal(body)
+}
+
+// buildResponsesChallengeBody 构造 OpenAI Responses API 格式的挑战请求（input 字段）
+func buildResponsesChallengeBody(model, prompt string) ([]byte, error) {
+	body := map[string]interface{}{
+		"model": model,
+		"input": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []map[string]string{
+					{"type": "input_text", "text": prompt},
+				},
+			},
 		},
 	}
 	return json.Marshal(body)
@@ -307,45 +350,25 @@ func compactUpstreamError(details string) string {
 	return text
 }
 
-// resolveChallengeEndpoint 解析挑战请求应使用的端点（与连通性测试同规则）
-func resolveChallengeEndpoint(provider *Provider, platform string) string {
-	if endpoint := strings.TrimSpace(provider.APIEndpoint); endpoint != "" {
-		if !strings.HasPrefix(endpoint, "/") {
-			endpoint = "/" + endpoint
-		}
-		return provider.GetEffectiveEndpoint("/v1/messages")
-	}
-	switch strings.ToLower(platform) {
-	case ProviderKindClaude:
-		if provider.GetUpstreamProtocol() == UpstreamProtocolOpenAIChat {
-			return "/v1/responses"
-		}
-		return "/v1/messages"
-	case ProviderKindCodex:
-		return provider.ResolveOpenAIUpstreamEndpoint("/responses")
-	default:
-		if provider.GetUpstreamProtocol() == UpstreamProtocolOpenAIChat {
-			return "/v1/chat/completions"
-		}
-		return "/v1/messages"
-	}
-}
-
 // requestChallenge 向 provider 发送一条挑战并返回回答文本。
-// 端点/协议解析逻辑与连通性测试一致；不传 temperature（用渠道默认，测线上真实状态）。
-func (mts *ModelTraceService) requestChallenge(provider *Provider, platform, apiModel, prompt string) (string, error) {
-	endpoint := resolveChallengeEndpoint(provider, platform)
+// 端点/认证解析与连通性测试共用同一套规则；请求体按端点选择
+// Anthropic / OpenAI Chat / OpenAI Responses 三种格式。
+// 不传 temperature（用渠道默认，测线上真实状态）。
+func (mts *ModelTraceService) requestChallenge(parent context.Context, provider *Provider, platform, apiModel, prompt string) (string, error) {
+	endpoint := resolveConnectivityEndpoint(provider, platform)
 	protocol := provider.ResolveUpstreamProtocol(endpoint)
 	targetURL := joinURL(provider.APIURL, endpoint)
 
 	var reqBody []byte
 	var err error
 	isAnthropic := protocol == UpstreamProtocolAnthropic
-	if isAnthropic {
+	isResponses := !isAnthropic && strings.Contains(strings.ToLower(endpoint), "/responses")
+	switch {
+	case isAnthropic:
 		reqBody, err = buildAnthropicChallengeBody(apiModel, prompt)
-	} else {
-		// OpenAI Chat Completions 格式（/responses 与 /chat/completions 均按 chat 格式请求，
-		// 挑战场景下足够；若上游仅支持 /responses 会返回错误并提示）
+	case isResponses:
+		reqBody, err = buildResponsesChallengeBody(apiModel, prompt)
+	default:
 		reqBody, err = buildOpenAIChallengeBody(apiModel, prompt)
 	}
 	if err != nil {
@@ -357,7 +380,7 @@ func (mts *ModelTraceService) requestChallenge(provider *Provider, platform, api
 		authType = "bearer"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), mts.client.Timeout)
+	ctx, cancel := context.WithTimeout(parent, perAttemptTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(reqBody))
 	if err != nil {
@@ -433,37 +456,8 @@ func extractCompletionText(body []byte, isAnthropic bool) (string, error) {
 		return "", fmt.Errorf("响应解析失败: %v", err)
 	}
 	if len(payload.Choices) == 0 {
-		// 部分上游把 /responses 形态的 output 数组原样返回
-		var responsesPayload struct {
-			Output []struct {
-				Content []struct {
-					Type        string          `json:"type"`
-					Text        string          `json:"text"`
-					OutputText  json.RawMessage `json:"output_text"`
-				} `json:"content"`
-			} `json:"output"`
-		}
-		if err := json.Unmarshal(body, &responsesPayload); err == nil {
-			var text strings.Builder
-			for _, output := range responsesPayload.Output {
-				for _, part := range output.Content {
-					if part.Type == "output_text" {
-						if part.Text != "" {
-							text.WriteString(part.Text)
-						} else if len(part.OutputText) > 0 {
-							var s string
-							if err := json.Unmarshal(part.OutputText, &s); err == nil {
-								text.WriteString(s)
-							}
-						}
-					}
-				}
-			}
-			if text.Len() > 0 {
-				return text.String(), nil
-			}
-		}
-		return "", errors.New("上游响应中没有 choices")
+		// Responses API 形态（以及部分把 /responses 形态原样返回的 chat 上游）
+		return extractResponsesText(body)
 	}
 	choice := payload.Choices[0]
 	switch choice.FinishReason {
@@ -495,4 +489,48 @@ func extractCompletionText(body []byte, isAnthropic bool) (string, error) {
 		return asString, nil
 	}
 	return "", errors.New("无法从响应中提取文本")
+}
+
+// extractResponsesText 从 OpenAI Responses API 形态的响应中提取文本，
+// 并按 status / incomplete 过滤截断与拒答
+func extractResponsesText(body []byte) (string, error) {
+	var payload struct {
+		Status            string `json:"status"`
+		IncompleteDetails *struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
+		Output []struct {
+			Content []struct {
+				Type       string          `json:"type"`
+				Text       string          `json:"text"`
+				OutputText json.RawMessage `json:"output_text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", fmt.Errorf("响应解析失败: %v", err)
+	}
+	if payload.IncompleteDetails != nil && payload.IncompleteDetails.Reason != "" {
+		return "", fmt.Errorf("回答未正常完成（%s），本次回答不计入", payload.IncompleteDetails.Reason)
+	}
+	var text strings.Builder
+	for _, output := range payload.Output {
+		for _, part := range output.Content {
+			if part.Type != "output_text" && part.Type != "text" {
+				continue
+			}
+			if part.Text != "" {
+				text.WriteString(part.Text)
+			} else if len(part.OutputText) > 0 {
+				var s string
+				if err := json.Unmarshal(part.OutputText, &s); err == nil {
+					text.WriteString(s)
+				}
+			}
+		}
+	}
+	if text.Len() == 0 {
+		return "", errors.New("上游响应中没有文本内容")
+	}
+	return text.String(), nil
 }

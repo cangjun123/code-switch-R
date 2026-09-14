@@ -82,6 +82,58 @@ func TestExtractCompletionTextOpenAI(t *testing.T) {
 	}
 }
 
+func TestExtractResponsesText(t *testing.T) {
+	// 正常 Responses 形态
+	body, _ := json.Marshal(map[string]interface{}{
+		"status": "completed",
+		"output": []map[string]interface{}{
+			{
+				"content": []map[string]string{
+					{"type": "output_text", "text": "5 8 13"},
+				},
+			},
+		},
+	})
+	text, err := extractResponsesText(body)
+	if err != nil || text != "5 8 13" {
+		t.Fatalf("text=%q err=%v", text, err)
+	}
+
+	// 截断（max_output_tokens）-> 丢弃
+	body, _ = json.Marshal(map[string]interface{}{
+		"status":            "incomplete",
+		"incomplete_details": map[string]string{"reason": "max_output_tokens"},
+		"output": []map[string]interface{}{
+			{"content": []map[string]string{{"type": "output_text", "text": "5 8"}}},
+		},
+	})
+	if _, err := extractResponsesText(body); err == nil {
+		t.Fatal("incomplete 响应未被拒绝")
+	}
+}
+
+func TestVerifyProviderModelMappingOutOfBank(t *testing.T) {
+	// 模型映射目标不在指纹库内 -> 应报 error 而非 mismatch
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	ps := NewProviderService()
+	if err := ps.SaveProviders("claude", []Provider{
+		{
+			ID:           7,
+			Name:         "mapper",
+			APIURL:       "https://example.com",
+			ModelMapping: map[string]string{"gpt-5.4": "gpt-4o-mini"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewModelTraceService(ps)
+	result := svc.VerifyProviderModel("claude", 7, "gpt-5.4")
+	if result.Verdict != "error" {
+		t.Errorf("映射目标不在库内应报 error, got %v (msg=%s)", result.Verdict, result.Message)
+	}
+}
+
 func TestResolveChallengeEndpoint(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -113,14 +165,46 @@ func TestResolveChallengeEndpoint(t *testing.T) {
 			platform: "codex",
 			expected: "/responses",
 		},
+		{
+			name:     "custom平台默认chat",
+			provider: Provider{UpstreamProtocol: "anthropic"},
+			platform: "custom:mytool",
+			expected: "/v1/chat/completions",
+		},
+		{
+			name:     "连通性测试端点优先",
+			provider: Provider{ConnectivityTestEndpoint: "/v1/chat/completions"},
+			platform: "claude",
+			expected: "/v1/chat/completions",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := resolveChallengeEndpoint(&c.provider, c.platform)
+			got := resolveConnectivityEndpoint(&c.provider, c.platform)
 			if got != c.expected {
 				t.Errorf("endpoint = %s, 期望 %s", got, c.expected)
 			}
 		})
+	}
+}
+
+func TestCompletionAuthHeader(t *testing.T) {
+	cases := []struct {
+		authType string
+		name     string
+		value    string
+	}{
+		{"bearer", "Authorization", "Bearer sk-1"},
+		{"", "Authorization", "Bearer sk-1"},
+		{"x-api-key", "x-api-key", "sk-1"},
+		{"custom", "Authorization", "sk-1"}, // custom 语义与连通性测试一致：无 Bearer 前缀
+		{"X-Custom-Key", "X-Custom-Key", "sk-1"},
+	}
+	for _, c := range cases {
+		name, value := completionAuthHeader(c.authType, "sk-1")
+		if name != c.name || value != c.value {
+			t.Errorf("authType=%q -> (%q, %q), 期望 (%q, %q)", c.authType, name, value, c.name, c.value)
+		}
 	}
 }
 
