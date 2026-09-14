@@ -47,7 +47,7 @@ async function rpcCall<T>(name: string, args: any[]): Promise<T> {
 
 function ensureEventSource(): EventSource {
   if (!sharedEventSource) {
-    sharedEventSource = new EventSource('/api/wails/events')
+    sharedEventSource = new EventSource('/api/wails/events', { withCredentials: true })
     sharedEventSource.onerror = () => {
       if (sharedEventSource?.readyState === EventSource.CLOSED) {
         sharedEventSource = null

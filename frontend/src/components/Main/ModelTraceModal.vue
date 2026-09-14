@@ -52,8 +52,12 @@
           <span class="progress-elapsed">{{ elapsedLabel }}</span>
         </div>
         <!-- 模型实时生成内容（小窗滚动展示，证明模型确实在生成而非卡住） -->
-        <div v-if="streamText" ref="streamBoxRef" class="stream-box" aria-live="off">
-          <span class="stream-text">{{ streamText }}</span>
+        <div ref="streamBoxRef" class="stream-box" aria-live="off">
+          <span v-if="streamText" class="stream-text">{{ streamText }}</span>
+          <span v-else class="stream-placeholder">
+            <span class="stream-pulse-dot"></span>
+            {{ t('components.main.modelTrace.waitingStream') }}
+          </span>
         </div>
       </div>
 
@@ -206,7 +210,18 @@ const streamText = ref('')
 const streamBoxRef = ref<HTMLElement | null>(null)
 
 const unsubscribeStream = subscribeStream((event) => {
-  if (event.sessionId !== activeSessionId.value) return
+  if (activeSessionId.value) {
+    if (event.sessionId !== activeSessionId.value) return
+  } else {
+    const req = activeRequest.value
+    if (!req) return
+    const matches =
+      (event.providerId === req.providerId && event.expectedModel === req.expectedModel) ||
+      event.sessionId.startsWith(`mt-${req.providerId}-`)
+    if (!matches) return
+    activeSessionId.value = event.sessionId
+  }
+
   streamText.value += event.chunk
   // 限制展示长度，避免长回答撑爆内存/渲染
   if (streamText.value.length > 8000) {
@@ -562,6 +577,35 @@ const handleVerify = async () => {
 .stream-box::-webkit-scrollbar-thumb {
   background: rgba(15, 23, 42, 0.2);
   border-radius: 2px;
+}
+
+.stream-placeholder {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--mac-text-secondary, #6b7280);
+  font-size: 11px;
+  user-select: none;
+}
+
+.stream-pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary-color, #3b82f6);
+  display: inline-block;
+  animation: stream-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes stream-pulse {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
 }
 
 .modeltrace-result {

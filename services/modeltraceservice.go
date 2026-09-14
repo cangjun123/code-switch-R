@@ -142,7 +142,9 @@ func (mts *ModelTraceService) emitProgress(sessionID string, providerID int64, e
 
 // ModelTraceStreamEvent 流式生成片段事件（modeltrace:stream）
 type ModelTraceStreamEvent struct {
-	SessionID string `json:"sessionId"`
+	SessionID     string `json:"sessionId"`
+	ProviderID    int64  `json:"providerId"`
+	ExpectedModel string `json:"expectedModel"`
 	// Chunk 本次到达的回答文本片段（前端追加展示）
 	Chunk string `json:"chunk"`
 	// TotalChars 截至当前已累计收到的字符数
@@ -152,8 +154,10 @@ type ModelTraceStreamEvent struct {
 // streamChunker 把流式回答按节流批量推送：上游 SSE 每个 token 一条事件太频繁，
 // EventHub 的广播会刷爆 SSE 通道。攒满 minChunk 或超过 flushInterval 才发一条。
 type streamChunker struct {
-	sessionID string
-	emitter   EventEmitter
+	sessionID     string
+	providerID    int64
+	expectedModel string
+	emitter       EventEmitter
 
 	pending       strings.Builder
 	totalChars    int
@@ -162,9 +166,11 @@ type streamChunker struct {
 	flushInterval time.Duration
 }
 
-func newStreamChunker(sessionID string, emitter EventEmitter) *streamChunker {
+func newStreamChunker(sessionID string, providerID int64, expectedModel string, emitter EventEmitter) *streamChunker {
 	return &streamChunker{
 		sessionID:     sessionID,
+		providerID:    providerID,
+		expectedModel: expectedModel,
 		emitter:       emitter,
 		minChunk:      24,
 		flushInterval: 250 * time.Millisecond,
@@ -195,9 +201,11 @@ func (s *streamChunker) Flush() {
 	s.pending.Reset()
 	s.lastFlush = time.Now()
 	s.emitter.Emit("modeltrace:stream", ModelTraceStreamEvent{
-		SessionID:  s.sessionID,
-		Chunk:      chunk,
-		TotalChars: s.totalChars,
+		SessionID:     s.sessionID,
+		ProviderID:    s.providerID,
+		ExpectedModel: s.expectedModel,
+		Chunk:         chunk,
+		TotalChars:    s.totalChars,
 	})
 }
 
@@ -317,7 +325,7 @@ func (mts *ModelTraceService) verifyWithRetries(sessionID string, start time.Tim
 		}
 		mts.emitProgress(sessionID, providerID, expectedModel, "sending", attempts, start,
 			"挑战已发出，正在等待模型生成约 300 个随机整数（通常 30 秒到 2 分钟）…")
-		streamer := newStreamChunker(sessionID, mts.emitter)
+		streamer := newStreamChunker(sessionID, providerID, expectedModel, mts.emitter)
 		text, err := mts.requestChallenge(budgetCtx, provider, platform, apiModel, challenge.Prompt, streamer)
 		if err != nil {
 			lastErr = err
@@ -635,17 +643,17 @@ done:
 }
 
 // extractStreamDelta 从单条 SSE data 中提取增量文本与终止原因。
-// 兼容 Anthropic（content_block_delta）与 OpenAI Chat/Responses（delta/output_text）三种形态。
+// 兼容 Anthropic（content_block_delta / message_delta）、
+// OpenAI Chat（choices[0].delta.content / reasoning_content）与
+// OpenAI Responses（response.output_text.delta / response.reasoning_summary_text.delta / response.completed / response.incomplete）等形态。
 func extractStreamDelta(payload string) (text, stopReason string, err error) {
 	var raw struct {
-		Type  string `json:"type"`
-		Delta struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"delta"`
+		Type    string          `json:"type"`
+		Delta   json.RawMessage `json:"delta"`
 		Choices []struct {
 			Delta struct {
-				Content json.RawMessage `json:"content"`
+				Content          json.RawMessage `json:"content"`
+				ReasoningContent json.RawMessage `json:"reasoning_content"`
 			} `json:"delta"`
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
@@ -661,47 +669,79 @@ func extractStreamDelta(payload string) (text, stopReason string, err error) {
 	if jsonErr := json.Unmarshal([]byte(payload), &raw); jsonErr != nil {
 		return "", "", jsonErr
 	}
-	// Anthropic: content_block_delta
-	if raw.Type == "content_block_delta" && (raw.Delta.Type == "text_delta" || raw.Delta.Text != "") {
-		return raw.Delta.Text, "", nil
+
+	// 1. Anthropic: content_block_delta（兼容普通 text 与思考模式 thinking）
+	if raw.Type == "content_block_delta" && len(raw.Delta) > 0 {
+		var anthropicDelta struct {
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Thinking string `json:"thinking"`
+		}
+		if json.Unmarshal(raw.Delta, &anthropicDelta) == nil {
+			if anthropicDelta.Text != "" {
+				return anthropicDelta.Text, "", nil
+			}
+			if anthropicDelta.Thinking != "" {
+				return anthropicDelta.Thinking, "", nil
+			}
+		}
 	}
-	// Anthropic: message_delta 携带终止原因
-	if raw.Type == "message_delta" && raw.StopReason != "" {
-		return "", raw.StopReason, nil
+
+	// 2. Anthropic: message_delta 携带终止原因（在 delta.stop_reason 或顶层 stop_reason）
+	if raw.Type == "message_delta" {
+		if len(raw.Delta) > 0 {
+			var msgDelta struct {
+				StopReason string `json:"stop_reason"`
+			}
+			if json.Unmarshal(raw.Delta, &msgDelta) == nil && msgDelta.StopReason != "" {
+				return "", msgDelta.StopReason, nil
+			}
+		}
+		if raw.StopReason != "" {
+			return "", raw.StopReason, nil
+		}
 	}
-	// OpenAI Chat: choices[0].delta.content（字符串或分段数组）
+
+	// 3. OpenAI Chat: choices[0].delta.content / reasoning_content（字符串或分段数组）
 	if len(raw.Choices) > 0 {
-		if content := raw.Choices[0].Delta.Content; len(content) > 0 {
+		choice := raw.Choices[0]
+		if content := choice.Delta.Content; len(content) > 0 {
 			if text := rawContentText(content); text != "" {
 				return text, "", nil
 			}
 		}
-		if raw.Choices[0].FinishReason != nil && *raw.Choices[0].FinishReason != "" {
-			return "", *raw.Choices[0].FinishReason, nil
+		if reasoning := choice.Delta.ReasoningContent; len(reasoning) > 0 {
+			if text := rawContentText(reasoning); text != "" {
+				return text, "", nil
+			}
+		}
+		if choice.FinishReason != nil && *choice.FinishReason != "" {
+			return "", *choice.FinishReason, nil
 		}
 	}
-	// OpenAI Responses: type == response.output_text.delta 的 data 顶层是文本？官方形态为
-	// {"type":"response.output_text.delta","delta":"..."}——补一个宽松字段
-	var responsesDelta struct {
-		Type  string          `json:"type"`
-		Delta json.RawMessage `json:"delta"`
-	}
-	_ = json.Unmarshal([]byte(payload), &responsesDelta)
-	if responsesDelta.Type == "response.output_text.delta" {
-		var s string
-		if json.Unmarshal(responsesDelta.Delta, &s) == nil {
-			return s, "", nil
+
+	// 4. OpenAI Responses: output_text.delta / reasoning_summary_text.delta / reasoning_text.delta
+	// 官方与中转网关均为纯字符串 delta
+	if raw.Type == "response.output_text.delta" ||
+		raw.Type == "response.reasoning_summary_text.delta" ||
+		raw.Type == "response.reasoning_text.delta" {
+		if len(raw.Delta) > 0 {
+			var s string
+			if json.Unmarshal(raw.Delta, &s) == nil && s != "" {
+				return s, "", nil
+			}
 		}
 	}
-	if responsesDelta.Type == "response.incomplete" && raw.Response != nil && raw.Response.IncompleteDetails != nil {
+	if raw.Type == "response.incomplete" && raw.Response != nil && raw.Response.IncompleteDetails != nil {
 		return "", raw.Response.IncompleteDetails.Reason, nil
 	}
-	if responsesDelta.Type == "response.completed" && raw.Response != nil {
+	if raw.Type == "response.completed" && raw.Response != nil {
 		if raw.Response.IncompleteDetails != nil && raw.Response.IncompleteDetails.Reason != "" {
 			return "", raw.Response.IncompleteDetails.Reason, nil
 		}
 		return "", "stop", nil
 	}
+
 	return "", "", nil
 }
 

@@ -89,6 +89,8 @@ export const subscribeProgress = (
 /** 流式生成片段事件（modeltrace:stream） */
 export interface ModelTraceStreamChunk {
   sessionId: string
+  providerId?: number
+  expectedModel?: string
   chunk: string
   totalChars: number
 }
