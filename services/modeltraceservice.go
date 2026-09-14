@@ -193,10 +193,10 @@ func (mts *ModelTraceService) VerifyProviderModel(
 	sessionID := fmt.Sprintf("mt-%d-%s", providerID, modeltrace.NewSessionToken())
 	if apiModel != expectedModel {
 		mts.emitProgress(sessionID, providerID, expectedModel, "sending", 1, start,
-			fmt.Sprintf("已应用模型映射 %s → %s，正在发送数值生成挑战…", expectedModel, apiModel))
+			fmt.Sprintf("已应用模型映射 %s → %s，正在发起检测…", expectedModel, apiModel))
 	} else {
 		mts.emitProgress(sessionID, providerID, expectedModel, "sending", 1, start,
-			fmt.Sprintf("正在向 %s 发送数值生成挑战，模型需生成约 300 个随机整数，可能需要 1-2 分钟…", provider.Name))
+			fmt.Sprintf("正在对 %s（%s）发起检测…", provider.Name, expectedModel))
 	}
 
 	result, attempts, rawOutput, verifyErr := mts.verifyWithRetries(sessionID, start, providerID, expectedModel, provider, platform, apiModel, bank)
@@ -250,11 +250,10 @@ func (mts *ModelTraceService) verifyWithRetries(sessionID string, start time.Tim
 		attempts++
 		if attempts > 1 {
 			mts.emitProgress(sessionID, providerID, expectedModel, "retrying", attempts, start,
-				fmt.Sprintf("第 %d 次回答无效（%s），正在发送新的挑战…", attempts-1, lastErr))
+				fmt.Sprintf("第 %d 次回答无效（%v），正在发送新的挑战…", attempts-1, lastErr))
 		}
 		mts.emitProgress(sessionID, providerID, expectedModel, "sending", attempts, start,
-			fmt.Sprintf("正在发送第 %d/%d 次数值生成挑战（要求 %d 个整数）…",
-				attempts, maxVerifyAttempts, challenge.ExpectedCount))
+			"挑战已发出，正在等待模型生成约 300 个随机整数（通常 30 秒到 2 分钟）…")
 		text, err := mts.requestChallenge(budgetCtx, provider, platform, apiModel, challenge.Prompt)
 		if err != nil {
 			lastErr = err
