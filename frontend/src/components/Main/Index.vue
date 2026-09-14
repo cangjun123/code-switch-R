@@ -102,51 +102,10 @@
           </button>
         </div>
       </div>
-      <section
-        v-if="showHeatmap"
-        ref="heatmapContainerRef"
-        class="contrib-wall"
-        :aria-label="t('components.main.heatmap.ariaLabel')"
-      >
-        <div class="contrib-legend">
-          <span>{{ t('components.main.heatmap.legendLow') }}</span>
-          <span v-for="level in 5" :key="level" :class="['legend-box', intensityClass(level - 1)]" />
-          <span>{{ t('components.main.heatmap.legendHigh') }}</span>
-        </div>
-
-        <div class="contrib-grid">
-          <div
-            v-for="(week, weekIndex) in usageHeatmap"
-            :key="weekIndex"
-            class="contrib-column"
-          >
-            <div
-              v-for="(day, dayIndex) in week"
-              :key="dayIndex"
-              class="contrib-cell"
-              :class="intensityClass(day.intensity)"
-              @mouseenter="showUsageTooltip(day, $event)"
-              @mousemove="showUsageTooltip(day, $event)"
-              @mouseleave="hideUsageTooltip"
-            />
-          </div>
-        </div>
-        <div
-          v-if="usageTooltip.visible"
-          ref="tooltipRef"
-          class="contrib-tooltip"
-          :class="usageTooltip.placement"
-          :style="{ left: `${usageTooltip.left}px`, top: `${usageTooltip.top}px` }"
-        >
-          <p class="tooltip-heading">{{ formattedTooltipLabel }}</p>
-          <ul class="tooltip-metrics">
-            <li v-for="metric in usageTooltipMetrics" :key="metric.key">
-              <span class="metric-label">{{ metric.label }}</span>
-              <span class="metric-value">{{ metric.value }}</span>
-            </li>
-          </ul>
-        </div>
-      </section>
+      <ContribHeatmap
+        ref="heatmapRef"
+        :visible="showHeatmap"
+      />
 
       <section class="automation-section">
       <div class="section-header">
@@ -294,260 +253,39 @@
       </div>
 
       <div class="automation-list" @dragover.prevent>
-        <article
+        <div
           v-for="card in activeCards"
           :key="card.id"
           :ref="el => { if (card.name === highlightedProvider) scrollToCard(el as HTMLElement) }"
-          :class="[
-            'automation-card',
-            { dragging: draggingId === card.id },
-            { 'is-last-used': isLastUsedProvider(card.name) },
-            { 'is-highlighted': highlightedProvider === card.name }
-          ]"
-          draggable="true"
-          @dragstart="onDragStart(card.id)"
-          @dragend="onDragEnd"
-          @drop="onDrop(card.id)"
         >
-          <!-- 正在使用标签 -->
-          <span v-if="isLastUsedProvider(card.name)" class="last-used-badge">
-            ✓ {{ t('components.main.providers.lastUsed') }}
-          </span>
-          <div class="card-leading">
-            <div class="card-icon" :style="{ backgroundColor: card.tint, color: card.accent }">
-              <span
-                v-if="!iconSvg(card.icon)"
-                class="icon-fallback"
-              >
-                {{ vendorInitials(card.name) }}
-              </span>
-              <span
-                v-else
-                class="icon-svg"
-                v-html="iconSvg(card.icon)"
-                aria-hidden="true"
-              ></span>
-            </div>
-            <div class="card-text">
-              <div class="card-title-row">
-                <p class="card-title">{{ card.name }}</p>
-                <!-- 当前使用徽章 -->
-                <span
-                  v-if="isDirectApplied(card) && !activeProxyState"
-                  class="current-use-badge"
-                >
-                  {{ t('components.main.directApply.currentBadge') }}
-                </span>
-                <!-- 连通性状态指示器 -->
-                <span
-                  v-if="card.availabilityMonitorEnabled"
-                  class="connectivity-dot"
-                  :class="getConnectivityIndicatorClass(card.id)"
-                  :title="getConnectivityTooltip(card.id)"
-                ></span>
-                <span v-if="card.level" class="level-badge scheduling-level" :class="`level-${card.level}`">
-                  L{{ card.level }}
-                </span>
-                <!-- 黑名单等级徽章（始终显示，包括 L0） -->
-                <span
-                  v-if="getProviderBlacklistStatus(card.name)"
-                  :class="[
-                    'blacklist-level-badge',
-                    `bl-level-${getProviderBlacklistStatus(card.name)!.blacklistLevel}`,
-                    { dark: resolvedTheme === 'dark' }
-                  ]"
-                  :title="t('components.main.blacklist.levelTitle', { level: getProviderBlacklistStatus(card.name)!.blacklistLevel })"
-                >
-                  BL{{ getProviderBlacklistStatus(card.name)!.blacklistLevel }}
-                </span>
-                <!-- 永不拉黑徽章 -->
-                <span
-                  v-if="card.neverBlacklist"
-                  class="never-blacklist-badge"
-                  :class="{ dark: resolvedTheme === 'dark' }"
-                  :title="t('components.main.blacklist.neverBlacklistHint')"
-                >
-                  🛡️
-                </span>
-                <button
-                  v-if="card.officialSite"
-                  class="card-site"
-                  type="button"
-                  @click.stop="openOfficialSite(card.officialSite)"
-                >
-                  {{ formatOfficialSite(card.officialSite) }}
-                </button>
-              </div>
-              <!-- <p class="card-subtitle">{{ card.apiUrl }}</p> -->
-              <p
-                v-for="stats in [providerStatDisplay(card.name)]"
-                :key="`metrics-${card.id}`"
-                class="card-metrics"
-              >
-                <template v-if="stats.state !== 'ready'">
-                  {{ stats.message }}
-                </template>
-                <template v-else>
-                  <span
-                    v-if="stats.successRateLabel"
-                    class="card-success-rate"
-                    :class="stats.successRateClass"
-                  >
-                    {{ stats.successRateLabel }}
-                  </span>
-                  <span class="card-metric-separator" aria-hidden="true">·</span>
-                  <span >{{ stats.requests }}</span>
-                  <span class="card-metric-separator" aria-hidden="true">·</span>
-                  <span>{{ stats.tokens }}</span>
-                  <span class="card-metric-separator" aria-hidden="true">·</span>
-                  <span>{{ stats.cost }}</span>
-                </template>
-              </p>
-              <!-- 黑名单横幅 -->
-              <div
-                v-if="getProviderBlacklistStatus(card.name)?.isBlacklisted"
-                :class="['blacklist-banner', { dark: resolvedTheme === 'dark' }]"
-              >
-                <div class="blacklist-info">
-                  <span class="blacklist-icon">⛔</span>
-                  <!-- 等级徽章（L1-L5，黑色/红色） -->
-                  <span
-                    v-if="getProviderBlacklistStatus(card.name)!.blacklistLevel > 0"
-                    :class="['level-badge', `level-${getProviderBlacklistStatus(card.name)!.blacklistLevel}`, { dark: resolvedTheme === 'dark' }]"
-                  >
-                    L{{ getProviderBlacklistStatus(card.name)!.blacklistLevel }}
-                  </span>
-                  <span class="blacklist-text">
-                    {{ t('components.main.blacklist.blocked') }} |
-                    {{ t('components.main.blacklist.remaining') }}:
-                    {{ formatBlacklistCountdown(getProviderBlacklistStatus(card.name)!.remainingSeconds) }}
-                  </span>
-                </div>
-                <div class="blacklist-actions">
-                  <button
-                    class="unblock-btn primary"
-                    type="button"
-                    @click.stop="handleUnblockAndReset(card.name)"
-                    :title="t('components.main.blacklist.unblockAndResetHint')"
-                  >
-                    {{ t('components.main.blacklist.unblockAndReset') }}
-                  </button>
-                  <button
-                    class="unblock-btn secondary"
-                    type="button"
-                    @click.stop="handleResetLevel(card.name)"
-                    :title="t('components.main.blacklist.resetLevelHint')"
-                  >
-                    {{ t('components.main.blacklist.resetLevel') }}
-                  </button>
-                </div>
-              </div>
-              <!-- 等级徽章（未拉黑但有等级） -->
-              <div
-                v-else-if="getProviderBlacklistStatus(card.name) && getProviderBlacklistStatus(card.name)!.blacklistLevel > 0"
-                class="level-badge-standalone"
-              >
-                <span
-                  :class="['level-badge', `level-${getProviderBlacklistStatus(card.name)!.blacklistLevel}`, { dark: resolvedTheme === 'dark' }]"
-                >
-                  L{{ getProviderBlacklistStatus(card.name)!.blacklistLevel }}
-                </span>
-                <span class="level-hint">{{ t('components.main.blacklist.levelHint') }}</span>
-                <button
-                  class="reset-level-mini"
-                  type="button"
-                  @click.stop="handleResetLevel(card.name)"
-                  :title="t('components.main.blacklist.resetLevelHint')"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-          </div>
-          <div class="card-actions">
-            <label class="mac-switch sm">
-              <input type="checkbox" v-model="card.enabled" @change="persistProviders(activeTab)" />
-              <span></span>
-            </label>
-            <!-- 直连应用按钮 -->
-            <button
-              v-if="activeTab !== 'others' && activeTab !== 'gpt-image'"
-              class="ghost-icon direct-apply-btn"
-              :class="{ 'is-active': isDirectApplied(card) && !activeProxyState }"
-              :disabled="activeProxyState"
-              :data-tooltip="activeProxyState ? t('components.main.directApply.proxyEnabled') : (isDirectApplied(card) ? t('components.main.directApply.inUse') : t('components.main.directApply.title'))"
-              @click.stop="!isDirectApplied(card) && handleDirectApply(card)"
-            >
-              <span v-if="isDirectApplied(card) && !activeProxyState" class="apply-text">{{ t('components.main.directApply.inUse') }}</span>
-              <svg v-else viewBox="0 0 24 24" aria-hidden="true" class="lightning-icon">
-                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            </button>
-            <!-- 模型真伪检测按钮 -->
-            <button
-              v-if="showModelTraceButton"
-              class="ghost-icon"
-              :data-tooltip="t('components.main.modelTrace.tooltip')"
-              @click.stop="openModelTrace(card)"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M12 3l7 3v5c0 4.6-3 8.4-7 9.5C8 19.4 5 15.6 5 11V6l7-3z"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-                <path
-                  d="M9 11.5l2 2 4-4"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </button>
-            <button class="ghost-icon" :data-tooltip="t('components.main.form.editTitle')" @click="configure(card)">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M11.983 2.25a1.125 1.125 0 011.077.81l.563 2.101a7.482 7.482 0 012.326 1.343l2.08-.621a1.125 1.125 0 011.356.651l1.313 3.207a1.125 1.125 0 01-.442 1.339l-1.86 1.205a7.418 7.418 0 010 2.686l1.86 1.205a1.125 1.125 0 01.442 1.339l-1.313 3.207a1.125 1.125 0 01-1.356.651l-2.08-.621a7.482 7.482 0 01-2.326 1.343l-.563 2.101a1.125 1.125 0 01-1.077.81h-2.634a1.125 1.125 0 01-1.077-.81l-.563-2.101a7.482 7.482 0 01-2.326-1.343l-2.08.621a1.125 1.125 0 01-1.356-.651l-1.313-3.207a1.125 1.125 0 01.442-1.339l1.86-1.205a7.418 7.418 0 010-2.686l-1.86-1.205a1.125 1.125 0 01-.442-1.339l1.313-3.207a1.125 1.125 0 011.356-.651l2.08.621a7.482 7.482 0 012.326-1.343l.563-2.101a1.125 1.125 0 011.077-.81h2.634z"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-                <path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-            </button>
-            <button class="ghost-icon" :data-tooltip="t('components.main.controls.duplicate')" @click="handleDuplicate(card)">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </button>
-            <button class="ghost-icon" :data-tooltip="t('components.main.form.actions.delete')" @click="requestRemove(card)">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M9 3h6m-7 4h8m-6 0v11m4-11v11M5 7h14l-.867 12.138A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.862L5 7z"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </button>
-          </div>
-        </article>
+          <ProviderCard
+            :card="card"
+            :active-tab="activeTab"
+            :active-proxy-state="activeProxyState"
+            :is-last-used="isLastUsedProvider(card.name)"
+            :is-highlighted="highlightedProvider === card.name"
+            :is-direct-applied="isDirectApplied(card)"
+            :is-dragging="draggingId === card.id"
+            :blacklist-status="getProviderBlacklistStatus(card.name)"
+            :stats="providerStatDisplay(card.name)"
+            :resolved-theme="resolvedTheme"
+            :connectivity-indicator-class="getConnectivityIndicatorClass(card.id)"
+            :connectivity-tooltip="getConnectivityTooltip(card.id)"
+            :show-model-trace-button="showModelTraceButton"
+            @dragstart="onDragStart"
+            @dragend="onDragEnd"
+            @drop="onDrop"
+            @toggle-enabled="persistProviders(activeTab)"
+            @direct-apply="handleDirectApply"
+            @open-model-trace="openModelTrace"
+            @configure="configure"
+            @duplicate="handleDuplicate"
+            @remove="requestRemove"
+            @unblock="handleUnblockAndReset"
+            @reset-level="handleResetLevel"
+            @open-official-site="openOfficialSite"
+          />
+        </div>
       </div>
 
       <!-- 自定义 CLI 工具配置文件编辑器 -->
@@ -560,440 +298,26 @@
       />
       </section>
 
-      <BaseModal
-      :open="modalState.open"
-      :title="modalState.editingId ? t('components.main.form.editTitle') : t('components.main.form.createTitle')"
-      @close="closeModal"
-    >
-      <form class="vendor-form" @submit.prevent="submitModal">
-                <label class="form-field">
-                  <span class="label-row">
-                    {{ t('components.main.form.labels.name') }}
-                    <span v-if="modalState.errors.name" class="field-error">
-                      {{ modalState.errors.name }}
-                    </span>
-                  </span>
-                  <BaseInput
-                    v-model="modalState.form.name"
-                    type="text"
-                    :placeholder="t('components.main.form.placeholders.name')"
-                    :disabled="!!modalState.editingId && modalState.tabId === 'gemini'"
-                    required
-                  />
-                  <span v-if="modalState.editingId && modalState.tabId !== 'gemini'" class="field-hint">
-                    {{ t('components.main.form.renameHint') }}
-                  </span>
-                </label>
-
-                <label class="form-field">
-                  <span class="label-row">
-                    {{ t('components.main.form.labels.apiUrl') }}
-                    <span v-if="modalState.errors.apiUrl" class="field-error">
-                      {{ modalState.errors.apiUrl }}
-                    </span>
-                  </span>
-                  <BaseInput
-                    v-model="modalState.form.apiUrl"
-                    type="text"
-                    :placeholder="t('components.main.form.placeholders.apiUrl')"
-                    required
-                    :class="{ 'has-error': !!modalState.errors.apiUrl }"
-                  />
-                </label>
-
-                <label class="form-field">
-                  <span>{{ t('components.main.form.labels.officialSite') }}</span>
-                  <BaseInput
-                    v-model="modalState.form.officialSite"
-                    type="text"
-                    :placeholder="t('components.main.form.placeholders.officialSite')"
-                  />
-                </label>
-
-                <label class="form-field">
-                  <span>{{ t('components.main.form.labels.apiKey') }}</span>
-                  <BaseInput
-                    v-model="modalState.form.apiKey"
-                    type="text"
-                    :placeholder="t('components.main.form.placeholders.apiKey')"
-                  />
-                </label>
-
-                <!-- API 端点（可选）-->
-                <label class="form-field">
-                  <span>{{ t('components.main.form.labels.apiEndpoint') }}</span>
-                  <BaseInput
-                    v-model="modalState.form.apiEndpoint"
-                    type="text"
-                    :placeholder="t('components.main.form.placeholders.apiEndpoint')"
-                  />
-                  <span class="field-hint">{{ t('components.main.form.hints.apiEndpoint') }}</span>
-                </label>
-
-                <!-- 上游协议类型 -->
-                <div class="form-field">
-                  <span>{{ t('components.main.form.labels.upstreamProtocol') }}</span>
-                  <Listbox v-model="modalState.form.upstreamProtocol" v-slot="{ open }">
-                    <div class="level-select">
-                      <ListboxButton class="level-select-button">
-                        <span class="level-label">
-                          {{ upstreamProtocolOptions.find((item) => item.value === modalState.form.upstreamProtocol)?.label || modalState.form.upstreamProtocol }}
-                        </span>
-                        <svg viewBox="0 0 20 20" aria-hidden="true">
-                          <path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
-                        </svg>
-                      </ListboxButton>
-                      <ListboxOptions
-                        v-if="open"
-                        :class="['level-select-options', { dark: resolvedTheme === 'dark' }]"
-                      >
-                        <ListboxOption
-                          v-for="option in upstreamProtocolOptions"
-                          :key="option.value"
-                          :value="option.value"
-                          v-slot="{ active, selected }"
-                        >
-                          <div :class="['level-option', { active, selected }]">
-                            <span class="level-name">{{ option.label }}</span>
-                            <span class="level-desc">{{ option.desc }}</span>
-                          </div>
-                        </ListboxOption>
-                      </ListboxOptions>
-                    </div>
-                  </Listbox>
-                  <span class="field-hint">{{ t('components.main.form.hints.upstreamProtocol') }}</span>
-                </div>
-
-                <div v-if="modalState.tabId === 'codex'" class="form-field">
-                  <span>{{ t('components.main.form.labels.openAIEndpointMode') }}</span>
-                  <Listbox v-model="modalState.form.openAIEndpointMode" v-slot="{ open }">
-                    <div class="level-select">
-                      <ListboxButton class="level-select-button">
-                        <span class="level-label">
-                          {{ openAIEndpointModeOptions.find((item) => item.value === modalState.form.openAIEndpointMode)?.label || modalState.form.openAIEndpointMode }}
-                        </span>
-                        <svg viewBox="0 0 20 20" aria-hidden="true">
-                          <path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
-                        </svg>
-                      </ListboxButton>
-                      <ListboxOptions
-                        v-if="open"
-                        :class="['level-select-options', { dark: resolvedTheme === 'dark' }]"
-                      >
-                        <ListboxOption
-                          v-for="option in openAIEndpointModeOptions"
-                          :key="option.value"
-                          :value="option.value"
-                          v-slot="{ active, selected }"
-                        >
-                          <div :class="['level-option', { active, selected }]">
-                            <span class="level-name">{{ option.label }}</span>
-                            <span class="level-desc">{{ option.desc }}</span>
-                          </div>
-                        </ListboxOption>
-                      </ListboxOptions>
-                    </div>
-                  </Listbox>
-                  <span class="field-hint">{{ t('components.main.form.hints.openAIEndpointMode') }}</span>
-                </div>
-
-                <div v-if="modalState.tabId === 'codex'" class="form-field switch-field">
-                  <span>{{ t('components.main.form.labels.codexMultiAgentNamespaceRewrite') }}</span>
-                  <div class="switch-inline">
-                    <label class="mac-switch">
-                      <input type="checkbox" v-model="modalState.form.codexMultiAgentNamespaceRewrite" />
-                      <span></span>
-                    </label>
-                    <span class="switch-text">
-                      {{ modalState.form.codexMultiAgentNamespaceRewrite ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-                    </span>
-                  </div>
-                  <span class="field-hint">{{ t('components.main.form.hints.codexMultiAgentNamespaceRewrite') }}</span>
-                </div>
-
-                <div v-if="modalState.tabId === 'codex'" class="form-field switch-field">
-                  <span>{{ t('components.main.form.labels.bridgeResponsesInstructions') }}</span>
-                  <div class="switch-inline">
-                    <label class="mac-switch">
-                      <input type="checkbox" v-model="modalState.form.bridgeResponsesInstructions" />
-                      <span></span>
-                    </label>
-                    <span class="switch-text">
-                      {{ modalState.form.bridgeResponsesInstructions ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-                    </span>
-                  </div>
-                  <span class="field-hint">{{ t('components.main.form.hints.bridgeResponsesInstructions') }}</span>
-                </div>
-
-                <div v-if="modalState.tabId === 'codex'" class="form-field switch-field">
-                  <span>{{ t('components.main.form.labels.forceResponsesStoreFalse') }}</span>
-                  <div class="switch-inline">
-                    <label class="mac-switch">
-                      <input type="checkbox" v-model="modalState.form.forceResponsesStoreFalse" />
-                      <span></span>
-                    </label>
-                    <span class="switch-text">
-                      {{ modalState.form.forceResponsesStoreFalse ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-                    </span>
-                  </div>
-                  <span class="field-hint">{{ t('components.main.form.hints.forceResponsesStoreFalse') }}</span>
-                </div>
-
-                <label v-if="modalState.tabId === 'codex'" class="form-field">
-                  <span>{{ t('components.main.form.labels.dropResponsesFields') }}</span>
-                  <BaseInput
-                    v-model="modalState.form.dropResponsesFieldsText"
-                    type="text"
-                    :placeholder="t('components.main.form.placeholders.dropResponsesFields')"
-                  />
-                  <span class="field-hint">{{ t('components.main.form.hints.dropResponsesFields') }}</span>
-                </label>
-
-                <label v-if="modalState.tabId === 'gpt-image'" class="form-field">
-                  <span>{{ t('components.main.form.labels.dropImageFields') }}</span>
-                  <BaseInput
-                    v-model="modalState.form.dropImageFieldsText"
-                    type="text"
-                    :placeholder="t('components.main.form.placeholders.dropImageFields')"
-                  />
-                  <span class="field-hint">{{ t('components.main.form.hints.dropImageFields') }}</span>
-                </label>
-
-                <div v-if="modalState.tabId === 'gpt-image'" class="form-field switch-field">
-                  <span>{{ t('components.main.form.labels.imageAsyncMode') }}</span>
-                  <div class="switch-inline">
-                    <label class="mac-switch">
-                      <input type="checkbox" v-model="modalState.form.imageAsyncMode" />
-                      <span></span>
-                    </label>
-                    <span class="switch-text">
-                      {{ modalState.form.imageAsyncMode ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-                    </span>
-                  </div>
-                  <span class="field-hint">{{ t('components.main.form.hints.imageAsyncMode') }}</span>
-                </div>
-
-                <!-- 认证方式 -->
-                <div class="form-field">
-                  <span>{{ t('components.main.form.labels.connectivityAuthType') }}</span>
-                  <Listbox v-model="selectedAuthType" v-slot="{ open }">
-                    <div class="level-select">
-                      <ListboxButton class="level-select-button">
-                        <span class="level-label">
-                          {{ authTypeOptions.find((item) => item.value === selectedAuthType)?.label || selectedAuthType }}
-                        </span>
-                        <svg viewBox="0 0 20 20" aria-hidden="true">
-                          <path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
-                        </svg>
-                      </ListboxButton>
-                      <ListboxOptions
-                        v-if="open"
-                        :class="['level-select-options', { dark: resolvedTheme === 'dark' }]"
-                      >
-                        <ListboxOption
-                          v-for="option in authTypeOptions"
-                          :key="option.value"
-                          :value="option.value"
-                          v-slot="{ active, selected }"
-                        >
-                          <div :class="['level-option', { active, selected }]">
-                            <span class="level-name">{{ option.label }}</span>
-                          </div>
-                        </ListboxOption>
-                      </ListboxOptions>
-                    </div>
-                  </Listbox>
-                  <BaseInput
-                    v-model="customAuthHeader"
-                    type="text"
-                    :placeholder="t('components.main.form.placeholders.customAuthHeader')"
-                    class="mt-2"
-                  />
-                  <span class="field-hint">{{ t('components.main.form.hints.connectivityAuthType') }}</span>
-                </div>
-
-                <div class="form-field">
-                  <span>{{ t('components.main.form.labels.icon') }}</span>
-                  <Listbox v-model="modalState.form.icon" v-slot="{ open }" class="w-full">
-                    <div class="icon-select">
-                      <ListboxButton class="icon-select-button">
-                        <span class="icon-preview" v-html="iconSvg(modalState.form.icon)" aria-hidden="true"></span>
-                        <span class="icon-select-label">{{ modalState.form.icon }}</span>
-                        <svg viewBox="0 0 20 20" aria-hidden="true">
-                          <path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
-                        </svg>
-                      </ListboxButton>
-                      <ListboxOptions v-if="open" class="icon-select-options">
-                        <div class="icon-search-wrapper">
-                          <input
-                            v-model="iconSearchQuery"
-                            type="text"
-                            class="icon-search-input"
-                            :placeholder="t('components.main.form.placeholders.searchIcon')"
-                            @click.stop
-                            @keydown.stop
-                          />
-                        </div>
-                        <ListboxOption
-                          v-for="iconName in filteredIconOptions"
-                          :key="iconName"
-                          :value="iconName"
-                          v-slot="{ active, selected }"
-                        >
-                          <div :class="['icon-option', { active, selected }]">
-                            <span class="icon-preview" v-html="iconSvg(iconName)" aria-hidden="true"></span>
-                            <span class="icon-name">{{ iconName }}</span>
-                          </div>
-                        </ListboxOption>
-                        <div v-if="filteredIconOptions.length === 0" class="icon-no-results">
-                          {{ t('components.main.form.noIconResults') }}
-                        </div>
-                      </ListboxOptions>
-                    </div>
-                  </Listbox>
-                </div>
-
-                <div class="form-field">
-                  <span>{{ t('components.main.form.labels.level') }}</span>
-                  <Listbox v-model="modalState.form.level" v-slot="{ open }">
-                    <div class="level-select">
-                      <ListboxButton class="level-select-button">
-                        <span class="level-badge" :class="`level-${modalState.form.level || 1}`">
-                          L{{ modalState.form.level || 1 }}
-                        </span>
-                        <span class="level-label">
-                          Level {{ modalState.form.level || 1 }} - {{ getLevelDescription(modalState.form.level || 1) }}
-                        </span>
-                        <svg viewBox="0 0 20 20" aria-hidden="true">
-                          <path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
-                        </svg>
-                      </ListboxButton>
-                      <ListboxOptions
-                        v-if="open"
-                        :class="['level-select-options', { dark: resolvedTheme === 'dark' }]"
-                      >
-                        <ListboxOption
-                          v-for="lvl in 10"
-                          :key="lvl"
-                          :value="lvl"
-                          v-slot="{ active, selected }"
-                        >
-                          <div :class="['level-option', { active, selected }]">
-                            <span class="level-badge" :class="`level-${lvl}`">L{{ lvl }}</span>
-                            <span class="level-name">Level {{ lvl }} - {{ getLevelDescription(lvl) }}</span>
-                          </div>
-                        </ListboxOption>
-                      </ListboxOptions>
-                    </div>
-                  </Listbox>
-                  <span class="field-hint">{{ t('components.main.form.hints.level') }}</span>
-                </div>
-
-                <div class="form-field">
-                  <ModelWhitelistEditor v-model="modalState.form.supportedModels" />
-                </div>
-
-                <div class="form-field">
-                  <ModelMappingEditor v-model="modalState.form.modelMapping" />
-                </div>
-
-                <div class="form-field">
-                  <template v-if="modalState.tabId !== 'gpt-image'">
-                    <CLIConfigEditor
-                      :platform="activeTab as CLIPlatform"
-                      v-model="modalState.form.cliConfig"
-                      :provider-config="{
-                        apiKey: modalState.form.apiKey,
-                        baseUrl: modalState.form.apiUrl
-                      }"
-                    />
-                  </template>
-                </div>
-
-                <div class="form-field switch-field">
-                  <span>{{ t('components.main.form.labels.enabled') }}</span>
-                  <div class="switch-inline">
-                    <label class="mac-switch">
-                      <input type="checkbox" v-model="modalState.form.enabled" />
-                      <span></span>
-                    </label>
-                    <span class="switch-text">
-                      {{ modalState.form.enabled ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-                    </span>
-                  </div>
-                </div>
-
-                <!-- 可用性监控配置 -->
-                <div class="form-field switch-field">
-                  <span>{{ t('components.main.form.labels.availabilityMonitor') }}</span>
-                  <div class="switch-inline">
-                    <label class="mac-switch">
-                      <input type="checkbox" v-model="modalState.form.availabilityMonitorEnabled" />
-                      <span></span>
-                    </label>
-                    <span class="switch-text">
-                      {{ modalState.form.availabilityMonitorEnabled ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-                    </span>
-                  </div>
-                  <span class="field-hint">{{ t('components.main.form.hints.availabilityMonitor') }}</span>
-                </div>
-
-                <!-- 连通性自动拉黑 -->
-                <div v-if="modalState.form.availabilityMonitorEnabled" class="form-field switch-field">
-                  <span>{{ t('components.main.form.labels.connectivityAutoBlacklist') }}</span>
-                  <div class="switch-inline">
-                    <label class="mac-switch">
-                      <input type="checkbox" v-model="modalState.form.connectivityAutoBlacklist" />
-                      <span></span>
-                    </label>
-                    <span class="switch-text">
-                      {{ modalState.form.connectivityAutoBlacklist ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-                    </span>
-                  </div>
-                  <span class="field-hint">{{ t('components.main.form.hints.connectivityAutoBlacklist') }}</span>
-                </div>
-
-                <!-- 永不拉黑 -->
-                <div v-if="modalState.tabId !== 'others' && modalState.tabId !== 'gemini'" class="form-field switch-field">
-                  <span>{{ t('components.main.form.labels.neverBlacklist') }}</span>
-                  <div class="switch-inline">
-                    <label class="mac-switch">
-                      <input type="checkbox" v-model="modalState.form.neverBlacklist" />
-                      <span></span>
-                    </label>
-                    <span class="switch-text">
-                      {{ modalState.form.neverBlacklist ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-                    </span>
-                  </div>
-                  <span class="field-hint">{{ t('components.main.form.hints.neverBlacklist') }}</span>
-                </div>
-
-                <!-- 高级配置提示 -->
-                <div v-if="modalState.form.availabilityMonitorEnabled" class="form-field">
-                  <span class="field-hint" style="color: #6b7280;">
-                    💡 {{ t('components.main.form.hints.availabilityAdvancedConfig') }}
-                  </span>
-                </div>
-
-                <footer class="form-actions">
-                  <BaseButton variant="outline" type="button" @click="closeModal">
-                    {{ t('components.main.form.actions.cancel') }}
-                  </BaseButton>
-                  <BaseButton type="submit">
-                    {{ t('components.main.form.actions.save') }}
-                  </BaseButton>
-                  <!-- 保存并应用：仅在编辑模式、非代理模式、非 others 平台时显示 -->
-                  <BaseButton
-                    v-if="modalState.editingId && modalState.tabId !== 'others' && modalState.tabId !== 'gpt-image' && !activeProxyState"
-                    type="button"
-                    variant="primary"
-                    @click="submitAndApplyModal"
-                  >
-                    {{ t('components.main.form.actions.saveAndApply') }}
-                  </BaseButton>
-                </footer>
-      </form>
-      </BaseModal>
+      <ProviderEditModal
+        :open="modalState.open"
+        :editing-id="modalState.editingId"
+        :tab-id="modalState.tabId"
+        :form="modalState.form"
+        :errors="modalState.errors"
+        :resolved-theme="resolvedTheme"
+        :upstream-protocol-options="upstreamProtocolOptions"
+        :open-ai-endpoint-mode-options="openAIEndpointModeOptions"
+        :auth-type-options="authTypeOptions"
+        v-model:selected-auth-type="selectedAuthType"
+        v-model:custom-auth-header="customAuthHeader"
+        v-model:icon-search-query="iconSearchQuery"
+        :filtered-icon-options="filteredIconOptions"
+        :get-level-description="getLevelDescription"
+        :active-proxy-state="activeProxyState"
+        @close="closeModal"
+        @submit="submitModal"
+        @submit-and-apply="submitAndApplyModal"
+      />
       <BaseModal
       :open="confirmState.open"
       :title="t('components.main.form.confirmDeleteTitle')"
@@ -1182,20 +506,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, onMounted, onUnmounted, watch } from 'vue'
+import { computed, reactive, ref, onMounted, onUnmounted, onActivated, onDeactivated, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Listbox, ListboxButton, ListboxOptions, ListboxOption } from '@headlessui/vue'
 import { Browser, Call, Events } from '@wailsio/runtime'
-import { type UsageHeatmapDay } from '../../data/usageHeatmap'
-import { useAdaptiveHeatmap } from '../../composables/useAdaptiveHeatmap'
 import { automationCardGroups, createAutomationCards, type AutomationCard } from '../../data/cards'
 import lobeIcons from '../../icons/lobeIconMap'
 import BaseButton from '../common/BaseButton.vue'
 import BaseModal from '../common/BaseModal.vue'
 import BaseInput from '../common/BaseInput.vue'
-import ModelWhitelistEditor from '../common/ModelWhitelistEditor.vue'
-import ModelMappingEditor from '../common/ModelMappingEditor.vue'
-import CLIConfigEditor from '../common/CLIConfigEditor.vue'
+import ContribHeatmap from './ContribHeatmap.vue'
+import ProviderCard from './ProviderCard.vue'
+import ProviderEditModal from './ProviderEditModal.vue'
 import CustomCliConfigEditor from '../common/CustomCliConfigEditor.vue'
 import ModelTraceModal from './ModelTraceModal.vue'
 import { LoadProviders, SaveProviders, DuplicateProvider } from '../../../bindings/codeswitch/services/providerservice'
@@ -1249,15 +571,7 @@ const resolvedTheme = computed(() => {
 })
 const themeIcon = computed(() => (resolvedTheme.value === 'dark' ? 'moon' : 'sun'))
 
-const heatmapContainerRef = ref<HTMLElement | null>(null)
-// 使用自适应热力图 composable
-const {
-  displayData: usageHeatmap,
-  init: initHeatmap,
-  cleanup: cleanupHeatmap,
-  reload: reloadHeatmap,
-} = useAdaptiveHeatmap(heatmapContainerRef)
-const tooltipRef = ref<HTMLElement | null>(null)
+const heatmapRef = ref<InstanceType<typeof ContribHeatmap> | null>(null)
 const proxyStates = reactive<Record<ProviderTab, boolean>>({
   claude: false,
   codex: false,
@@ -1388,6 +702,7 @@ const blacklistStatusMap = reactive<Record<ProviderTab, Record<string, Blacklist
   others: {},
 })
 let blacklistTimer: number | undefined
+let blacklistPollingTimer: number | undefined
 
 // 连通性状态（已废弃，保留用于兼容）
 const connectivityResultsMap = reactive<Record<ProviderTab, Record<number, ConnectivityResult>>>({
@@ -1443,172 +758,7 @@ const importButtonTooltip = computed(() => {
   })
 })
 
-const intensityClass = (value: number) => `gh-level-${value}`
 
-type TooltipPlacement = 'above' | 'below'
-
-const usageTooltip = reactive({
-  visible: false,
-  label: '',
-  dateKey: '',
-  left: 0,
-  top: 0,
-  placement: 'above' as TooltipPlacement,
-  requests: 0,
-  inputTokens: 0,
-  outputTokens: 0,
-  reasoningTokens: 0,
-  cost: 0,
-})
-
-const formatMetric = (value: number) => value.toLocaleString()
-
-/**
- * 格式化 token 数值，支持 k/M/B 单位换算
- * @author sm
- */
-const formatTokenNumber = (value: number) => {
-  if (value >= 1_000_000_000) {
-    return `${(value / 1_000_000_000).toFixed(2)}B`
-  }
-  if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(2)}M`
-  }
-  if (value >= 1_000) {
-    return `${(value / 1_000).toFixed(2)}k`
-  }
-  return value.toLocaleString()
-}
-
-const tooltipDateFormatter = computed(() =>
-  new Intl.DateTimeFormat(locale.value || 'en', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-)
-
-const currencyFormatter = computed(() =>
-  new Intl.NumberFormat(locale.value || 'en', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })
-)
-
-const formattedTooltipLabel = computed(() => {
-  if (!usageTooltip.dateKey) return usageTooltip.label
-  const date = new Date(usageTooltip.dateKey)
-  if (Number.isNaN(date.getTime())) {
-    return usageTooltip.label
-  }
-  return tooltipDateFormatter.value.format(date)
-})
-
-const formattedTooltipAmount = computed(() =>
-  currencyFormatter.value.format(Math.max(usageTooltip.cost, 0))
-)
-
-const usageTooltipMetrics = computed(() => [
-  {
-    key: 'cost',
-    label: t('components.main.heatmap.metrics.cost'),
-    value: formattedTooltipAmount.value,
-  },
-  {
-    key: 'requests',
-    label: t('components.main.heatmap.metrics.requests'),
-    value: formatMetric(usageTooltip.requests),
-  },
-  {
-    key: 'inputTokens',
-    label: t('components.main.heatmap.metrics.inputTokens'),
-    value: formatTokenNumber(usageTooltip.inputTokens),
-  },
-  {
-    key: 'outputTokens',
-    label: t('components.main.heatmap.metrics.outputTokens'),
-    value: formatTokenNumber(usageTooltip.outputTokens),
-  },
-  {
-    key: 'reasoningTokens',
-    label: t('components.main.heatmap.metrics.reasoningTokens'),
-    value: formatTokenNumber(usageTooltip.reasoningTokens),
-  },
-])
-
-const clamp = (value: number, min: number, max: number) => {
-  if (max <= min) return min
-  return Math.min(Math.max(value, min), max)
-}
-
-const TOOLTIP_DEFAULT_WIDTH = 220
-const TOOLTIP_DEFAULT_HEIGHT = 120
-const TOOLTIP_VERTICAL_OFFSET = 12
-const TOOLTIP_HORIZONTAL_MARGIN = 20
-const TOOLTIP_VERTICAL_MARGIN = 24
-
-const getTooltipSize = () => {
-  const rect = tooltipRef.value?.getBoundingClientRect()
-  return {
-    width: rect?.width ?? TOOLTIP_DEFAULT_WIDTH,
-    height: rect?.height ?? TOOLTIP_DEFAULT_HEIGHT,
-  }
-}
-
-const viewportSize = () => {
-  if (typeof window !== 'undefined') {
-    return { width: window.innerWidth, height: window.innerHeight }
-  }
-  if (typeof document !== 'undefined' && document.documentElement) {
-    return {
-      width: document.documentElement.clientWidth,
-      height: document.documentElement.clientHeight,
-    }
-  }
-  return {
-    width: heatmapContainerRef.value?.clientWidth ?? 0,
-    height: heatmapContainerRef.value?.clientHeight ?? 0,
-  }
-}
-
-const showUsageTooltip = (day: UsageHeatmapDay, event: MouseEvent) => {
-  const target = event.currentTarget as HTMLElement | null
-  const cellRect = target?.getBoundingClientRect()
-  if (!cellRect) return
-  usageTooltip.label = day.label
-  usageTooltip.dateKey = day.dateKey
-  usageTooltip.requests = day.requests
-  usageTooltip.inputTokens = day.inputTokens
-  usageTooltip.outputTokens = day.outputTokens
-  usageTooltip.reasoningTokens = day.reasoningTokens
-  usageTooltip.cost = day.cost
-  const { width: tooltipWidth, height: tooltipHeight } = getTooltipSize()
-  const { width: viewportWidth, height: viewportHeight } = viewportSize()
-  const centerX = cellRect.left + cellRect.width / 2
-  const halfWidth = tooltipWidth / 2
-  const minLeft = TOOLTIP_HORIZONTAL_MARGIN + halfWidth
-  const maxLeft = viewportWidth > 0 ? viewportWidth - halfWidth - TOOLTIP_HORIZONTAL_MARGIN : centerX
-  usageTooltip.left = clamp(centerX, minLeft, maxLeft)
-
-  const anchorTop = cellRect.top
-  const anchorBottom = cellRect.bottom
-  const canShowAbove = anchorTop - tooltipHeight - TOOLTIP_VERTICAL_OFFSET >= TOOLTIP_VERTICAL_MARGIN
-  const viewportBottomLimit = viewportHeight > 0 ? viewportHeight - tooltipHeight - TOOLTIP_VERTICAL_MARGIN : anchorBottom
-  const shouldPlaceBelow = !canShowAbove
-  usageTooltip.placement = shouldPlaceBelow ? 'below' : 'above'
-  const desiredTop = shouldPlaceBelow
-    ? anchorBottom + TOOLTIP_VERTICAL_OFFSET
-    : anchorTop - tooltipHeight - TOOLTIP_VERTICAL_OFFSET
-  usageTooltip.top = clamp(desiredTop, TOOLTIP_VERTICAL_MARGIN, viewportBottomLimit)
-  usageTooltip.visible = true
-}
-
-const hideUsageTooltip = () => {
-  usageTooltip.visible = false
-}
 
 const loadAppSettings = async () => {
   try {
@@ -2171,7 +1321,7 @@ const refreshAllData = async () => {
   refreshing.value = true
   try {
     await Promise.all([
-      reloadHeatmap(),
+      heatmapRef.value?.reload(),
       loadProvidersFromDisk(),
       ...providerTabIds.map(refreshProxyState),
       ...providerTabIds.map((tab) => refreshDirectAppliedStatus(tab)),
@@ -2197,6 +1347,34 @@ type ProviderStatDisplay =
       successRateLabel: string
       successRateClass: string
     }
+
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(Math.max(value, min), max)
+
+const formatMetric = (value: number) => value.toLocaleString()
+
+const formatTokenNumber = (value: number) => {
+  if (value >= 1_000_000_000) {
+    return `${(value / 1_000_000_000).toFixed(2)}B`
+  }
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(2)}M`
+  }
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(2)}k`
+  }
+  return value.toLocaleString()
+}
+
+const currencyFormatter = computed(
+  () =>
+    new Intl.NumberFormat(locale.value || 'en', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 4,
+      maximumFractionDigits: 4,
+    })
+)
 
 const SUCCESS_RATE_THRESHOLDS = {
   healthy: 0.95,
@@ -2373,8 +1551,38 @@ const scrollToCard = (el: HTMLElement | null) => {
 let unsubscribeSwitched: (() => void) | undefined
 let unsubscribeBlacklisted: (() => void) | undefined
 
+const startBlacklistTimers = () => {
+  stopBlacklistTimers()
+  blacklistTimer = window.setInterval(() => {
+    const tab = activeTab.value
+    Object.keys(blacklistStatusMap[tab]).forEach(providerName => {
+      const status = blacklistStatusMap[tab][providerName]
+      if (status && status.isBlacklisted && status.remainingSeconds > 0) {
+        status.remainingSeconds--
+        if (status.remainingSeconds <= 0) {
+          loadBlacklistStatus(tab)
+        }
+      }
+    })
+  }, 1000)
+
+  blacklistPollingTimer = window.setInterval(() => {
+    void loadBlacklistStatus(activeTab.value)
+  }, 10_000)
+}
+
+const stopBlacklistTimers = () => {
+  if (blacklistTimer) {
+    window.clearInterval(blacklistTimer)
+    blacklistTimer = undefined
+  }
+  if (blacklistPollingTimer) {
+    window.clearInterval(blacklistPollingTimer)
+    blacklistPollingTimer = undefined
+  }
+}
+
 onMounted(async () => {
-  void initHeatmap()
   await loadProvidersFromDisk()
   await Promise.all(providerTabIds.map(refreshProxyState))
   await Promise.all(providerTabIds.map((tab) => refreshDirectAppliedStatus(tab)))
@@ -2390,19 +1598,7 @@ onMounted(async () => {
   // 加载初始可用性监控结果（改用新服务）
   await loadAvailabilityResults()
 
-  // 每秒更新黑名单倒计时
-  blacklistTimer = window.setInterval(() => {
-    const tab = activeTab.value
-    Object.keys(blacklistStatusMap[tab]).forEach(providerName => {
-      const status = blacklistStatusMap[tab][providerName]
-      if (status && status.isBlacklisted && status.remainingSeconds > 0) {
-        status.remainingSeconds--
-        if (status.remainingSeconds <= 0) {
-          loadBlacklistStatus(tab)
-        }
-      }
-    })
-  }, 1000)
+  startBlacklistTimers()
 
   // 窗口焦点事件：从最小化恢复时立即刷新黑名单状态
   const handleWindowFocus = () => {
@@ -2410,13 +1606,7 @@ onMounted(async () => {
   }
   window.addEventListener('focus', handleWindowFocus)
 
-  // 定期轮询黑名单状态（每 10 秒）
-  const blacklistPollingTimer = window.setInterval(() => {
-    void loadBlacklistStatus(activeTab.value)
-  }, 10_000)
-
   // 存储定时器 ID 以便清理
-  ;(window as any).__blacklistPollingTimer = blacklistPollingTimer
   ;(window as any).__handleWindowFocus = handleWindowFocus
 
   window.addEventListener('app-settings-updated', handleAppSettingsUpdated)
@@ -2436,18 +1626,25 @@ onMounted(async () => {
   unsubscribeBlacklisted = Events.On('provider:blacklisted', handleProviderBlacklisted as Events.Callback)
 })
 
-onUnmounted(() => {
-  cleanupHeatmap()
+onActivated(() => {
+  startProviderStatsTimer()
+  startBlacklistTimers()
+  void loadBlacklistStatus(activeTab.value)
+  void loadProviderStats(activeTab.value)
+  heatmapRef.value?.reload()
+})
+
+onDeactivated(() => {
   stopProviderStatsTimer()
+  stopBlacklistTimers()
+})
+
+onUnmounted(() => {
+  stopProviderStatsTimer()
+  stopBlacklistTimers()
   window.removeEventListener('app-settings-updated', handleAppSettingsUpdated)
 
   // 清理黑名单相关定时器和事件监听
-  if (blacklistTimer) {
-    window.clearInterval(blacklistTimer)
-  }
-  if ((window as any).__blacklistPollingTimer) {
-    window.clearInterval((window as any).__blacklistPollingTimer)
-  }
   if ((window as any).__handleWindowFocus) {
     window.removeEventListener('focus', (window as any).__handleWindowFocus)
   }
