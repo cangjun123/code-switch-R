@@ -32,6 +32,27 @@
         </BaseButton>
       </div>
 
+      <!-- 实时进度（检测过程中） -->
+      <div v-if="verifying && progress" class="modeltrace-progress">
+        <div class="progress-steps">
+          <div
+            v-for="(step, index) in progressSteps"
+            :key="step.key"
+            :class="['progress-step', {
+              active: progress.stage === step.key,
+              done: step.done
+            }]"
+          >
+            <span class="step-dot"></span>
+            <span class="step-label">{{ step.label }}</span>
+          </div>
+        </div>
+        <div class="progress-detail">
+          <span class="progress-detail-text" :key="progress.detail">{{ progress.detail }}</span>
+          <span class="progress-elapsed">{{ (progress.elapsedMs / 1000).toFixed(1) }}s</span>
+        </div>
+      </div>
+
       <!-- 检测结果 -->
       <div v-if="result" class="modeltrace-result">
         <!-- 判定横幅 -->
@@ -118,15 +139,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseButton from '../common/BaseButton.vue'
 import BaseModal from '../common/BaseModal.vue'
 import {
   getSupportedModels,
   verifyProviderModel,
+  subscribeProgress,
   type ModelTraceModelOption,
   type ModelTraceResult,
+  type ModelTraceProgress,
 } from '../../services/modeltrace'
 import { extractErrorMessage } from '../../utils/error'
 
@@ -147,6 +170,33 @@ const verifying = ref(false)
 const result = ref<ModelTraceResult | null>(null)
 // 请求序号：弹窗重开/重试时递增，旧请求的迟到响应按序号丢弃，避免覆盖新结果
 const requestSeq = ref(0)
+// 当前会话的实时进度（按 sessionId 过滤后）
+const progress = ref<ModelTraceProgress | null>(null)
+
+// 订阅后端进度事件（全局广播，按 sessionId 归属过滤）
+const activeSessionId = ref('')
+const unsubscribeProgress = subscribeProgress((event) => {
+  if (event.sessionId !== activeSessionId.value) return
+  progress.value = event
+})
+onUnmounted(() => unsubscribeProgress())
+
+// 进度步骤条：sending → received → analyzing → done
+const progressSteps = computed(() => {
+  if (!progress.value) return []
+  const order = ['sending', 'received', 'done'] as const
+  const labels: Record<string, string> = {
+    sending: t('components.main.modelTrace.stepSending'),
+    received: t('components.main.modelTrace.stepReceived'),
+    done: t('components.main.modelTrace.stepDone'),
+  }
+  const currentIndex = order.indexOf(progress.value.stage as (typeof order)[number])
+  return order.map((key, index) => ({
+    key,
+    label: labels[key],
+    done: currentIndex >= 0 && index < currentIndex,
+  }))
+})
 
 // 打开时加载指纹库模型列表
 watch(
@@ -156,6 +206,8 @@ watch(
     requestSeq.value += 1 // 使在途旧请求失效
     result.value = null
     verifying.value = false
+    progress.value = null
+    activeSessionId.value = ''
     if (models.value.length === 0) {
       try {
         models.value = await getSupportedModels()
@@ -182,6 +234,7 @@ const handleVerify = async () => {
   if (!selectedModel.value || verifying.value) return
   verifying.value = true
   result.value = null
+  progress.value = null
   const seq = ++requestSeq.value
   try {
     const response = await verifyProviderModel(
@@ -276,6 +329,123 @@ const handleVerify = async () => {
 .modeltrace-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+/* ===== 实时进度 ===== */
+.modeltrace-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 14px 12px;
+  border-radius: 10px;
+  background: rgba(10, 132, 255, 0.06);
+  border: 1px solid rgba(10, 132, 255, 0.18);
+}
+
+:global(html.dark) .modeltrace-progress {
+  background: rgba(10, 132, 255, 0.1);
+}
+
+.progress-steps {
+  display: flex;
+  align-items: center;
+}
+
+.progress-step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  position: relative;
+}
+
+.progress-step:not(:last-child)::after {
+  content: '';
+  flex: 1;
+  height: 2px;
+  margin: 0 8px;
+  background: rgba(15, 23, 42, 0.12);
+  border-radius: 1px;
+}
+
+:global(html.dark) .progress-step:not(:last-child)::after {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.progress-step.done:not(:last-child)::after,
+.progress-step.active:not(:last-child)::after {
+  background: #0a84ff;
+}
+
+.step-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.2);
+  flex-shrink: 0;
+}
+
+:global(html.dark) .step-dot {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.progress-step.active .step-dot {
+  background: #0a84ff;
+  box-shadow: 0 0 0 0 rgba(10, 132, 255, 0.5);
+  animation: step-pulse 1.4s ease-out infinite;
+}
+
+.progress-step.done .step-dot {
+  background: #22c55e;
+}
+
+@keyframes step-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(10, 132, 255, 0.5); }
+  70% { box-shadow: 0 0 0 7px rgba(10, 132, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(10, 132, 255, 0); }
+}
+
+.step-label {
+  font-size: 12px;
+  color: var(--mac-text, #374151);
+  opacity: 0.55;
+  white-space: nowrap;
+}
+
+.progress-step.active .step-label {
+  opacity: 1;
+  font-weight: 600;
+  color: #0a84ff;
+}
+
+.progress-step.done .step-label {
+  opacity: 0.8;
+}
+
+.progress-detail {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.progress-detail-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--mac-text, #374151);
+  animation: progress-fade-in 0.3s ease;
+}
+
+@keyframes progress-fade-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.progress-elapsed {
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.55;
+  flex-shrink: 0;
 }
 
 .modeltrace-result {

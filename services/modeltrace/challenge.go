@@ -71,6 +71,11 @@ func randHex(n int) string {
 	return hex.EncodeToString(buf)
 }
 
+// NewSessionToken 生成一次鉴伪调用的会话标识（用于进度事件归属）
+func NewSessionToken() string {
+	return randHex(6)
+}
+
 // GenerateChallenges 生成 count 条随机长度的数值生成挑战（模板与参考实现一致）
 func GenerateChallenges(count int) []Challenge {
 	// 长度从 [292, 333) 不重复抽取（count 超过范围时允许重复）
