@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, onActivated, onDeactivated, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   getLatestResults,
@@ -307,25 +307,29 @@ function displayConfigValue(value: string | number | undefined, label: string) {
   return String(value)
 }
 
+const handleProvidersUpdated = () => {
+  void loadData()
+}
+
 onMounted(async () => {
   await loadData()
   await loadPollInterval()
   startRefreshTimer()
 
-  // 监听主页面的 Provider 更新事件
-  const handleProvidersUpdated = () => {
-    void loadData()
-  }
   window.addEventListener('providers-updated', handleProvidersUpdated)
+})
 
-  // 清理监听器
-  onUnmounted(() => {
-    window.removeEventListener('providers-updated', handleProvidersUpdated)
-    stopTimers()
-  })
+onActivated(() => {
+  void loadData()
+  startRefreshTimer()
+})
+
+onDeactivated(() => {
+  stopTimers()
 })
 
 onUnmounted(() => {
+  window.removeEventListener('providers-updated', handleProvidersUpdated)
   stopTimers()
 })
 </script>

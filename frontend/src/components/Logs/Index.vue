@@ -336,7 +336,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, onMounted, watch, onUnmounted } from 'vue'
+import { computed, reactive, ref, onMounted, watch, onUnmounted, onActivated, onDeactivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import BaseButton from '../common/BaseButton.vue'
@@ -1075,6 +1075,14 @@ onMounted(async () => {
   await Promise.all([loadDashboard(), loadMaintenanceInfo(), loadPollIntervals()])
   startCountdown()
   window.addEventListener('app-settings-updated', loadPollIntervals)
+})
+
+onActivated(() => {
+  startCountdown()
+})
+
+onDeactivated(() => {
+  stopCountdown()
 })
 
 onUnmounted(() => {

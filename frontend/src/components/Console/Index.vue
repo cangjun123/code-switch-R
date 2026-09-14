@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { computed, ref, onMounted, onUnmounted, onActivated, onDeactivated, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { Call } from '@wailsio/runtime'
 import { copyText } from '../../utils/clipboard'
+import { showToast } from '../../utils/toast'
+import BaseModal from '../common/BaseModal.vue'
+import BaseButton from '../common/BaseButton.vue'
 
 interface ConsoleLog {
   timestamp: string
@@ -16,6 +19,7 @@ const autoScroll = ref(true)
 const loading = ref(false)
 const copyStatus = ref('')
 const logsContainer = ref<HTMLElement>()
+const showConfirmClear = ref(false)
 let refreshInterval: number | null = null
 let copyStatusTimer: number | null = null
 let loadingLogs = false
@@ -52,18 +56,20 @@ const loadLogs = async () => {
   }
 }
 
-const clearLogs = async () => {
-  if (!confirm('确定要清空所有控制台日志吗？')) {
-    return
-  }
+const clearLogs = () => {
+  showConfirmClear.value = true
+}
 
+const confirmClearLogs = async () => {
+  showConfirmClear.value = false
   try {
     await Call.ByName('codeswitch/services.ConsoleService.ClearLogs')
     logs.value = []
     lastLogSignature = ''
+    showToast('控制台日志已清空', 'success')
   } catch (error) {
     console.error('清空日志失败:', error)
-    alert('清空失败：' + (error as Error).message)
+    showToast('清空失败：' + (error as Error).message, 'error')
   }
 }
 
@@ -141,19 +147,37 @@ const copyAllLogs = async () => {
   }
 }
 
+const startPolling = () => {
+  if (!refreshInterval) {
+    refreshInterval = window.setInterval(loadLogs, 1000)
+  }
+}
+
+const stopPolling = () => {
+  if (refreshInterval) {
+    clearInterval(refreshInterval)
+    refreshInterval = null
+  }
+}
+
 onMounted(async () => {
   loading.value = true
   await loadLogs()
   loading.value = false
+  startPolling()
+})
 
-  // 每秒刷新一次日志
-  refreshInterval = window.setInterval(loadLogs, 1000)
+onActivated(() => {
+  void loadLogs()
+  startPolling()
+})
+
+onDeactivated(() => {
+  stopPolling()
 })
 
 onUnmounted(() => {
-  if (refreshInterval) {
-    clearInterval(refreshInterval)
-  }
+  stopPolling()
   if (copyStatusTimer) {
     clearTimeout(copyStatusTimer)
   }
@@ -211,6 +235,25 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+
+    <BaseModal
+      :open="showConfirmClear"
+      title="清空控制台日志"
+      variant="confirm"
+      @close="showConfirmClear = false"
+    >
+      <div class="confirm-body">
+        <p>确定要清空所有控制台日志吗？此操作不可恢复。</p>
+      </div>
+      <footer class="form-actions confirm-actions">
+        <BaseButton variant="outline" type="button" @click="showConfirmClear = false">
+          取消
+        </BaseButton>
+        <BaseButton variant="danger" type="button" @click="confirmClearLogs">
+          清空
+        </BaseButton>
+      </footer>
+    </BaseModal>
   </div>
 </template>
 
