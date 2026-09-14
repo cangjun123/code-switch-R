@@ -233,16 +233,20 @@ const modalTitle = computed(() =>
           </Listbox>
         </div>
 
-        <div class="form-field switch-field">
-          <span>{{ t('components.main.form.labels.enabled') }}</span>
-          <div class="switch-inline">
-            <label class="mac-switch">
-              <input type="checkbox" v-model="form.enabled" />
-              <span></span>
-            </label>
-            <span class="switch-text">
-              {{ form.enabled ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-            </span>
+        <div class="switch-card-group">
+          <div class="switch-card-row">
+            <div class="switch-label-col">
+              <span class="switch-title">{{ t('components.main.form.labels.enabled') }}</span>
+            </div>
+            <div class="switch-inline">
+              <label class="mac-switch">
+                <input type="checkbox" v-model="form.enabled" />
+                <span></span>
+              </label>
+              <span class="switch-text">
+                {{ form.enabled ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -252,7 +256,7 @@ const modalTitle = computed(() =>
         <!-- 上游协议类型 -->
         <div class="form-field">
           <span>{{ t('components.main.form.labels.upstreamProtocol') }}</span>
-          <Listbox v-model="form.upstreamProtocol" v-slot="{ open: protoOpen }">
+          <Listbox v-model="form.upstreamProtocol" v-slot="{ open: protoOpen }" class="w-full">
             <div class="level-select">
               <ListboxButton class="level-select-button">
                 <span class="level-label">
@@ -287,7 +291,7 @@ const modalTitle = computed(() =>
         <template v-if="tabId === 'codex'">
           <div class="form-field">
             <span>{{ t('components.main.form.labels.openAIEndpointMode') }}</span>
-            <Listbox v-model="form.openAIEndpointMode" v-slot="{ open: modeOpen }">
+            <Listbox v-model="form.openAIEndpointMode" v-slot="{ open: modeOpen }" class="w-full">
               <div class="level-select">
                 <ListboxButton class="level-select-button">
                   <span class="level-label">
@@ -318,46 +322,55 @@ const modalTitle = computed(() =>
             <span class="field-hint">{{ t('components.main.form.hints.openAIEndpointMode') }}</span>
           </div>
 
-          <div class="form-field switch-field">
-            <span>{{ t('components.main.form.labels.codexMultiAgentNamespaceRewrite') }}</span>
-            <div class="switch-inline">
-              <label class="mac-switch">
-                <input type="checkbox" v-model="form.codexMultiAgentNamespaceRewrite" />
-                <span></span>
-              </label>
-              <span class="switch-text">
-                {{ form.codexMultiAgentNamespaceRewrite ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-              </span>
+          <!-- Codex 兼容性开关组（统一对齐布局） -->
+          <div class="switch-card-group">
+            <div class="switch-card-row">
+              <div class="switch-label-col">
+                <span class="switch-title">{{ t('components.main.form.labels.codexMultiAgentNamespaceRewrite') }}</span>
+                <span class="field-hint">{{ t('components.main.form.hints.codexMultiAgentNamespaceRewrite') }}</span>
+              </div>
+              <div class="switch-inline">
+                <label class="mac-switch">
+                  <input type="checkbox" v-model="form.codexMultiAgentNamespaceRewrite" />
+                  <span></span>
+                </label>
+                <span class="switch-text">
+                  {{ form.codexMultiAgentNamespaceRewrite ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
+                </span>
+              </div>
             </div>
-            <span class="field-hint">{{ t('components.main.form.hints.codexMultiAgentNamespaceRewrite') }}</span>
-          </div>
 
-          <div class="form-field switch-field">
-            <span>{{ t('components.main.form.labels.bridgeResponsesInstructions') }}</span>
-            <div class="switch-inline">
-              <label class="mac-switch">
-                <input type="checkbox" v-model="form.bridgeResponsesInstructions" />
-                <span></span>
-              </label>
-              <span class="switch-text">
-                {{ form.bridgeResponsesInstructions ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-              </span>
+            <div class="switch-card-row">
+              <div class="switch-label-col">
+                <span class="switch-title">{{ t('components.main.form.labels.bridgeResponsesInstructions') }}</span>
+                <span class="field-hint">{{ t('components.main.form.hints.bridgeResponsesInstructions') }}</span>
+              </div>
+              <div class="switch-inline">
+                <label class="mac-switch">
+                  <input type="checkbox" v-model="form.bridgeResponsesInstructions" />
+                  <span></span>
+                </label>
+                <span class="switch-text">
+                  {{ form.bridgeResponsesInstructions ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
+                </span>
+              </div>
             </div>
-            <span class="field-hint">{{ t('components.main.form.hints.bridgeResponsesInstructions') }}</span>
-          </div>
 
-          <div class="form-field switch-field">
-            <span>{{ t('components.main.form.labels.forceResponsesStoreFalse') }}</span>
-            <div class="switch-inline">
-              <label class="mac-switch">
-                <input type="checkbox" v-model="form.forceResponsesStoreFalse" />
-                <span></span>
-              </label>
-              <span class="switch-text">
-                {{ form.forceResponsesStoreFalse ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-              </span>
+            <div class="switch-card-row">
+              <div class="switch-label-col">
+                <span class="switch-title">{{ t('components.main.form.labels.forceResponsesStoreFalse') }}</span>
+                <span class="field-hint">{{ t('components.main.form.hints.forceResponsesStoreFalse') }}</span>
+              </div>
+              <div class="switch-inline">
+                <label class="mac-switch">
+                  <input type="checkbox" v-model="form.forceResponsesStoreFalse" />
+                  <span></span>
+                </label>
+                <span class="switch-text">
+                  {{ form.forceResponsesStoreFalse ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
+                </span>
+              </div>
             </div>
-            <span class="field-hint">{{ t('components.main.form.hints.forceResponsesStoreFalse') }}</span>
           </div>
 
           <label class="form-field">
@@ -383,18 +396,22 @@ const modalTitle = computed(() =>
             <span class="field-hint">{{ t('components.main.form.hints.dropImageFields') }}</span>
           </label>
 
-          <div class="form-field switch-field">
-            <span>{{ t('components.main.form.labels.imageAsyncMode') }}</span>
-            <div class="switch-inline">
-              <label class="mac-switch">
-                <input type="checkbox" v-model="form.imageAsyncMode" />
-                <span></span>
-              </label>
-              <span class="switch-text">
-                {{ form.imageAsyncMode ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
-              </span>
+          <div class="switch-card-group">
+            <div class="switch-card-row">
+              <div class="switch-label-col">
+                <span class="switch-title">{{ t('components.main.form.labels.imageAsyncMode') }}</span>
+                <span class="field-hint">{{ t('components.main.form.hints.imageAsyncMode') }}</span>
+              </div>
+              <div class="switch-inline">
+                <label class="mac-switch">
+                  <input type="checkbox" v-model="form.imageAsyncMode" />
+                  <span></span>
+                </label>
+                <span class="switch-text">
+                  {{ form.imageAsyncMode ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
+                </span>
+              </div>
             </div>
-            <span class="field-hint">{{ t('components.main.form.hints.imageAsyncMode') }}</span>
           </div>
         </template>
 
@@ -405,6 +422,7 @@ const modalTitle = computed(() =>
             :model-value="selectedAuthType"
             @update:model-value="emit('update:selectedAuthType', $event)"
             v-slot="{ open: authOpen }"
+            class="w-full"
           >
             <div class="level-select">
               <ListboxButton class="level-select-button">
@@ -448,7 +466,7 @@ const modalTitle = computed(() =>
         <!-- 优先级权重 Level -->
         <div class="form-field">
           <span>{{ t('components.main.form.labels.level') }}</span>
-          <Listbox v-model="form.level" v-slot="{ open: levelOpen }">
+          <Listbox v-model="form.level" v-slot="{ open: levelOpen }" class="w-full">
             <div class="level-select">
               <ListboxButton class="level-select-button">
                 <span class="level-badge" :class="`level-${form.level || 1}`">

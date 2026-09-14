@@ -1820,22 +1820,29 @@ html.dark .secondary-btn:active:not(:disabled) {
 .level-select {
   position: relative;
   width: 100%;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
 }
 
 .level-select-button {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
-  padding: 8px 12px;
+  padding: 10px 14px;
   background: var(--mac-surface-strong);
   border: 1px solid var(--mac-border);
-  border-radius: 8px;
+  border-radius: 12px;
   font-size: 14px;
   color: var(--mac-text);
   cursor: pointer;
   transition: all 0.2s ease;
-  height: 44px;
+  height: 48px;
+  margin: 0;
+  box-sizing: border-box;
+  appearance: none;
+  -webkit-appearance: none;
 }
 
 .level-select-button:hover {
@@ -1878,17 +1885,19 @@ html.dark .level-select-button:hover,
 
 .level-select-options {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + 6px);
   left: 0;
   right: 0;
+  width: 100%;
+  box-sizing: border-box;
   max-height: 280px;
   overflow-y: auto;
   background: var(--mac-surface);
   border: 1px solid var(--mac-border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  border-radius: 12px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
   z-index: 50;
-  padding: 4px;
+  padding: 6px;
   color: var(--mac-text);
 }
 
@@ -1906,7 +1915,7 @@ html.dark .level-select-options,
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   transition: all 0.15s ease;
 }
