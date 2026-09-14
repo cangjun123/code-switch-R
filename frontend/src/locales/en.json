@@ -479,6 +479,7 @@
         "selectModel": "Select model to verify",
         "verify": "Verify",
         "verifying": "Verifying…",
+        "waitingStream": "Waiting for model output…",
         "stepSending": "Send challenge",
         "stepReceived": "Generate answer",
         "stepDone": "Attribution",

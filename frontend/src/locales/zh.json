@@ -480,6 +480,7 @@
         "selectModel": "选择要检测的模型",
         "verify": "开始检测",
         "verifying": "检测中…",
+        "waitingStream": "等待模型生成回答…",
         "stepSending": "发送挑战",
         "stepReceived": "生成回答",
         "stepDone": "完成归因",

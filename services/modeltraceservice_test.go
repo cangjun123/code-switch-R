@@ -246,8 +246,83 @@ func TestChallengeOutputSelfConsistency(t *testing.T) {
 	if minimum < modeltrace.MinimumValidNumbers {
 		minimum = modeltrace.MinimumValidNumbers
 	}
-	// 292 * 0.55 = 160.6 > 80，阈值由 expected_count 决定
 	if minimum < 80 {
 		t.Errorf("minimum = %d", minimum)
+	}
+}
+
+func TestExtractStreamDelta(t *testing.T) {
+	tests := []struct {
+		name       string
+		payload    string
+		wantText   string
+		wantStop   string
+		wantErr    bool
+	}{
+		{
+			name:     "OpenAI Responses output_text.delta (string delta)",
+			payload:  `{"type":"response.output_text.delta","item_id":"msg_1","delta":"42, 108, "}`,
+			wantText: "42, 108, ",
+		},
+		{
+			name:     "OpenAI Responses reasoning_summary_text.delta",
+			payload:  `{"type":"response.reasoning_summary_text.delta","delta":"thinking about numbers"}`,
+			wantText: "thinking about numbers",
+		},
+		{
+			name:     "OpenAI Responses completed",
+			payload:  `{"type":"response.completed","response":{"id":"resp_1"}}`,
+			wantStop: "stop",
+		},
+		{
+			name:     "OpenAI Responses incomplete",
+			payload:  `{"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_tokens"}}}`,
+			wantStop: "max_tokens",
+		},
+		{
+			name:     "Anthropic content_block_delta text_delta",
+			payload:  `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"123, 456"}}`,
+			wantText: "123, 456",
+		},
+		{
+			name:     "Anthropic content_block_delta thinking_delta",
+			payload:  `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"generating..."}}`,
+			wantText: "generating...",
+		},
+		{
+			name:     "Anthropic message_delta with delta.stop_reason",
+			payload:  `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+			wantStop: "end_turn",
+		},
+		{
+			name:     "OpenAI Chat content chunk",
+			payload:  `{"choices":[{"index":0,"delta":{"content":"789, "}}]}`,
+			wantText: "789, ",
+		},
+		{
+			name:     "OpenAI Chat reasoning_content chunk",
+			payload:  `{"choices":[{"index":0,"delta":{"reasoning_content":"reasoning step"}}]}`,
+			wantText: "reasoning step",
+		},
+		{
+			name:     "OpenAI Chat finish_reason",
+			payload:  `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			wantStop: "stop",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			text, stop, err := extractStreamDelta(tt.payload)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("extractStreamDelta() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if text != tt.wantText {
+				t.Errorf("extractStreamDelta() text = %q, want %q", text, tt.wantText)
+			}
+			if stop != tt.wantStop {
+				t.Errorf("extractStreamDelta() stop = %q, want %q", stop, tt.wantStop)
+			}
+		})
 	}
 }
