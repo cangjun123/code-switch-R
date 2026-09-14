@@ -473,6 +473,27 @@
         "import": "Import cc-switch config",
         "duplicate": "Duplicate provider"
       },
+      "modelTrace": {
+        "title": "Model Authenticity Check",
+        "tooltip": "Check model authenticity",
+        "selectModel": "Select model to verify",
+        "verify": "Verify",
+        "verifying": "Verifying…",
+        "match": "Identity matches",
+        "mismatch": "Possible model swap",
+        "matchDetail": "Fingerprint attribution matches the selected model: {model} (confidence {probability})",
+        "mismatchDetail": "Fingerprint attribution does not match: claimed {expected}, closest match is {actual} (confidence {probability}). The provider may have swapped the model.",
+        "expectedModel": "Selected",
+        "topPrediction": "Attribution",
+        "validNumbers": "Valid numbers",
+        "latency": "Latency",
+        "attempts": "Attempts",
+        "distributionTitle": "Attribution probabilities",
+        "close": "Close",
+        "retry": "Retry",
+        "error": "Verification failed",
+        "notCovered": "This model is not covered by the fingerprint bank"
+      },
       "importConfig": {
         "tooltip": "Import {providers} providers",
         "success": "Imported {providers} providers",

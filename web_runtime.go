@@ -49,6 +49,7 @@ type appRuntime struct {
 	speedTestService    *services.SpeedTestService
 	connectivityTest    *services.ConnectivityTestService
 	healthCheckService  *services.HealthCheckService
+	modelTraceService   *services.ModelTraceService
 	versionService      *VersionService
 	updateService       *services.UpdateService
 	geminiService       *services.GeminiService
@@ -108,6 +109,7 @@ func newAppRuntime() (*appRuntime, error) {
 	speedTestService := services.NewSpeedTestService()
 	connectivityTestService := services.NewConnectivityTestService(providerService, blacklistService, settingsService)
 	healthCheckService := services.NewHealthCheckService(providerService, blacklistService, settingsService)
+	modelTraceService := services.NewModelTraceService(providerService)
 	if err := healthCheckService.Start(); err != nil {
 		return nil, fmt.Errorf("初始化健康检查服务失败: %w", err)
 	}
@@ -197,6 +199,7 @@ func newAppRuntime() (*appRuntime, error) {
 		speedTestService:            speedTestService,
 		connectivityTest:            connectivityTestService,
 		healthCheckService:          healthCheckService,
+		modelTraceService:           modelTraceService,
 		versionService:              versionService,
 		updateService:               updateService,
 		geminiService:               geminiService,
@@ -288,6 +291,7 @@ func (rt *appRuntime) registerServices(registry *rpcRegistry) {
 	registry.Register("codeswitch/services.SpeedTestService", rt.speedTestService)
 	registry.Register("codeswitch/services.ConnectivityTestService", rt.connectivityTest)
 	registry.Register("codeswitch/services.HealthCheckService", rt.healthCheckService)
+	registry.Register("codeswitch/services.ModelTraceService", rt.modelTraceService)
 	registry.Register("codeswitch/services.UpdateService", rt.updateService)
 	registry.Register("codeswitch/services.GeminiService", rt.geminiService)
 	registry.Register("codeswitch/services.NotificationService", rt.notificationService)

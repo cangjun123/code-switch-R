@@ -474,6 +474,27 @@
         "import": "导入 cc-switch 配置",
         "duplicate": "复制供应商"
       },
+      "modelTrace": {
+        "title": "模型真伪检测",
+        "tooltip": "检测模型真伪",
+        "selectModel": "选择要检测的模型",
+        "verify": "开始检测",
+        "verifying": "检测中…",
+        "match": "身份一致",
+        "mismatch": "疑似偷换",
+        "matchDetail": "指纹归因结果与所选模型一致：{model}（置信度 {probability}）",
+        "mismatchDetail": "指纹归因结果与所选模型不符：声称 {expected}，实际最接近 {actual}（置信度 {probability}），该渠道可能偷换了模型",
+        "expectedModel": "所选模型",
+        "topPrediction": "归因结果",
+        "validNumbers": "有效数字",
+        "latency": "耗时",
+        "attempts": "尝试次数",
+        "distributionTitle": "归因概率分布",
+        "close": "关闭",
+        "retry": "重新检测",
+        "error": "检测失败",
+        "notCovered": "该模型不在指纹库覆盖范围内"
+      },
       "importConfig": {
         "tooltip": "导入 {providers} 个供应商",
         "success": "已导入 {providers} 个供应商",
