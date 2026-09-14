@@ -204,6 +204,12 @@ func (cts *ConnectivityTestService) TestProvider(ctx context.Context, provider P
 
 // getEffectiveEndpoint 获取有效端点（含平台默认值）
 func (cts *ConnectivityTestService) getEffectiveEndpoint(provider *Provider, platform string) string {
+	return resolveConnectivityEndpoint(provider, platform)
+}
+
+// resolveConnectivityEndpoint 解析连通性/探测类请求应使用的端点。
+// 包级函数供 ConnectivityTestService 与 ModelTraceService 共用，避免多份手抄漂移。
+func resolveConnectivityEndpoint(provider *Provider, platform string) string {
 	endpoint := strings.TrimSpace(provider.ConnectivityTestEndpoint)
 	if endpoint != "" {
 		if strings.ToLower(platform) == "claude" &&
