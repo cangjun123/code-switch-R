@@ -110,6 +110,7 @@ func newAppRuntime() (*appRuntime, error) {
 	connectivityTestService := services.NewConnectivityTestService(providerService, blacklistService, settingsService)
 	healthCheckService := services.NewHealthCheckService(providerService, blacklistService, settingsService)
 	modelTraceService := services.NewModelTraceService(providerService)
+	modelTraceService.SetEventEmitter(eventHub)
 	if err := healthCheckService.Start(); err != nil {
 		return nil, fmt.Errorf("初始化健康检查服务失败: %w", err)
 	}

@@ -1,4 +1,4 @@
-import { Call } from '@wailsio/runtime'
+import { Call, Events } from '@wailsio/runtime'
 
 const SERVICE = 'codeswitch/services.ModelTraceService'
 
@@ -57,3 +57,30 @@ export const verifyProviderModel = async (
 ): Promise<ModelTraceResult> => {
   return Call.ByName(`${SERVICE}.VerifyProviderModel`, platform, providerId, expectedModel)
 }
+
+/** 鉴伪过程进度事件（modeltrace:progress） */
+export interface ModelTraceProgress {
+  sessionId: string
+  stage: 'sending' | 'received' | 'analyzing' | 'retrying' | 'done' | 'failed'
+  attempt: number
+  maxAttempts: number
+  detail: string
+  elapsedMs: number
+}
+
+/**
+ * 订阅鉴伪进度事件。返回取消订阅函数。
+ * 注意：事件是全局广播的，回调里应按 sessionId 过滤归属。
+ */
+export const subscribeProgress = (
+  callback: (progress: ModelTraceProgress) => void,
+): (() => void) => {
+  const unsubscribe = Events.On('modeltrace:progress', (event) => {
+    const data = (event as unknown as { data: ModelTraceProgress }).data
+    if (data && typeof data === 'object') {
+      callback(data)
+    }
+  })
+  return () => unsubscribe()
+}
+
