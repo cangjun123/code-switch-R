@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -17,7 +18,8 @@ import (
 // ModelTraceService 模型真伪检测服务：
 // 向指定 provider 的指定模型发送一条数值生成挑战，从数字分布指纹归因模型身份，
 // top-1 与用户选择的模型不一致时判定为疑似偷换。
-// 检测过程中的阶段进度通过 EventHub 以 "modeltrace:progress" 事件推送（SSE）。
+// 检测过程中的阶段进度通过 EventHub 以 "modeltrace:progress" 事件推送（SSE），
+// 模型流式生成的文本片段以 "modeltrace:stream" 事件实时推送。
 type ModelTraceService struct {
 	providerService *ProviderService
 
@@ -138,6 +140,67 @@ func (mts *ModelTraceService) emitProgress(sessionID string, providerID int64, e
 	})
 }
 
+// ModelTraceStreamEvent 流式生成片段事件（modeltrace:stream）
+type ModelTraceStreamEvent struct {
+	SessionID string `json:"sessionId"`
+	// Chunk 本次到达的回答文本片段（前端追加展示）
+	Chunk string `json:"chunk"`
+	// TotalChars 截至当前已累计收到的字符数
+	TotalChars int `json:"totalChars"`
+}
+
+// streamChunker 把流式回答按节流批量推送：上游 SSE 每个 token 一条事件太频繁，
+// EventHub 的广播会刷爆 SSE 通道。攒满 minChunk 或超过 flushInterval 才发一条。
+type streamChunker struct {
+	sessionID string
+	emitter   EventEmitter
+
+	pending       strings.Builder
+	totalChars    int
+	lastFlush     time.Time
+	minChunk      int
+	flushInterval time.Duration
+}
+
+func newStreamChunker(sessionID string, emitter EventEmitter) *streamChunker {
+	return &streamChunker{
+		sessionID:     sessionID,
+		emitter:       emitter,
+		minChunk:      24,
+		flushInterval: 250 * time.Millisecond,
+	}
+}
+
+// Add 追加一段文本；满足节流条件时自动推送
+func (s *streamChunker) Add(text string) {
+	if s.emitter == nil || text == "" {
+		return
+	}
+	s.pending.WriteString(text)
+	s.totalChars += len([]rune(text))
+	if s.pending.Len() >= s.minChunk && time.Since(s.lastFlush) >= s.flushInterval {
+		s.Flush()
+	}
+}
+
+// Flush 立即推送当前积压（可为空）
+func (s *streamChunker) Flush() {
+	if s.emitter == nil {
+		return
+	}
+	chunk := s.pending.String()
+	if chunk == "" {
+		return
+	}
+	s.pending.Reset()
+	s.lastFlush = time.Now()
+	s.emitter.Emit("modeltrace:stream", ModelTraceStreamEvent{
+		SessionID:  s.sessionID,
+		Chunk:      chunk,
+		TotalChars: s.totalChars,
+	})
+}
+
 // VerifyProviderModel 对指定 provider + 模型执行一次指纹鉴伪。
 // 平台/模型不一致（疑似偷换）时 Success=true 且 ExpectedMatched=false。
 func (mts *ModelTraceService) VerifyProviderModel(
@@ -254,7 +317,8 @@ func (mts *ModelTraceService) verifyWithRetries(sessionID string, start time.Tim
 		}
 		mts.emitProgress(sessionID, providerID, expectedModel, "sending", attempts, start,
 			"挑战已发出，正在等待模型生成约 300 个随机整数（通常 30 秒到 2 分钟）…")
-		text, err := mts.requestChallenge(budgetCtx, provider, platform, apiModel, challenge.Prompt)
+		streamer := newStreamChunker(sessionID, mts.emitter)
+		text, err := mts.requestChallenge(budgetCtx, provider, platform, apiModel, challenge.Prompt, streamer)
 		if err != nil {
 			lastErr = err
 			if budgetCtx.Err() != nil {
@@ -329,7 +393,7 @@ type challengeMessages struct {
 	Content json.RawMessage `json:"content"`
 }
 
-func buildAnthropicChallengeBody(model, prompt string) ([]byte, error) {
+func buildAnthropicChallengeBody(model, prompt string, stream bool) ([]byte, error) {
 	content, _ := json.Marshal(prompt)
 	body := map[string]interface{}{
 		"model":      model,
@@ -338,10 +402,13 @@ func buildAnthropicChallengeBody(model, prompt string) ([]byte, error) {
 			{Role: "user", Content: content},
 		},
 	}
+	if stream {
+		body["stream"] = true
+	}
 	return json.Marshal(body)
 }
 
-func buildOpenAIChallengeBody(model, prompt string) ([]byte, error) {
+func buildOpenAIChallengeBody(model, prompt string, stream bool) ([]byte, error) {
 	content, _ := json.Marshal(prompt)
 	body := map[string]interface{}{
 		"model": model,
@@ -349,11 +416,14 @@ func buildOpenAIChallengeBody(model, prompt string) ([]byte, error) {
 			{Role: "user", Content: content},
 		},
 	}
+	if stream {
+		body["stream"] = true
+	}
 	return json.Marshal(body)
 }
 
 // buildResponsesChallengeBody 构造 OpenAI Responses API 格式的挑战请求（input 字段）
-func buildResponsesChallengeBody(model, prompt string) ([]byte, error) {
+func buildResponsesChallengeBody(model, prompt string, stream bool) ([]byte, error) {
 	body := map[string]interface{}{
 		"model": model,
 		"input": []map[string]interface{}{
@@ -364,6 +434,9 @@ func buildResponsesChallengeBody(model, prompt string) ([]byte, error) {
 				},
 			},
 		},
+	}
+	if stream {
+		body["stream"] = true
 	}
 	return json.Marshal(body)
 }
@@ -422,8 +495,9 @@ func compactUpstreamError(details string) string {
 // requestChallenge 向 provider 发送一条挑战并返回回答文本。
 // 端点/认证解析与连通性测试共用同一套规则；请求体按端点选择
 // Anthropic / OpenAI Chat / OpenAI Responses 三种格式。
+// 优先以 SSE 流式请求并把生成片段经 streamer 实时推送（streamer 为 nil 时退化为非流式）。
 // 不传 temperature（用渠道默认，测线上真实状态）。
-func (mts *ModelTraceService) requestChallenge(parent context.Context, provider *Provider, platform, apiModel, prompt string) (string, error) {
+func (mts *ModelTraceService) requestChallenge(parent context.Context, provider *Provider, platform, apiModel, prompt string, streamer *streamChunker) (string, error) {
 	endpoint := resolveConnectivityEndpoint(provider, platform)
 	protocol := provider.ResolveUpstreamProtocol(endpoint)
 	targetURL := joinURL(provider.APIURL, endpoint)
@@ -432,13 +506,14 @@ func (mts *ModelTraceService) requestChallenge(parent context.Context, provider 
 	var err error
 	isAnthropic := protocol == UpstreamProtocolAnthropic
 	isResponses := !isAnthropic && strings.Contains(strings.ToLower(endpoint), "/responses")
+	useStream := streamer != nil
 	switch {
 	case isAnthropic:
-		reqBody, err = buildAnthropicChallengeBody(apiModel, prompt)
+		reqBody, err = buildAnthropicChallengeBody(apiModel, prompt, useStream)
 	case isResponses:
-		reqBody, err = buildResponsesChallengeBody(apiModel, prompt)
+		reqBody, err = buildResponsesChallengeBody(apiModel, prompt, useStream)
 	default:
-		reqBody, err = buildOpenAIChallengeBody(apiModel, prompt)
+		reqBody, err = buildOpenAIChallengeBody(apiModel, prompt, useStream)
 	}
 	if err != nil {
 		return "", fmt.Errorf("构造请求失败: %w", err)
@@ -455,8 +530,12 @@ func (mts *ModelTraceService) requestChallenge(parent context.Context, provider 
 	if err != nil {
 		return "", fmt.Errorf("创建请求失败: %w", err)
 	}
+	if useStream {
+		req.Header.Set("Accept", "text/event-stream")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
 	// 伪装成真实客户端 UA，避免被 Cloudflare/WAF 拦截
 	req.Header.Set("User-Agent", "Codex Desktop/0.147.0-alpha.1.2 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.147.0-alpha.1.2)")
 	if provider.APIKey != "" {
@@ -472,14 +551,183 @@ func (mts *ModelTraceService) requestChallenge(parent context.Context, provider 
 		return "", fmt.Errorf("无法连接接口: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// 流式请求被拒绝（部分网关不支持 stream 参数）时降级为非流式重试
+	if useStream && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		resp.Body.Close()
+		if fallback, fbErr := mts.requestChallenge(parent, provider, platform, apiModel, prompt, nil); fbErr == nil {
+			return fallback, nil
+		}
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, compactUpstreamError(string(body)))
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, compactUpstreamError(string(body)))
+	}
+
+	if useStream && strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		text, streamErr := consumeSSEStream(resp.Body, streamer)
+		if streamErr != nil {
+			return "", streamErr
+		}
+		// 流里没拿到任何文本（如上游忽略 stream 返回了非 SSE 形态但 Content-Type 撒谎），走非流式重试
+		if text != "" {
+			return text, nil
+		}
+		resp.Body.Close()
+		return mts.requestChallenge(parent, provider, platform, apiModel, prompt, nil)
+	}
+
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return "", fmt.Errorf("读取响应失败: %w", err)
 	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, compactUpstreamError(string(body)))
-	}
 	return extractCompletionText(body, isAnthropic)
+}
+
+// consumeSSEStream 逐行解析上游 SSE 流，把文本片段喂给 streamer，
+// 返回拼合后的完整文本。流中透传的截断/拒答终止原因同样拒绝该回答。
+func consumeSSEStream(reader io.Reader, streamer *streamChunker) (string, error) {
+	var full strings.Builder
+	var lastStopReason string
+	br := bufio.NewReaderSize(reader, 16<<10)
+	for {
+		line, err := br.ReadString('\n')
+		if line != "" {
+			trimmed := strings.TrimRight(line, "\r\n")
+			if after, ok := strings.CutPrefix(trimmed, "data:"); ok {
+				payload := strings.TrimSpace(after)
+				if payload == "" || payload == "[DONE]" {
+					if payload == "[DONE]" {
+						goto done
+					}
+				} else if text, stop, extractErr := extractStreamDelta(payload); extractErr == nil {
+					if text != "" {
+						full.WriteString(text)
+						streamer.Add(text)
+					}
+					if stop != "" {
+						lastStopReason = stop
+						goto done
+					}
+				}
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			streamer.Flush()
+			return full.String(), fmt.Errorf("读取流式响应失败: %w", err)
+		}
+	}
+done:
+	streamer.Flush()
+	switch lastStopReason {
+	case "refusal":
+		return "", errors.New("模型拒绝生成，本次回答不计入")
+	case "max_tokens", "length", "content_filter":
+		return "", fmt.Errorf("回答未正常完成（%s），本次回答不计入", lastStopReason)
+	}
+	return full.String(), nil
+}
+
+// extractStreamDelta 从单条 SSE data 中提取增量文本与终止原因。
+// 兼容 Anthropic（content_block_delta）与 OpenAI Chat/Responses（delta/output_text）三种形态。
+func extractStreamDelta(payload string) (text, stopReason string, err error) {
+	var raw struct {
+		Type  string `json:"type"`
+		Delta struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"delta"`
+		Choices []struct {
+			Delta struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"delta"`
+			FinishReason *string `json:"finish_reason"`
+		} `json:"choices"`
+		// OpenAI Responses 形态
+		Response *struct {
+			IncompleteDetails *struct {
+				Reason string `json:"reason"`
+			} `json:"incomplete_details"`
+		} `json:"response"`
+		// Anthropic message_delta / 完成事件
+		StopReason string `json:"stop_reason"`
+	}
+	if jsonErr := json.Unmarshal([]byte(payload), &raw); jsonErr != nil {
+		return "", "", jsonErr
+	}
+	// Anthropic: content_block_delta
+	if raw.Type == "content_block_delta" && (raw.Delta.Type == "text_delta" || raw.Delta.Text != "") {
+		return raw.Delta.Text, "", nil
+	}
+	// Anthropic: message_delta 携带终止原因
+	if raw.Type == "message_delta" && raw.StopReason != "" {
+		return "", raw.StopReason, nil
+	}
+	// OpenAI Chat: choices[0].delta.content（字符串或分段数组）
+	if len(raw.Choices) > 0 {
+		if content := raw.Choices[0].Delta.Content; len(content) > 0 {
+			if text := rawContentText(content); text != "" {
+				return text, "", nil
+			}
+		}
+		if raw.Choices[0].FinishReason != nil && *raw.Choices[0].FinishReason != "" {
+			return "", *raw.Choices[0].FinishReason, nil
+		}
+	}
+	// OpenAI Responses: type == response.output_text.delta 的 data 顶层是文本？官方形态为
+	// {"type":"response.output_text.delta","delta":"..."}——补一个宽松字段
+	var responsesDelta struct {
+		Type  string          `json:"type"`
+		Delta json.RawMessage `json:"delta"`
+	}
+	_ = json.Unmarshal([]byte(payload), &responsesDelta)
+	if responsesDelta.Type == "response.output_text.delta" {
+		var s string
+		if json.Unmarshal(responsesDelta.Delta, &s) == nil {
+			return s, "", nil
+		}
+	}
+	if responsesDelta.Type == "response.incomplete" && raw.Response != nil && raw.Response.IncompleteDetails != nil {
+		return "", raw.Response.IncompleteDetails.Reason, nil
+	}
+	if responsesDelta.Type == "response.completed" && raw.Response != nil {
+		if raw.Response.IncompleteDetails != nil && raw.Response.IncompleteDetails.Reason != "" {
+			return "", raw.Response.IncompleteDetails.Reason, nil
+		}
+		return "", "stop", nil
+	}
+	return "", "", nil
+}
+
+// rawContentText 解析 chat delta 的 content 字段（字符串或分段数组）
+func rawContentText(content json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
+	}
+	if content[0] == '"' {
+		var s string
+		if json.Unmarshal(content, &s) == nil {
+			return s
+		}
+		return ""
+	}
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(content, &parts) == nil {
+		var text strings.Builder
+		for _, part := range parts {
+			text.WriteString(part.Text)
+		}
+		return text.String()
+	}
+	return ""
 }
 
 // extractCompletionText 从上游响应中提取回答文本并过滤截断/拒答
