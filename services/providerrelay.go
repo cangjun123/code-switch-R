@@ -3794,12 +3794,13 @@ func extractGeminiSSEEvents(chunk string, lineBuf *strings.Builder) []string {
 	for {
 		idx := strings.Index(content, "\n\n")
 		sepLen := 2
-		if idx == -1 {
-			idx = strings.Index(content, "\r\n\r\n")
-			if idx == -1 {
-				break // 没有完整事件，等待更多数据
-			}
+		// 两种分隔符可能混用，必须选择最早的边界，避免把后续事件并入本事件。
+		if crlfIdx := strings.Index(content, "\r\n\r\n"); crlfIdx != -1 && (idx == -1 || crlfIdx < idx) {
+			idx = crlfIdx
 			sepLen = 4
+		}
+		if idx == -1 {
+			break // 没有完整事件，等待更多数据
 		}
 		events = append(events, content[:idx+sepLen])
 		content = content[idx+sepLen:]
@@ -3841,6 +3842,10 @@ const (
 func classifyGeminiFunctionCallEvent(event string) stitchFragmentResult {
 	data := geminiSSEEventData(event)
 	if data == "" || !gjson.Valid(data) {
+		return stitchNotFragment
+	}
+	candidates := gjson.Get(data, "candidates")
+	if !candidates.IsArray() || len(candidates.Array()) != 1 {
 		return stitchNotFragment
 	}
 	parts := gjson.Get(data, "candidates.0.content.parts")
@@ -3926,15 +3931,28 @@ func (s *geminiFunctionCallStitcher) process(event string) string {
 	}
 }
 
-// mergeInto 把残片A 的 name 合并进残片B 的事件字节，返回合并后的事件
+// mergeInto 把残片A 的 name 和调用 ID 合并进残片B。
+// ID 冲突或合并失败时原样返回两个事件，避免误配调用或丢失内容。
 func (s *geminiFunctionCallStitcher) mergeInto(fragmentB string) string {
 	data := geminiSSEEventData(fragmentB)
 	if data == "" {
-		return fragmentB
+		return s.pendingFragment + fragmentB
+	}
+	const idPath = "candidates.0.content.parts.0.functionCall.id"
+	idA := gjson.Get(geminiSSEEventData(s.pendingFragment), idPath).String()
+	idB := gjson.Get(data, idPath).String()
+	if idA != "" && idB != "" && idA != idB {
+		return s.pendingFragment + fragmentB
 	}
 	merged, err := sjson.Set(data, "candidates.0.content.parts.0.functionCall.name", s.pendingName)
 	if err != nil {
-		return fragmentB // 合并失败保守透传残片B
+		return s.pendingFragment + fragmentB
+	}
+	if idA != "" && idB == "" {
+		merged, err = sjson.Set(merged, idPath, idA)
+		if err != nil {
+			return s.pendingFragment + fragmentB
+		}
 	}
 	return "data: " + merged + "\n\n"
 }

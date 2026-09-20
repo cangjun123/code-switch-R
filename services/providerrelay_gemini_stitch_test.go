@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 var (
@@ -260,6 +262,102 @@ func TestClassifyFragment(t *testing.T) {
 	}
 	if got := classifyGeminiFunctionCallEvent(terminal); got != stitchNotFragment {
 		t.Errorf("终止事件应判定为非残片，实际 %d", got)
+	}
+}
+
+// 多候选事件不能被当作残片，否则合并时会丢失其他候选的内容。
+func TestStitcherPreservesMultipleCandidates(t *testing.T) {
+	for _, fragment := range []string{"A", "B"} {
+		t.Run(fragment, func(t *testing.T) {
+			a, b := fragA, fragB
+			event := a
+			if fragment == "B" {
+				event = b
+			}
+			data, err := sjson.Set(geminiSSEEventData(event), "candidates.1", map[string]any{
+				"index":   1,
+				"content": map[string]any{"parts": []any{map[string]any{"text": "second candidate"}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			event = "data: " + data + "\n\n"
+			if got := classifyGeminiFunctionCallEvent(event); got != stitchNotFragment {
+				t.Errorf("多候选事件不应判定为残片，实际 %d", got)
+			}
+			if fragment == "A" {
+				a = event
+			} else {
+				b = event
+			}
+			stream := a + b + terminal
+			if out := runStitcher(stream, nil); out != stream {
+				t.Fatalf("多候选事件应完整透传:\nwant: %s\ngot: %s", stream, out)
+			}
+		})
+	}
+}
+
+// 换行风格可在事件之间变化，且结果不能依赖 TCP chunk 的切分方式。
+func TestStitcherMixedLineEndings(t *testing.T) {
+	for mask := 0; mask < 8; mask++ {
+		events := []string{fragA, fragB, buildGeminiTextEvent("following text")}
+		for i := range events {
+			if mask&(1<<i) != 0 {
+				events[i] = strings.ReplaceAll(events[i], "\n", "\r\n")
+			}
+		}
+		stream := strings.Join(events, "")
+		var byteSplits []int
+		for i := 1; i < len(stream); i++ {
+			byteSplits = append(byteSplits, i)
+		}
+		for _, splits := range [][]int{nil, byteSplits} {
+			out := runStitcher(stream, splits)
+			if strings.Count(out, "data:") != 2 || !strings.Contains(out, events[2]) {
+				t.Fatalf("换行组合 %d，切分数 %d：应合并调用并保留后续文本事件:\n%s", mask, len(splits), out)
+			}
+			fc := gjson.Get(geminiSSEEventData(out), "candidates.0.content.parts.0.functionCall")
+			if fc.Get("name").String() != "run_command" || fc.Get("args.CommandLine").String() != "ls -la" {
+				t.Fatalf("换行组合 %d，切分数 %d：调用未正确合并:\n%s", mask, len(splits), out)
+			}
+		}
+	}
+}
+
+func TestStitcherPreservesCallID(t *testing.T) {
+	for _, tc := range []struct {
+		name, idA, idB, wantID string
+		passthrough            bool
+	}{
+		{name: "ID in A", idA: "call-123", wantID: "call-123"},
+		{name: "ID in B", idB: "call-123", wantID: "call-123"},
+		{name: "matching IDs", idA: "call-123", idB: "call-123", wantID: "call-123"},
+		{name: "different IDs", idA: "call-123", idB: "call-456", passthrough: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fcA := map[string]any{"name": "run_command", "args": map[string]any{}}
+			fcB := map[string]any{"name": "", "args": fragArgs}
+			if tc.idA != "" {
+				fcA["id"] = tc.idA
+			}
+			if tc.idB != "" {
+				fcB["id"] = tc.idB
+			}
+			stream := mustEvent(fcA, nil, nil) + mustEvent(fcB, nil, nil) + terminal
+			out := runStitcher(stream, nil)
+			if tc.passthrough {
+				if out != stream {
+					t.Fatalf("不同 ID 的调用必须原样透传:\nwant: %s\ngot: %s", stream, out)
+				}
+				return
+			}
+			fc := gjson.Get(geminiSSEEventData(out), "candidates.0.content.parts.0.functionCall")
+			if strings.Count(out, "data:") != 2 || fc.Get("id").String() != tc.wantID ||
+				fc.Get("name").String() != "run_command" || fc.Get("args.CommandLine").String() != "ls -la" {
+				t.Fatalf("合并后应保留调用 ID、name 和 args:\n%s", out)
+			}
+		})
 	}
 }
 
