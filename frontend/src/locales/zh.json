@@ -539,7 +539,9 @@
           "openAIEndpointMode": "OpenAI 入口能力",
           "codexMultiAgentNamespaceRewrite": "多代理命名空间兼容",
           "bridgeResponsesInstructions": "Responses instructions 兼容",
-          "forceResponsesStoreFalse": "Responses store=false 兼容",
+          "fixFunctionCallFragments": "修复流式工具调用残片",
+        "fixFunctionCallFragmentsHint": "部分 OpenAI 兼容网关流式时会把 functionCall 拆成 name/args 两个残缺事件，导致 Antigravity CLI 报 missing properties。开启后 relay 会把相邻残片缝合回完整调用。",
+        "forceResponsesStoreFalse": "Responses store=false 兼容",
           "dropResponsesFields": "Responses 丢弃字段",
           "dropImageFields": "Images 丢弃字段",
           "imageAsyncMode": "异步生图模式",
@@ -1081,79 +1083,6 @@
         },
         "deleteTitle": "删除 MCP 服务器",
         "deleteMessage": "确认删除 {name} 吗？操作不可撤销"
-      }
-    },
-    "gemini": {
-      "hero": {
-        "eyebrow": "Gemini CLI 管理",
-        "title": "管理 Gemini 供应商",
-        "lead": "配置 Gemini CLI 的 API 供应商，支持 Google 官方和第三方中转服务。"
-      },
-      "controls": {
-        "back": "返回主页",
-        "settings": "打开设置",
-        "refresh": "刷新",
-        "create": "新增供应商"
-      },
-      "status": {
-        "enabled": "已启用",
-        "disabled": "未配置",
-        "active": "当前使用"
-      },
-      "auth": {
-        "oauth": "OAuth 认证",
-        "apiKey": "API Key 认证"
-      },
-      "category": {
-        "official": "官方",
-        "thirdParty": "第三方",
-        "custom": "自定义"
-      },
-      "presets": {
-        "title": "预设供应商"
-      },
-      "providers": {
-        "title": "已配置的供应商"
-      },
-      "list": {
-        "loading": "加载中...",
-        "empty": "暂无配置的供应商，点击预设卡片快速添加",
-        "edit": "编辑",
-        "delete": "删除"
-      },
-      "actions": {
-        "switch": "切换"
-      },
-      "form": {
-        "createTitle": "新增 Gemini 供应商",
-        "editTitle": "编辑 Gemini 供应商",
-        "deleteTitle": "删除供应商",
-        "deleteMessage": "确认删除 {name} 吗？操作不可撤销",
-        "name": "供应商名称",
-        "baseUrl": "API 地址",
-        "apiKey": "API 密钥",
-        "model": "默认模型",
-        "fixFunctionCallFragments": "修复流式工具调用残片",
-        "fixFunctionCallFragmentsHint": "部分 OpenAI 兼容网关流式时会把 functionCall 拆成 name/args 两个残缺事件，导致 Antigravity CLI 报 missing properties。开启后 relay 会把相邻残片缝合回完整调用。",
-        "cancel": "取消",
-        "save": "保存",
-        "delete": "删除"
-      },
-      "antigravity": {
-        "title": "Antigravity / 云端接入信息",
-        "lead": "在本地设备上为 Antigravity CLI (agy) 配置以下变量即可接入本服务。桌面版 IDE 暂不支持自定义端点。",
-        "baseUrlLabel": "GOOGLE_GEMINI_BASE_URL",
-        "baseUrlHint": "到 /gemini 为止，不含 /v1beta（客户端会自动追加）",
-        "apiKeyLabel": "GEMINI_API_KEY",
-        "apiKeyHint": "使用下方 Relay Key（在安全设置中管理）",
-        "relayKeyLabel": "Relay Key",
-        "copy": "复制",
-        "copySnippet": "复制配置片段",
-        "copied": "已复制",
-        "copyFailed": "复制失败",
-        "loadFailed": "加载接入信息失败",
-        "settingsHint": "agy 还需 ~/.gemini/antigravity-cli/settings.json 中设置 {\"modelProvider\": \"gemini\"}",
-        "keyPlaceholder": "点击复制以获取密钥"
       }
     },
     "skill": {

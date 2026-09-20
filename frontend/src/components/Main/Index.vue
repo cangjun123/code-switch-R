@@ -794,6 +794,7 @@ interface GeminiProvider {
   level?: number // 优先级分组 (1-10, 默认 1)
   envConfig?: Record<string, string | undefined>
   settingsConfig?: Record<string, any>
+  fixFunctionCallFragments?: boolean
 }
 
 const tabs = [
@@ -826,6 +827,7 @@ const geminiToCard = (provider: GeminiProvider, index: number): AutomationCard =
   tint: 'rgba(251, 146, 60, 0.18)',
   accent: '#fb923c',
   enabled: provider.enabled,
+  fixFunctionCallFragments: !!provider.fixFunctionCallFragments,
   level: provider.level || 1,
   // 可用性监控配置（Gemini 暂不支持，使用默认值）
   availabilityMonitorEnabled: false,
@@ -841,6 +843,7 @@ const cardToGemini = (card: AutomationCard, original: GeminiProvider): GeminiPro
   apiKey: card.apiKey,
   websiteUrl: card.officialSite,
   enabled: card.enabled,
+  fixFunctionCallFragments: !!card.fixFunctionCallFragments,
   level: card.level || 1,
   // 注意：Gemini 不支持可用性监控配置，这些字段不会保存
 })
@@ -914,6 +917,7 @@ const persistProviders = async (tabId: ProviderTab): Promise<{ ok: boolean; erro
             apiKey: card.apiKey,
             websiteUrl: card.officialSite,
             enabled: card.enabled,
+            fixFunctionCallFragments: !!card.fixFunctionCallFragments,
           }
           await AddGeminiProvider(newProvider)
         }
@@ -1823,6 +1827,7 @@ type VendorForm = {
   codexMultiAgentNamespaceRewrite?: boolean
   bridgeResponsesInstructions?: boolean
   forceResponsesStoreFalse?: boolean
+  fixFunctionCallFragments?: boolean
   dropResponsesFieldsText?: string
   dropImageFieldsText?: string
   imageAsyncMode?: boolean
@@ -1929,6 +1934,7 @@ const defaultFormValues = (platform?: string): VendorForm => ({
   openAIEndpointMode: 'auto', // OpenAI 入口能力（仅 codex 使用）
   codexMultiAgentNamespaceRewrite: false, // Codex collaboration <-> agents namespace 兼容
   bridgeResponsesInstructions: false, // Responses instructions 兼容开关
+  fixFunctionCallFragments: false,
   forceResponsesStoreFalse: false, // Responses store=false 兼容开关
   dropResponsesFieldsText: '', // Responses 丢弃字段列表
   dropImageFieldsText: '', // Images 丢弃字段列表
@@ -2060,6 +2066,7 @@ const openEditModal = (card: AutomationCard) => {
     openAIEndpointMode: card.openAIEndpointMode || 'auto',
     codexMultiAgentNamespaceRewrite: !!card.codexMultiAgentNamespaceRewrite,
     bridgeResponsesInstructions: !!card.bridgeResponsesInstructions,
+    fixFunctionCallFragments: !!card.fixFunctionCallFragments,
     forceResponsesStoreFalse: !!card.forceResponsesStoreFalse,
     dropResponsesFieldsText: formatResponsesDropFields(getResponsesDropFields(card)),
     dropImageFieldsText: formatImageDropFields(getImageDropFields(card)),
@@ -2216,6 +2223,7 @@ const submitModal = async (): Promise<boolean> => {
       openAIEndpointMode: modalState.form.openAIEndpointMode || 'auto',
       codexMultiAgentNamespaceRewrite: !!modalState.form.codexMultiAgentNamespaceRewrite,
       bridgeResponsesInstructions: !!modalState.form.bridgeResponsesInstructions,
+      fixFunctionCallFragments: !!modalState.form.fixFunctionCallFragments,
       forceResponsesStoreFalse: !!modalState.form.forceResponsesStoreFalse,
       dropResponsesFields,
       dropImageFields,
@@ -2267,6 +2275,7 @@ const submitModal = async (): Promise<boolean> => {
       openAIEndpointMode: modalState.form.openAIEndpointMode || 'auto',
       codexMultiAgentNamespaceRewrite: !!modalState.form.codexMultiAgentNamespaceRewrite,
       bridgeResponsesInstructions: !!modalState.form.bridgeResponsesInstructions,
+      fixFunctionCallFragments: !!modalState.form.fixFunctionCallFragments,
       forceResponsesStoreFalse: !!modalState.form.forceResponsesStoreFalse,
       dropResponsesFields,
       dropImageFields,

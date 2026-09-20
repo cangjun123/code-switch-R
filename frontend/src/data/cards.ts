@@ -24,6 +24,8 @@ export type AutomationCard = {
   bridgeResponsesInstructions?: boolean
   // Responses store=false 兼容：为要求 store=false 的 Responses 请求显式设置顶层 store=false
   forceResponsesStoreFalse?: boolean
+  // Gemini 流式工具调用残片兼容
+  fixFunctionCallFragments?: boolean
   // Responses 丢弃字段列表：为不支持指定顶层字段的 Responses 请求在转发前移除对应字段
   dropResponsesFields?: string[]
   // [已废弃] Responses max_output_tokens 兼容：迁移到 dropResponsesFields

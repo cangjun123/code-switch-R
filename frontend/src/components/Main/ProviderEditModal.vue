@@ -29,6 +29,7 @@ export interface ProviderFormState {
   codexMultiAgentNamespaceRewrite?: boolean
   bridgeResponsesInstructions?: boolean
   forceResponsesStoreFalse?: boolean
+  fixFunctionCallFragments?: boolean
   dropResponsesFieldsText?: string
   dropImageFieldsText?: string
   imageAsyncMode?: boolean
@@ -253,6 +254,23 @@ const modalTitle = computed(() =>
 
       <!-- Tab 2: 协议与高级 -->
       <div v-show="activeFormTab === 'protocol'" class="tab-pane">
+        <div v-if="tabId === 'gemini'" class="switch-card-group">
+          <div class="switch-card-row">
+            <div class="switch-label-col">
+              <span id="gemini-fragments-label" class="switch-title">{{ t('components.main.form.labels.fixFunctionCallFragments') }}</span>
+              <span class="field-hint">{{ t('components.main.form.labels.fixFunctionCallFragmentsHint') }}</span>
+            </div>
+            <div class="switch-inline">
+              <label class="mac-switch">
+                <input v-model="form.fixFunctionCallFragments" type="checkbox" aria-labelledby="gemini-fragments-label" />
+                <span></span>
+              </label>
+              <span class="switch-text">
+                {{ form.fixFunctionCallFragments ? t('components.main.form.switch.on') : t('components.main.form.switch.off') }}
+              </span>
+            </div>
+          </div>
+        </div>
         <!-- 上游协议类型 -->
         <div class="form-field">
           <span>{{ t('components.main.form.labels.upstreamProtocol') }}</span>
