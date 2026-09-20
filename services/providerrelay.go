@@ -4403,6 +4403,17 @@ func (prs *ProviderRelayService) forwardGeminiRequest(
 	}
 	defaultActiveRequestTracker.Update(requestLog.ActiveRequestID, requestLog)
 
+	// Adapt per provider so retries/failover retain the original client request.
+	// Apply to both streaming and non-streaming Gemini tool calls.
+	if provider.FixFunctionCallFragments {
+		var err error
+		bodyBytes, err = adaptGeminiToolSchemas(bodyBytes)
+		if err != nil {
+			setRequestLogError(requestLog, err.Error())
+			return false, err.Error(), false
+		}
+	}
+
 	// 创建 HTTP 请求
 	req, err := http.NewRequest(method, targetURL, bytes.NewReader(bodyBytes))
 	if err != nil {
