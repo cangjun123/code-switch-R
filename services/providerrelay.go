@@ -3833,7 +3833,7 @@ type stitchFragmentResult int
 const (
 	stitchNotFragment  stitchFragmentResult = iota // 非残片形态（完整 fc / 文本 / 终止事件等）
 	stitchFragmentA                                // 残片A：name 非空 + args 空
-	stitchFragmentB                                // 残片B：name 空 + args 非空
+	stitchFragmentB                                // 残片B：name 空 + args 对象（无参数工具可为 {}）
 )
 
 // classifyGeminiFunctionCallEvent 判定事件是否为残片。
@@ -3874,7 +3874,9 @@ func classifyGeminiFunctionCallEvent(event string) stitchFragmentResult {
 	if name != "" && !hasArgs {
 		return stitchFragmentA
 	}
-	if name == "" && hasArgs {
+	// 无参数工具的第二片也会携带空对象；仅接受明确的 args 对象，
+	// 缺失、null 或其他类型仍透传。没有相邻残片A 时 process 不会合并。
+	if name == "" && args.IsObject() {
 		return stitchFragmentB
 	}
 	return stitchNotFragment
