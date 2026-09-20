@@ -36,10 +36,11 @@ type GeminiProvider struct {
 	Level               int               `json:"level,omitempty"`          // 优先级分组 (1-10, 默认 1)
 	EnvConfig           map[string]string `json:"envConfig,omitempty"`      // .env 配置
 	SettingsConfig      map[string]any    `json:"settingsConfig,omitempty"` // settings.json 配置
-	// FixFunctionCallFragments 修复上游流式 functionCall 残片：
+	// FixFunctionCallFragments 启用 Gemini 工具调用兼容修复：
+	// 请求侧将 parametersJsonSchema 原样迁移到部分转换网关支持的 parameters 字段。
 	// 部分 OpenAI→Gemini 转换网关（如 New-API 架构）流式时把一个 functionCall 拆成
 	// 「name 非空+args 空」和「name 空+args 全」两个 SSE 事件，导致 Antigravity CLI 等
-	// 严格校验参数的客户端报 missing properties。开启后 relay 会把相邻残片缝合回完整调用。
+	// 严格校验参数的客户端报 missing properties。响应侧把相邻残片缝合回完整调用。
 	FixFunctionCallFragments bool `json:"fixFunctionCallFragments,omitempty"`
 }
 

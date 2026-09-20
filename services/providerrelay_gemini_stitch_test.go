@@ -368,6 +368,9 @@ func newGeminiStitchTestEnv(t *testing.T, providerID, upstreamURL string, fixFra
 	t.Helper()
 
 	_, relayService := newTestRelayService(t)
+	// The shared relay fixture may have persisted providers from an earlier case.
+	// Each compatibility test must route only to its own upstream and settings.
+	relayService.geminiService.providers = nil
 	if err := relayService.geminiService.AddProvider(GeminiProvider{
 		ID:                       providerID,
 		Name:                     "GeminiProvider",
