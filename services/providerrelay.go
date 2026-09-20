@@ -3708,7 +3708,9 @@ func mergeGeminiUsageMetadata(usage gjson.Result, reqLog *ReqeustLog) {
 // streamGeminiResponseWithHook 流式传输 Gemini 响应并通过 Hook 提取 token 用量
 // 【修复】维护跨 chunk 缓冲，确保完整 SSE 事件解析
 // Gemini SSE 格式: "data: {json}\n\n" 或 "data: [DONE]\n\n"
-func streamGeminiResponseWithHook(body io.Reader, writer io.Writer, requestLog *ReqeustLog, start time.Time) error {
+// stitcher 非 nil 时（provider 开启 fixFunctionCallFragments），先按事件粒度缝合
+// 上游拆分的 functionCall 残片，再把缝合结果写给客户端。
+func streamGeminiResponseWithHook(body io.Reader, writer io.Writer, requestLog *ReqeustLog, start time.Time, stitcher *geminiFunctionCallStitcher) error {
 	buf := make([]byte, 8192)   // 增大缓冲区减少系统调用
 	var lineBuf strings.Builder // 跨 chunk 行缓冲
 
@@ -3717,20 +3719,59 @@ func streamGeminiResponseWithHook(body io.Reader, writer io.Writer, requestLog *
 		if n > 0 {
 			chunk := buf[:n]
 			markFirstTokenDuration(requestLog, start)
-			// 写入客户端（优先保证数据传输）
-			if _, writeErr := writer.Write(chunk); writeErr != nil {
-				return writeErr
+			if stitcher != nil {
+				// 缝合模式：先按完整事件分割，过 stitcher 再写
+				for _, event := range extractGeminiSSEEvents(string(chunk), &lineBuf) {
+					parseGeminiSSELine(event, requestLog)
+					out := stitcher.process(event)
+					if out == "" {
+						continue
+					}
+					if _, writeErr := writer.Write([]byte(out)); writeErr != nil {
+						return writeErr
+					}
+					if flusher, ok := writer.(http.Flusher); ok {
+						flusher.Flush()
+					}
+				}
+			} else {
+				// 写入客户端（优先保证数据传输）
+				if _, writeErr := writer.Write(chunk); writeErr != nil {
+					return writeErr
+				}
+				// 如果是 http.Flusher，立即刷新
+				if flusher, ok := writer.(http.Flusher); ok {
+					flusher.Flush()
+				}
+				// 解析 SSE 数据提取 token 用量（使用缓冲处理跨 chunk 情况）
+				parseGeminiSSEWithBuffer(string(chunk), &lineBuf, requestLog)
 			}
-			// 如果是 http.Flusher，立即刷新
-			if flusher, ok := writer.(http.Flusher); ok {
-				flusher.Flush()
-			}
-			// 解析 SSE 数据提取 token 用量（使用缓冲处理跨 chunk 情况）
-			parseGeminiSSEWithBuffer(string(chunk), &lineBuf, requestLog)
 		}
 		if err != nil {
-			// 处理缓冲区残留数据
-			if lineBuf.Len() > 0 {
+			if stitcher != nil {
+				// 流结束：扣留的残片原样放出，避免吞数据
+				if pending := stitcher.flushPending(); pending != "" {
+					if _, writeErr := writer.Write([]byte(pending)); writeErr != nil {
+						return writeErr
+					}
+					if flusher, ok := writer.(http.Flusher); ok {
+						flusher.Flush()
+					}
+				}
+				// 残留的半截事件（无分隔符结尾）也补写出去
+				if lineBuf.Len() > 0 {
+					residual := lineBuf.String()
+					parseGeminiSSELine(residual, requestLog)
+					lineBuf.Reset()
+					out := stitcher.processResidual(residual)
+					if out != "" {
+						if _, writeErr := writer.Write([]byte(out)); writeErr != nil {
+							return writeErr
+						}
+					}
+				}
+			} else if lineBuf.Len() > 0 {
+				// 处理缓冲区残留数据
 				parseGeminiSSELine(lineBuf.String(), requestLog)
 				lineBuf.Reset()
 			}
@@ -3740,6 +3781,199 @@ func streamGeminiResponseWithHook(body io.Reader, writer io.Writer, requestLog *
 			return err
 		}
 	}
+}
+
+// extractGeminiSSEEvents 从 chunk 中提取完整 SSE 事件（含尾随分隔符），
+// 未构成完整事件的尾部留在 lineBuf 中等待后续数据。
+// 与 parseGeminiSSEWithBuffer 的分割逻辑一致：\n\n 或 \r\n\r\n 分隔。
+func extractGeminiSSEEvents(chunk string, lineBuf *strings.Builder) []string {
+	lineBuf.WriteString(chunk)
+	content := lineBuf.String()
+
+	var events []string
+	for {
+		idx := strings.Index(content, "\n\n")
+		sepLen := 2
+		// 两种分隔符可能混用，必须选择最早的边界，避免把后续事件并入本事件。
+		if crlfIdx := strings.Index(content, "\r\n\r\n"); crlfIdx != -1 && (idx == -1 || crlfIdx < idx) {
+			idx = crlfIdx
+			sepLen = 4
+		}
+		if idx == -1 {
+			break // 没有完整事件，等待更多数据
+		}
+		events = append(events, content[:idx+sepLen])
+		content = content[idx+sepLen:]
+	}
+
+	lineBuf.Reset()
+	lineBuf.WriteString(content)
+	return events
+}
+
+// geminiFunctionCallStitcher 缝合上游拆分的流式 functionCall 残片。
+//
+// 背景：部分 OpenAI→Gemini 转换网关把一个 functionCall 拆成两个 SSE 事件：
+//   - 残片A: {"functionCall":{"name":"run_command","args":{}}}    （name 非空，args 空）
+//   - 残片B: {"functionCall":{"name":"","args":{"CommandLine":...}}}（name 空，args 完整）
+//
+// 严格校验参数的客户端（如 Antigravity CLI）收到残片A 即报 missing properties。
+// 缝合策略：识别残片A 时扣住；下一个事件若是残片B 则合并成一个完整事件输出，
+// 否则把残片A 原样放出再处理新事件（保守回退，不吞数据）。流结束时扣留内容原样放出。
+type geminiFunctionCallStitcher struct {
+	// pendingFragment 扣留的残片A 原始事件字节（含尾随分隔符）
+	pendingFragment string
+	// pendingName 残片A 的 functionCall name
+	pendingName string
+}
+
+// stitchFragmentResult 描述单个事件的缝合判定结果
+type stitchFragmentResult int
+
+const (
+	stitchNotFragment  stitchFragmentResult = iota // 非残片形态（完整 fc / 文本 / 终止事件等）
+	stitchFragmentA                                // 残片A：name 非空 + args 空
+	stitchFragmentB                                // 残片B：name 空 + args 非空
+)
+
+// classifyGeminiFunctionCallEvent 判定事件是否为残片。
+// 保守起见，仅当事件 data 载荷为合法 JSON、candidates 恰好 1 个、
+// content.parts 恰好 1 个 part 且该 part 只含 functionCall 时才判定。
+func classifyGeminiFunctionCallEvent(event string) stitchFragmentResult {
+	data := geminiSSEEventData(event)
+	if data == "" || !gjson.Valid(data) {
+		return stitchNotFragment
+	}
+	candidates := gjson.Get(data, "candidates")
+	if !candidates.IsArray() || len(candidates.Array()) != 1 {
+		return stitchNotFragment
+	}
+	parts := gjson.Get(data, "candidates.0.content.parts")
+	if len(parts.Array()) != 1 {
+		return stitchNotFragment
+	}
+	fc := gjson.Get(data, "candidates.0.content.parts.0.functionCall")
+	if !fc.Exists() || !fc.IsObject() {
+		return stitchNotFragment
+	}
+	// part 内除 functionCall 外不应有其他键（text/thought 等）
+	part := gjson.Get(data, "candidates.0.content.parts.0")
+	partKeys := 0
+	part.ForEach(func(key, _ gjson.Result) bool {
+		partKeys++
+		return partKeys <= 2 // 提前退出优化
+	})
+	if partKeys != 1 {
+		return stitchNotFragment
+	}
+
+	name := fc.Get("name").String()
+	args := fc.Get("args")
+	hasArgs := args.Exists() && len(args.Map()) > 0
+
+	if name != "" && !hasArgs {
+		return stitchFragmentA
+	}
+	if name == "" && hasArgs {
+		return stitchFragmentB
+	}
+	return stitchNotFragment
+}
+
+// geminiSSEEventData 从事件字节中提取首个 data: 行的载荷；非 data 行事件返回空串
+func geminiSSEEventData(event string) string {
+	for _, line := range strings.Split(event, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "data:") {
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if data != "" && data != "[DONE]" {
+				return data
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// process 处理一个完整 SSE 事件（含尾随分隔符），返回写给客户端的字节（可能为空）。
+// 返回空串表示本事件被扣留（等残片B）或被合并消化。
+func (s *geminiFunctionCallStitcher) process(event string) string {
+	switch classifyGeminiFunctionCallEvent(event) {
+	case stitchFragmentA:
+		// 新残片A 到来：若已有扣留的残片A，先把旧的放出（非预期形态，保守回退）
+		out := ""
+		if s.pendingFragment != "" {
+			out = s.pendingFragment
+		}
+		s.pendingFragment = event
+		s.pendingName = gjson.Get(geminiSSEEventData(event), "candidates.0.content.parts.0.functionCall.name").String()
+		return out
+
+	case stitchFragmentB:
+		if s.pendingFragment != "" {
+			// 合并：把残片A 的 name 写进残片B，只输出合并事件
+			merged := s.mergeInto(event)
+			s.pendingFragment = ""
+			s.pendingName = ""
+			return merged
+		}
+		return event
+
+	default:
+		// 非残片：先放出扣留的残片A（若有），再透传本事件
+		out := s.pendingFragment
+		s.pendingFragment = ""
+		s.pendingName = ""
+		if out != "" {
+			return out + event
+		}
+		return event
+	}
+}
+
+// mergeInto 把残片A 的 name 和调用 ID 合并进残片B。
+// ID 冲突或合并失败时原样返回两个事件，避免误配调用或丢失内容。
+func (s *geminiFunctionCallStitcher) mergeInto(fragmentB string) string {
+	data := geminiSSEEventData(fragmentB)
+	if data == "" {
+		return s.pendingFragment + fragmentB
+	}
+	const idPath = "candidates.0.content.parts.0.functionCall.id"
+	idA := gjson.Get(geminiSSEEventData(s.pendingFragment), idPath).String()
+	idB := gjson.Get(data, idPath).String()
+	if idA != "" && idB != "" && idA != idB {
+		return s.pendingFragment + fragmentB
+	}
+	merged, err := sjson.Set(data, "candidates.0.content.parts.0.functionCall.name", s.pendingName)
+	if err != nil {
+		return s.pendingFragment + fragmentB
+	}
+	if idA != "" && idB == "" {
+		merged, err = sjson.Set(merged, idPath, idA)
+		if err != nil {
+			return s.pendingFragment + fragmentB
+		}
+	}
+	return "data: " + merged + "\n\n"
+}
+
+// processResidual 处理流末尾的半截事件（无分隔符）：直接与扣留内容拼接透传
+func (s *geminiFunctionCallStitcher) processResidual(residual string) string {
+	out := s.pendingFragment
+	s.pendingFragment = ""
+	s.pendingName = ""
+	if out != "" {
+		return out + residual
+	}
+	return residual
+}
+
+// flushPending 流结束时放出扣留的残片A（不吞数据）
+func (s *geminiFunctionCallStitcher) flushPending() string {
+	out := s.pendingFragment
+	s.pendingFragment = ""
+	s.pendingName = ""
+	return out
 }
 
 // parseGeminiSSEWithBuffer 使用缓冲处理跨 chunk 的 SSE 事件
@@ -4230,7 +4464,11 @@ func (prs *ProviderRelayService) forwardGeminiRequest(
 		c.Status(resp.StatusCode)
 		c.Writer.Flush()
 		// 【重要】从 Flush() 开始，响应头已写入客户端，任何失败都不能重试
-		copyErr := streamGeminiResponseWithHook(resp.Body, c.Writer, requestLog, requestStart)
+		var stitcher *geminiFunctionCallStitcher
+		if provider.FixFunctionCallFragments {
+			stitcher = &geminiFunctionCallStitcher{}
+		}
+		copyErr := streamGeminiResponseWithHook(resp.Body, c.Writer, requestLog, requestStart, stitcher)
 		if copyErr != nil {
 			fmt.Printf("[Gemini]   ⚠️ 流式传输中断: %s | 错误: %v\n", provider.Name, copyErr)
 			// 流式传输中断：已写入部分响应，客户端会收到不完整数据

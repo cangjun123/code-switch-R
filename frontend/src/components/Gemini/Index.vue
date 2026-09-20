@@ -278,6 +278,18 @@ export GEMINI_API_KEY=<relay-key>
           <BaseInput v-model="modalState.form.model" type="text" :disabled="saving" placeholder="gemini-2.5-pro-preview" />
         </label>
 
+        <!-- 修复上游流式 functionCall 残片 -->
+        <div v-if="modalState.editing" class="fix-frag-row">
+          <div class="fix-frag-label">
+            <span class="fix-frag-title">{{ t('components.gemini.form.fixFunctionCallFragments') }}</span>
+            <span class="field-hint">{{ t('components.gemini.form.fixFunctionCallFragmentsHint') }}</span>
+          </div>
+          <label class="mac-switch">
+            <input type="checkbox" v-model="modalState.form.fixFunctionCallFragments" />
+            <span></span>
+          </label>
+        </div>
+
         <footer class="form-actions">
           <BaseButton variant="outline" type="button" @click="closeModal">
             {{ t('components.gemini.form.cancel') }}
@@ -365,6 +377,7 @@ const modalState = reactive({
     baseUrl: '',
     apiKey: '',
     model: '',
+    fixFunctionCallFragments: false,
   },
 })
 
@@ -517,6 +530,7 @@ const openCreateModal = () => {
   modalState.form.baseUrl = ''
   modalState.form.apiKey = ''
   modalState.form.model = 'gemini-2.5-pro-preview'
+  modalState.form.fixFunctionCallFragments = false
 }
 
 const openEditModal = (provider: BindingGeminiProvider) => {
@@ -529,6 +543,7 @@ const openEditModal = (provider: BindingGeminiProvider) => {
   modalState.form.baseUrl = provider.baseUrl ?? ''
   modalState.form.apiKey = provider.apiKey ?? ''
   modalState.form.model = provider.model ?? ''
+  modalState.form.fixFunctionCallFragments = provider.fixFunctionCallFragments === true
 }
 
 const closeModal = () => {
@@ -563,6 +578,7 @@ const submitModal = async () => {
         apiKey: modalState.form.apiKey,
         model: modalState.form.model,
         enabled: original.enabled, // 保持启用状态不变
+        fixFunctionCallFragments: modalState.form.fixFunctionCallFragments,
         envConfig: {
           ...(original.envConfig ?? {}),
           GOOGLE_GEMINI_BASE_URL: modalState.form.baseUrl,
@@ -698,6 +714,30 @@ onMounted(() => {
   font-size: 12px;
   color: var(--mac-text-tertiary);
   margin: 6px 0 0;
+}
+
+.fix-frag-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  background: var(--mac-surface-strong);
+  border: 1px solid var(--mac-border);
+  border-radius: 10px;
+}
+
+.fix-frag-label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+}
+
+.fix-frag-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--mac-text);
 }
 
 .field-snippet {

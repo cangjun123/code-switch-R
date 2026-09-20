@@ -1315,6 +1315,14 @@ export class GeminiProvider {
      */
     "settingsConfig"?: { [_ in string]?: any };
 
+    /**
+     * 修复上游流式 functionCall 残片：部分 OpenAI→Gemini 转换网关流式时把一个
+     * functionCall 拆成「name 非空+args 空」和「name 空+args 全」两个 SSE 事件，
+     * 导致 Antigravity CLI 等严格校验参数的客户端报 missing properties。
+     * 开启后 relay 会把相邻残片缝合回完整调用。
+     */
+    "fixFunctionCallFragments"?: boolean;
+
     /** Creates a new GeminiProvider instance. */
     constructor($$source: Partial<GeminiProvider> = {}) {
         if (!("id" in $$source)) {

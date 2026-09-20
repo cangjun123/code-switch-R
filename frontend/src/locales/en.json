@@ -1132,6 +1132,8 @@
         "baseUrl": "API URL",
         "apiKey": "API Key",
         "model": "Default model",
+        "fixFunctionCallFragments": "Stitch streamed tool-call fragments",
+        "fixFunctionCallFragmentsHint": "Some OpenAI-compatible gateways split a functionCall into name-only and args-only SSE fragments, making Antigravity CLI fail with missing properties. When enabled, the relay merges adjacent fragments back into one complete call.",
         "cancel": "Cancel",
         "save": "Save",
         "delete": "Delete"
