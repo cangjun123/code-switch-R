@@ -1133,6 +1133,8 @@
         "baseUrl": "API 地址",
         "apiKey": "API 密钥",
         "model": "默认模型",
+        "fixFunctionCallFragments": "修复流式工具调用残片",
+        "fixFunctionCallFragmentsHint": "部分 OpenAI 兼容网关流式时会把 functionCall 拆成 name/args 两个残缺事件，导致 Antigravity CLI 报 missing properties。开启后 relay 会把相邻残片缝合回完整调用。",
         "cancel": "取消",
         "save": "保存",
         "delete": "删除"

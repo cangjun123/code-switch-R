@@ -36,6 +36,11 @@ type GeminiProvider struct {
 	Level               int               `json:"level,omitempty"`          // 优先级分组 (1-10, 默认 1)
 	EnvConfig           map[string]string `json:"envConfig,omitempty"`      // .env 配置
 	SettingsConfig      map[string]any    `json:"settingsConfig,omitempty"` // settings.json 配置
+	// FixFunctionCallFragments 修复上游流式 functionCall 残片：
+	// 部分 OpenAI→Gemini 转换网关（如 New-API 架构）流式时把一个 functionCall 拆成
+	// 「name 非空+args 空」和「name 空+args 全」两个 SSE 事件，导致 Antigravity CLI 等
+	// 严格校验参数的客户端报 missing properties。开启后 relay 会把相邻残片缝合回完整调用。
+	FixFunctionCallFragments bool `json:"fixFunctionCallFragments,omitempty"`
 }
 
 // GeminiPreset 预设供应商
@@ -933,17 +938,18 @@ func (s *GeminiService) DuplicateProvider(sourceID string) (*GeminiProvider, err
 
 	// 3. 克隆配置（深拷贝）
 	cloned := GeminiProvider{
-		ID:                  newID,
-		Name:                source.Name + " (副本)",
-		WebsiteURL:          source.WebsiteURL,
-		APIKeyURL:           source.APIKeyURL,
-		BaseURL:             source.BaseURL,
-		APIKey:              source.APIKey,
-		Model:               source.Model,
-		Description:         source.Description,
-		Category:            source.Category,
-		PartnerPromotionKey: source.PartnerPromotionKey,
-		Enabled:             false, // 默认禁用，避免与源供应商冲突
+		ID:                     newID,
+		Name:                   source.Name + " (副本)",
+		WebsiteURL:             source.WebsiteURL,
+		APIKeyURL:              source.APIKeyURL,
+		BaseURL:                source.BaseURL,
+		APIKey:                 source.APIKey,
+		Model:                  source.Model,
+		Description:            source.Description,
+		Category:               source.Category,
+		PartnerPromotionKey:    source.PartnerPromotionKey,
+		Enabled:                false, // 默认禁用，避免与源供应商冲突
+		FixFunctionCallFragments: source.FixFunctionCallFragments,
 	}
 
 	// 4. 深拷贝 map（避免共享引用）
