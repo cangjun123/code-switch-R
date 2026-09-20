@@ -5,8 +5,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -262,6 +264,76 @@ func TestClassifyFragment(t *testing.T) {
 	}
 	if got := classifyGeminiFunctionCallEvent(terminal); got != stitchNotFragment {
 		t.Errorf("终止事件应判定为非残片，实际 %d", got)
+	}
+}
+
+// Captured from a6api gemini-3.8-flash: a no-argument call is split into a
+// named empty object and a nameless empty object. No returned tool was executed.
+func TestGeminiStreamNoArgumentCapture(t *testing.T) {
+	raw, err := os.ReadFile("testdata/gemini_no_argument.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, enabled := range []bool{false, true} {
+		for _, fragmented := range []bool{false, true} {
+			var body io.Reader = strings.NewReader(string(raw))
+			if fragmented {
+				var chunks []io.Reader
+				for _, b := range raw {
+					chunks = append(chunks, strings.NewReader(string([]byte{b})))
+				}
+				body = io.MultiReader(chunks...)
+			}
+			var stitcher *geminiFunctionCallStitcher
+			if enabled {
+				stitcher = &geminiFunctionCallStitcher{}
+			}
+			var output strings.Builder
+			log := &ReqeustLog{}
+			if err := streamGeminiResponseWithHook(body, &output, log, time.Now(), stitcher); err != nil {
+				t.Fatal(err)
+			}
+			if !enabled {
+				if output.String() != string(raw) {
+					t.Fatal("disabled repair changed the captured stream")
+				}
+				continue
+			}
+			fc := gjson.Get(geminiSSEEventData(output.String()), "candidates.0.content.parts.0.functionCall")
+			if strings.Count(output.String(), "data:") != 2 || fc.Get("name").String() != "get_status" || fc.Get("args").Raw != "{}" {
+				t.Fatalf("fragmented=%t: expected one complete no-argument call and terminal event:\n%s", fragmented, output.String())
+			}
+			if strings.Contains(output.String(), `"name":""`) || !strings.Contains(output.String(), `"finishReason":"STOP"`) || log.InputTokens != 20 {
+				t.Fatalf("invalid call, terminal event or usage after repair: %s", output.String())
+			}
+		}
+	}
+}
+
+func TestStitcherNoArgumentFallbacks(t *testing.T) {
+	a := mustEvent(map[string]any{"name": "get_status", "id": "status-1", "args": map[string]any{}}, nil, nil)
+	b := mustEvent(map[string]any{"name": "", "args": map[string]any{}}, nil, nil)
+	conflict := mustEvent(map[string]any{"name": "", "id": "status-2", "args": map[string]any{}}, nil, nil)
+	for _, stream := range []string{a, b + terminal, a + terminal, a + a + terminal, a + conflict + terminal} {
+		if got := runStitcher(stream, nil); got != stream {
+			t.Fatalf("unpaired or conflicting calls must pass through unchanged:\nwant: %s\ngot: %s", stream, got)
+		}
+	}
+	out := runStitcher(a+b+terminal, nil)
+	if id := gjson.Get(geminiSSEEventData(out), "candidates.0.content.parts.0.functionCall.id").String(); id != "status-1" {
+		t.Fatalf("merged no-argument call lost ID: %s", out)
+	}
+	// Missing, null, or non-object args are not a complete no-argument fragment.
+	for _, fc := range []map[string]any{
+		{"name": ""}, {"name": "", "args": nil}, {"name": "", "args": ""}, {"name": "", "args": []any{}},
+	} {
+		event := mustEvent(fc, nil, nil)
+		if got := classifyGeminiFunctionCallEvent(event); got != stitchNotFragment {
+			t.Fatalf("invalid args classified as a fragment: %s", event)
+		}
+		if stream := a + event + terminal; runStitcher(stream, nil) != stream {
+			t.Fatal("invalid args must pass through unchanged")
+		}
 	}
 }
 

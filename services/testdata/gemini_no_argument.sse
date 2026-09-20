@@ -1,0 +1,6 @@
+data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_status","args":{}}}]},"finishReason":null,"index":0,"safetyRatings":[]}],"usageMetadata":{"promptTokenCount":20,"toolUsePromptTokenCount":0,"candidatesTokenCount":0,"totalTokenCount":20,"thoughtsTokenCount":0,"cachedContentTokenCount":0,"promptTokensDetails":null,"toolUsePromptTokensDetails":null,"candidatesTokensDetails":null},"modelVersion":""}
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"","args":{}}}]},"finishReason":null,"index":0,"safetyRatings":[]}],"usageMetadata":{"promptTokenCount":20,"toolUsePromptTokenCount":0,"candidatesTokenCount":0,"totalTokenCount":20,"thoughtsTokenCount":0,"cachedContentTokenCount":0,"promptTokensDetails":null,"toolUsePromptTokensDetails":null,"candidatesTokensDetails":null},"modelVersion":""}
+
+data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP","index":0,"safetyRatings":[]}],"usageMetadata":{"promptTokenCount":20,"toolUsePromptTokenCount":0,"candidatesTokenCount":0,"totalTokenCount":20,"thoughtsTokenCount":0,"cachedContentTokenCount":0,"promptTokensDetails":null,"toolUsePromptTokensDetails":null,"candidatesTokensDetails":null},"modelVersion":""}
+
