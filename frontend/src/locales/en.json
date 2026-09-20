@@ -538,7 +538,9 @@
           "openAIEndpointMode": "OpenAI Route Capability",
           "codexMultiAgentNamespaceRewrite": "Multi-Agent Namespace Compatibility",
           "bridgeResponsesInstructions": "Responses Instructions Bridge",
-          "forceResponsesStoreFalse": "Responses store=false Bridge",
+          "fixFunctionCallFragments": "Stitch streamed tool-call fragments",
+        "fixFunctionCallFragmentsHint": "Some OpenAI-compatible gateways split a functionCall into name-only and args-only SSE fragments, making Antigravity CLI fail with missing properties. When enabled, the relay merges adjacent fragments back into one complete call.",
+        "forceResponsesStoreFalse": "Responses store=false Bridge",
           "dropResponsesFields": "Responses Drop Fields",
           "dropImageFields": "Images Drop Fields",
           "imageAsyncMode": "Async Image Mode",
@@ -1080,79 +1082,6 @@
         },
         "deleteTitle": "Delete MCP server",
         "deleteMessage": "Are you sure you want to delete {name}? This action cannot be undone."
-      }
-    },
-    "gemini": {
-      "hero": {
-        "eyebrow": "Gemini CLI Manager",
-        "title": "Manage Gemini Providers",
-        "lead": "Configure API providers for Gemini CLI, supporting Google Official and third-party relay services."
-      },
-      "controls": {
-        "back": "Back to home",
-        "settings": "Open settings",
-        "refresh": "Refresh",
-        "create": "Add provider"
-      },
-      "status": {
-        "enabled": "Enabled",
-        "disabled": "Not configured",
-        "active": "Active"
-      },
-      "auth": {
-        "oauth": "OAuth Authentication",
-        "apiKey": "API Key Authentication"
-      },
-      "category": {
-        "official": "Official",
-        "thirdParty": "Third Party",
-        "custom": "Custom"
-      },
-      "presets": {
-        "title": "Preset Providers"
-      },
-      "providers": {
-        "title": "Configured Providers"
-      },
-      "list": {
-        "loading": "Loading...",
-        "empty": "No providers configured. Click a preset card to add one.",
-        "edit": "Edit",
-        "delete": "Delete"
-      },
-      "actions": {
-        "switch": "Switch"
-      },
-      "form": {
-        "createTitle": "Add Gemini Provider",
-        "editTitle": "Edit Gemini Provider",
-        "deleteTitle": "Delete Provider",
-        "deleteMessage": "Are you sure you want to delete {name}? This action cannot be undone.",
-        "name": "Provider name",
-        "baseUrl": "API URL",
-        "apiKey": "API Key",
-        "model": "Default model",
-        "fixFunctionCallFragments": "Stitch streamed tool-call fragments",
-        "fixFunctionCallFragmentsHint": "Some OpenAI-compatible gateways split a functionCall into name-only and args-only SSE fragments, making Antigravity CLI fail with missing properties. When enabled, the relay merges adjacent fragments back into one complete call.",
-        "cancel": "Cancel",
-        "save": "Save",
-        "delete": "Delete"
-      },
-      "antigravity": {
-        "title": "Antigravity / Cloud Access Info",
-        "lead": "Configure the following variables on your local machine for the Antigravity CLI (agy). The desktop IDE does not support custom endpoints yet.",
-        "baseUrlLabel": "GOOGLE_GEMINI_BASE_URL",
-        "baseUrlHint": "Ends at /gemini, no /v1beta (the client appends it automatically)",
-        "apiKeyLabel": "GEMINI_API_KEY",
-        "apiKeyHint": "Use the Relay Key below (managed in Security settings)",
-        "relayKeyLabel": "Relay Key",
-        "copy": "Copy",
-        "copySnippet": "Copy config snippet",
-        "copied": "Copied",
-        "copyFailed": "Copy failed",
-        "loadFailed": "Failed to load access info",
-        "settingsHint": "agy also requires {\"modelProvider\": \"gemini\"} in ~/.gemini/antigravity-cli/settings.json",
-        "keyPlaceholder": "Click copy to reveal the key"
       }
     },
     "skill": {

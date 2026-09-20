@@ -156,6 +156,28 @@ ssh -L 8080:127.0.0.1:8080 -L 18100:127.0.0.1:18100 your-user@your-server
 
 ## Provider 配置要点
 
+### Gemini / Antigravity CLI（agy）
+
+供应商配置统一在首页的 **Gemini** 标签中管理。对会拆分流式工具调用的上游，
+打开供应商的 **编辑 → 协议与高级 → 修复流式工具调用残片** 并保存；新建供应商时也可以设置。
+此选项默认关闭，按供应商生效。
+
+在运行 agy 的终端配置可访问的 relay 地址和 Code Switch Relay Key：
+
+```bash
+export GOOGLE_GEMINI_BASE_URL="http://<服务器地址>:18100/gemini"
+export GEMINI_API_KEY="<Code Switch Relay Key>"
+```
+
+Base URL 到 `/gemini` 为止，客户端会追加 `/v1beta`。使用反向代理时替换为对应的公网地址。
+在 `~/.gemini/antigravity-cli/settings.json` 的已有配置中设置 `"modelProvider": "gemini"`，
+然后重新启动 agy。供应商需启用，请求的模型需受上游支持。
+
+前端页面入口以 `frontend/src/router/index.ts` 为准，供应商编辑弹窗为
+`frontend/src/components/Main/ProviderEditModal.vue`，数据读取和保存由同目录的 `Index.vue` 处理。
+
+### 上游地址与端点
+
 `API URL` 填上游 base URL，例如：
 
 ```text
