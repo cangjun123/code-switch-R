@@ -743,7 +743,6 @@
         "estimatedCost": "预估金额",
         "unpriced": "{count} 条未定价",
         "unpricedAll": "未定价",
-        "partialCost": "{amount}（部分）",
         "scope": "统计浏览器时区的今日已落库请求，按平台筛选；供应商筛选仅作用于下方日志列表。",
         "tokenScope": "总输入包含缓存读取与写入，总输出包含推理 Token；缓存和推理明细不再重复相加。",
         "costScope": "按当前配置单价逐条估算历史请求，并非上游实扣账单；未定价请求不计入金额。"

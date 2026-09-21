@@ -146,8 +146,7 @@
             <td>{{ item.platform || '—' }}</td>
             <td>{{ item.provider || '—' }}</td>
             <td class="relay-key-cell">
-              <div>{{ item.relay_key_name || item.relay_key_id || '—' }}</div>
-              <small v-if="item.relay_key_name && item.relay_key_id" class="metadata-secondary">{{ item.relay_key_id }}</small>
+              <div>{{ item.relay_key_name || '—' }}</div>
             </td>
             <td>{{ item.requested_model || item.model || '—' }}</td>
             <td class="response-model-cell">
@@ -1043,9 +1042,8 @@ const formatCurrency = (value?: number) => {
 }
 
 const formatEstimatedCost = (value: number | undefined, requests: number, unpriced = 0) => {
-  if (requests > 0 && unpriced >= requests) return t('components.logs.summary.unpricedAll')
-  const amount = formatCurrency(value)
-  return unpriced > 0 ? t('components.logs.summary.partialCost', { amount }) : amount
+  if (requests > 0 && unpriced >= requests) return '—'
+  return formatCurrency(value)
 }
 
 const startOfTodayLocal = () => {
@@ -1082,8 +1080,10 @@ const statsCards = computed(() => {
     {
       key: 'cost',
       label: t('components.logs.summary.estimatedCost'),
-      subValue: data?.unpriced_requests ? t('components.logs.summary.unpriced', { count: data.unpriced_requests }) : '',
-      hint: summaryDate ? t('components.logs.summary.todayScope', { date: summaryDate }) : '',
+      hint: [
+        summaryDate ? t('components.logs.summary.todayScope', { date: summaryDate }) : '',
+        data?.unpriced_requests ? t('components.logs.summary.unpriced', { count: data.unpriced_requests }) : '',
+      ].filter(Boolean).join(' · '),
       value: data ? formatEstimatedCost(data.cost_total, data.total_requests, data.unpriced_requests) : '—',
     },
   ]
