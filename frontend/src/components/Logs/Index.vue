@@ -122,7 +122,9 @@
             <th class="col-time">{{ t('components.logs.table.time') }}</th>
             <th class="col-platform">{{ t('components.logs.table.platform') }}</th>
             <th class="col-provider">{{ t('components.logs.table.provider') }}</th>
-            <th class="col-model">{{ t('components.logs.table.model') }}</th>
+            <th class="col-relay-key">{{ t('components.logs.table.relayKey') }}</th>
+            <th class="col-model">{{ t('components.logs.table.requestedModel') }}</th>
+            <th class="col-response-model">{{ t('components.logs.table.responseModel') }}</th>
             <th class="col-client-ip">{{ t('components.logs.table.clientIp') }}</th>
             <th class="col-http">{{ t('components.logs.table.httpCode') }}</th>
             <th class="col-stream">{{ t('components.logs.table.stream') }}</th>
@@ -142,7 +144,15 @@
             <td>{{ formatTime(item.created_at) }}</td>
             <td>{{ item.platform || '—' }}</td>
             <td>{{ item.provider || '—' }}</td>
-            <td>{{ item.model || '—' }}</td>
+            <td class="relay-key-cell">
+              <div>{{ item.relay_key_name || item.relay_key_id || '—' }}</div>
+              <small v-if="item.relay_key_name && item.relay_key_id" class="metadata-secondary">{{ item.relay_key_id }}</small>
+            </td>
+            <td>{{ item.requested_model || item.model || '—' }}</td>
+            <td class="response-model-cell">
+              <div>{{ item.response_model || t('components.logs.modelComparison.unknown') }}</div>
+              <small :class="['model-comparison', modelComparison(item)]">{{ t(`components.logs.modelComparison.${modelComparison(item)}`) }}</small>
+            </td>
             <td class="client-ip-cell">{{ item.client_ip || '—' }}</td>
             <td :class="['code', httpCodeClassForLog(item)]">
               <span v-if="isProcessingLog(item)" class="processing-tag">{{ t('components.logs.status.processing') }}</span>
@@ -176,7 +186,7 @@
             </td>
           </tr>
           <tr v-if="!pagedLogs.length && !loading">
-            <td colspan="10" class="empty">{{ t('components.logs.empty') }}</td>
+            <td colspan="12" class="empty">{{ t('components.logs.empty') }}</td>
           </tr>
         </tbody>
       </table>
@@ -258,8 +268,20 @@
             <dd>{{ logDetailModal.item.provider || '—' }}</dd>
           </div>
           <div class="log-detail-field">
-            <dt>{{ t('components.logs.table.model') }}</dt>
+            <dt>{{ t('components.logs.table.requestedModel') }}</dt>
+            <dd>{{ logDetailModal.item.requested_model || logDetailModal.item.model || '—' }}</dd>
+          </div>
+          <div class="log-detail-field">
+            <dt>{{ t('components.logs.table.upstreamModel') }}</dt>
             <dd>{{ logDetailModal.item.model || '—' }}</dd>
+          </div>
+          <div class="log-detail-field">
+            <dt>{{ t('components.logs.table.responseModel') }}</dt>
+            <dd>{{ logDetailModal.item.response_model || t('components.logs.modelComparison.unknown') }}</dd>
+          </div>
+          <div class="log-detail-field">
+            <dt>{{ t('components.logs.table.modelMatch') }}</dt>
+            <dd :class="['model-comparison', modelComparison(logDetailModal.item)]">{{ t(`components.logs.modelComparison.${modelComparison(logDetailModal.item)}`) }}</dd>
           </div>
           <div class="log-detail-field">
             <dt>{{ t('components.logs.table.clientIp') }}</dt>
@@ -283,8 +305,12 @@
             <dt>{{ t('components.logs.table.duration') }}</dt>
             <dd>{{ formatDuration(logDetailModal.item.duration_sec) }}</dd>
           </div>
+          <div class="log-detail-field">
+            <dt>{{ t('components.logs.table.relayKey') }}</dt>
+            <dd>{{ logDetailModal.item.relay_key_name || logDetailModal.item.relay_key_id || '—' }}</dd>
+          </div>
           <div class="log-detail-field" v-if="logDetailModal.item.relay_key_id">
-            <dt>Relay Key</dt>
+            <dt>{{ t('components.logs.table.relayKeyId') }}</dt>
             <dd class="mono-text">{{ logDetailModal.item.relay_key_id }}</dd>
           </div>
           <div class="log-detail-field" v-if="logDetailModal.item.is_degraded">
@@ -292,6 +318,7 @@
             <dd>{{ t('components.logs.detail.degradedYes') }} (resend: {{ logDetailModal.item.resend_count }})</dd>
           </div>
         </dl>
+        <p class="metadata-secondary">{{ t('components.logs.modelComparison.hint') }}</p>
         <div class="log-detail-section">
           <h3>{{ t('components.logs.table.tokens') }}</h3>
           <div class="log-detail-tokens">
@@ -893,6 +920,12 @@ const formatStream = (value?: boolean | number) => {
 const formatDuration = (value?: number) => {
   if (!value || Number.isNaN(value)) return '—'
   return `${value.toFixed(2)}s`
+}
+
+const modelComparison = (item: RequestLog) => {
+  const requested = item.requested_model || item.model
+  if (!requested || !item.response_model) return 'unavailable'
+  return requested === item.response_model ? 'same' : 'different'
 }
 
 const isProcessingLog = (item: RequestLog) => item.status === 'processing'
@@ -1546,5 +1579,18 @@ html.dark .client-ip-cell {
 }
 .col-first-token {
   width: 90px;
+}
+
+.metadata-secondary, .model-comparison.unavailable {
+  color: var(--mac-text-secondary);
+  font-size: 0.78rem;
+}
+.model-comparison.same { color: #16a34a; }
+.model-comparison.different { color: #d97706; }
+.model-comparison { font-size: 0.78rem; }
+.relay-key-cell, .response-model-cell { min-width: 150px; max-width: 320px; }
+.relay-key-cell div, .relay-key-cell small, .response-model-cell div {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 </style>

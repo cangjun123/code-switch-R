@@ -2381,6 +2381,10 @@ export class ReqeustLog {
      */
     "platform": string;
     "model": string;
+    "requested_model"?: string;
+    "response_model"?: string;
+    "relay_key_id"?: string;
+    "relay_key_name"?: string;
 
     /**
      * provider name

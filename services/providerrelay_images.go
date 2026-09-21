@@ -68,6 +68,7 @@ func (prs *ProviderRelayService) openAIImagesProxyHandler(endpoint string) gin.H
 		c.Request.Body = io.NopCloser(bytes.NewReader(body))
 
 		model := extractOpenAIImagesModel(c.Request, body)
+		c.Set(requestedModelContextKey, model)
 		streamRequested := openAIImagesStreamRequested(c.Request, body)
 		candidates, skipped, err := prs.openAIImageProviderCandidates(model)
 		if err != nil {
@@ -685,6 +686,7 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 		RelayKeyID: relayKeyIDFromContext(c),
 		ClientIP:   clientIPFromRequest(c.Request),
 	}
+	populateRequestLogIdentity(c, requestLog)
 	start := time.Now()
 	activeRequestID := defaultActiveRequestTracker.Start(requestLog, start)
 	requestLog.ActiveRequestID = activeRequestID
@@ -725,6 +727,7 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 		if err != nil {
 			return false, err
 		}
+		captureResponseModel(string(body), requestLog)
 		copyOpenAIImageResponseHeaders(c.Writer.Header(), resp.Header)
 		c.Data(resp.StatusCode, firstNonEmpty(resp.Header.Get("Content-Type"), "application/json"), body)
 		return true, nil
@@ -760,6 +763,7 @@ func (prs *ProviderRelayService) handleAsyncImageResponse(
 		return false, err
 	}
 
+	captureResponseModel(string(createBody), requestLog)
 	taskID := strings.TrimSpace(gjson.GetBytes(createBody, "id").String())
 	if taskID == "" {
 		// 兜底：上游已直接返回完整 OpenAI 响应（含 data 数组），原样透传
@@ -790,6 +794,7 @@ func (prs *ProviderRelayService) handleAsyncImageResponse(
 		return false, fmt.Errorf("异步生图任务未成功 (task=%s, state=%s)", taskID, state)
 	}
 
+	captureResponseModel(string(taskBody), requestLog)
 	openAIBody, err := buildOpenAIImageResponseFromTask(taskBody)
 	if err != nil {
 		return false, fmt.Errorf("异步生图结果转换失败 (task=%s): %w", taskID, err)
@@ -960,10 +965,13 @@ func streamOpenAIImageResponse(w http.ResponseWriter, resp *http.Response, force
 		flusher.Flush()
 	}
 
+	observer := newResponseModelObserver(requestLog)
+	defer observer.Finish()
 	buf := make([]byte, 32*1024)
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
+			observer.Write(buf[:n])
 			markFirstTokenDuration(requestLog, start)
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 				return fmt.Errorf("%w: %v", errClientAbort, writeErr)
@@ -1015,49 +1023,7 @@ func copyOpenAIImageResponseHeaders(dst, src http.Header) {
 }
 
 func (prs *ProviderRelayService) writeRelayRequestLog(requestLog *ReqeustLog, start time.Time) {
-	if requestLog == nil {
-		return
-	}
-	requestLog.DurationSec = time.Since(start).Seconds()
-	if requestLog.SkipLog {
-		return
-	}
-	if GlobalDBQueueLogs == nil {
-		fmt.Printf("⚠️  写入 request_log 失败: 队列未初始化\n")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	err := GlobalDBQueueLogs.ExecBatchCtx(ctx, `
-		INSERT INTO request_log (
-			platform, model, provider, relay_key_id, http_code,
-			input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-			reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
-			is_degraded, resend_count
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
-		requestLog.Platform,
-		requestLog.Model,
-		requestLog.Provider,
-		requestLog.RelayKeyID,
-		requestLog.HttpCode,
-		requestLog.InputTokens,
-		requestLog.OutputTokens,
-		requestLog.CacheCreateTokens,
-		requestLog.CacheReadTokens,
-		requestLog.ReasoningTokens,
-		boolToInt(requestLog.IsStream),
-		requestLog.DurationSec,
-		requestLog.FirstTokenDurationSec,
-		requestLog.ClientIP,
-		boolToInt(requestLog.IsDegraded),
-		requestLog.ResendCount,
-	)
-	if err != nil {
-		fmt.Printf("写入 request_log 失败: %v\n", err)
-	}
+	writeAttemptLog(requestLog, start)
 }
 
 func (prs *ProviderRelayService) appendConfiguredImageModelsToModelList(body []byte, kind string) []byte {

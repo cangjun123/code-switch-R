@@ -14,6 +14,9 @@ export type RequestLog = {
   id: number
   platform: LogPlatform | ''
   model: string
+  requested_model?: string
+  response_model?: string
+  relay_key_name?: string
   provider: string
   http_code: number
   input_tokens: number
