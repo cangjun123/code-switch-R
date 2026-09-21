@@ -742,7 +742,6 @@
         "estimatedCost": "Estimated cost",
         "unpriced": "{count} unpriced",
         "unpricedAll": "Unpriced",
-        "partialCost": "{amount} (partial)",
         "scope": "Today's persisted requests in your browser timezone, filtered by platform. The provider filter applies only to the log table.",
         "tokenScope": "Total input includes cache reads and writes; total output includes reasoning. Cache and reasoning details are not added again.",
         "costScope": "Historical requests estimated individually at current configured rates, not upstream billed charges. Unpriced requests are excluded."
