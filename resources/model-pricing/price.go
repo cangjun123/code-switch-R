@@ -172,7 +172,13 @@ func NewService() (*Service, error) {
 	}
 	pricing := make(map[string]*PricingEntry, len(raw))
 	normalized := make(map[string]string, len(raw))
-	for key, entry := range raw {
+	keys := make([]string, 0, len(raw))
+	for key := range raw {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		entry := raw[key]
 		item := entry
 		ensureCachePricing(&item)
 		pricing[key] = &item
@@ -180,6 +186,24 @@ func NewService() (*Service, error) {
 		if _, exists := normalized[norm]; !exists {
 			normalized[norm] = key
 		}
+	}
+	// Use the same supplemental price catalog as relay quota accounting.
+	known, err := KnownOpenAIModelPrices()
+	if err != nil {
+		return nil, err
+	}
+	for _, price := range known {
+		values := []string{price.Input, price.CachedInput, price.Output, price.ReasoningOutput}
+		rates := make([]float64, len(values))
+		for i, value := range values {
+			rate, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid price for %s: %w", price.Model, err)
+			}
+			rates[i] = rate / 1_000_000
+		}
+		pricing[price.Model] = &PricingEntry{InputCostPerToken: rates[0], CacheReadInputTokenCost: rates[1], OutputCostPerToken: rates[2], OutputCostPerReasoningToken: rates[3]}
+		normalized[normalizeName(price.Model)] = price.Model
 	}
 	return &Service{
 		pricingMap:   pricing,
@@ -196,25 +220,35 @@ func (s *Service) CalculateCost(model string, usage UsageSnapshot) CostBreakdown
 	}
 	entry, hasPricing := s.getPricing(model)
 	breakdown := CostBreakdown{HasPricing: hasPricing}
-	if entry == nil && !strings.Contains(strings.ToLower(model), "[1m]") {
+	if entry == nil {
 		return breakdown
 	}
 	longTier, useLong := s.longContextTier(model, usage)
 	if entry == nil {
 		entry = &PricingEntry{}
 	}
+	inputRate, outputRate := entry.InputCostPerToken, entry.OutputCostPerToken
+	totalInput := usage.InputTokens + usage.CacheReadTokens + usage.CacheCreateTokens
 	if useLong {
 		breakdown.IsLongContext = true
-		breakdown.InputCost = float64(usage.InputTokens) * longTier.Input
-		breakdown.OutputCost = float64(usage.OutputTokens) * longTier.Output
-	} else {
-		breakdown.InputCost = float64(usage.InputTokens) * entry.InputCostPerToken
-		breakdown.OutputCost = float64(usage.OutputTokens) * entry.OutputCostPerToken
+		inputRate, outputRate = longTier.Input, longTier.Output
+	} else if totalInput > 200000 {
+		if entry.InputCostPerTokenAbove200k > 0 {
+			inputRate = entry.InputCostPerTokenAbove200k
+		}
+		if entry.OutputCostPerTokenAbove200k > 0 {
+			outputRate = entry.OutputCostPerTokenAbove200k
+		}
+	} else if totalInput > 128000 && entry.InputCostPerTokenAbove128k > 0 {
+		inputRate = entry.InputCostPerTokenAbove128k
 	}
-	// Reasoning tokens cost (for Gemini thinking models, Codex o1/o3, etc.)
-	if usage.ReasoningTokens > 0 && entry.OutputCostPerReasoningToken > 0 {
-		breakdown.ReasoningCost = float64(usage.ReasoningTokens) * entry.OutputCostPerReasoningToken
+	breakdown.InputCost = float64(usage.InputTokens) * inputRate
+	breakdown.OutputCost = float64(usage.OutputTokens) * outputRate
+	reasoningRate := entry.OutputCostPerReasoningToken
+	if reasoningRate == 0 {
+		reasoningRate = outputRate
 	}
+	breakdown.ReasoningCost = float64(usage.ReasoningTokens) * reasoningRate
 	cacheCreateTokens, cache1hTokens := resolveCacheTokens(usage)
 	cache5mCost := float64(cacheCreateTokens) * entry.CacheCreationInputTokenCost
 	cache1hCost := float64(cache1hTokens) * s.getEphemeral1hPricing(model)
@@ -253,11 +287,14 @@ func (s *Service) getPricing(model string) (*PricingEntry, bool) {
 	if key, ok := s.normalized[normalizedTarget]; ok {
 		return s.pricingMap[key], true
 	}
-	for key, entry := range s.pricingMap {
-		normKey := normalizeName(key)
-		if strings.Contains(normKey, normalizedTarget) || strings.Contains(normalizedTarget, normKey) {
-			return entry, true
-		}
+	// Explicit namespaces and dated snapshots may alias a known model. Never
+	// choose an arbitrary substring match: that can price an unknown model as free.
+	if slash := strings.LastIndex(withoutProvider, "/"); slash >= 0 {
+		return s.getPricing(withoutProvider[slash+1:])
+	}
+	base := strings.TrimSuffix(withoutProvider, "[1m]")
+	if base != withoutProvider {
+		return s.getPricing(base)
 	}
 	return nil, false
 }

@@ -28,6 +28,7 @@
       </article>
     </section>
 
+    <p class="metadata-secondary">{{ t('components.logs.summary.scope') }}</p>
     <section class="logs-chart">
       <Line :data="chartData" :options="chartOptions" />
     </section>
@@ -212,6 +213,7 @@
       @close="closeCostDetailModal"
     >
       <div class="cost-detail-modal">
+        <p class="metadata-secondary">{{ t('components.logs.summary.costScope') }}</p>
         <p v-if="costDetailModal.loading" class="cost-detail-loading">
           {{ t('components.logs.loading') }}
         </p>
@@ -221,7 +223,7 @@
         <ul v-else class="cost-detail-list">
           <li v-for="item in costDetailModal.data" :key="item.provider" class="cost-detail-item">
             <span class="cost-detail-item__name">{{ item.provider }}</span>
-            <span class="cost-detail-item__value">{{ formatCurrency(item.cost_total) }}</span>
+            <span class="cost-detail-item__value">{{ formatEstimatedCost(item.cost_total, item.total_requests, item.unpriced_requests) }}<small v-if="item.unpriced_requests" class="metadata-secondary"> · {{ t('components.logs.summary.unpriced', { count: item.unpriced_requests }) }}</small></span>
           </li>
         </ul>
       </div>
@@ -234,6 +236,7 @@
       @close="closeTokenDetailModal"
     >
       <div class="token-detail-modal">
+        <p class="metadata-secondary">{{ t('components.logs.summary.tokenScope') }}</p>
         <div class="token-detail-list">
           <div class="token-detail-item">
             <span class="token-detail-item__name">{{ t('components.logs.tokenLabels.input') }}</span>
@@ -495,9 +498,9 @@ const openCostDetailModal = async () => {
 
   try {
     const stats = await fetchProviderDailyStats(filters.platform)
-    // 按金额降序排序，过滤掉金额为 0 的
+    // Keep unpriced and free requests visible in the estimate breakdown.
     costDetailModal.data = (stats ?? [])
-      .filter(item => item.cost_total > 0)
+      .filter(item => item.total_requests > 0)
       .sort((a, b) => b.cost_total - a.cost_total)
   } catch (error) {
     console.error('failed to load provider daily stats', error)
@@ -663,7 +666,7 @@ const chartData = computed(() => {
     datasets: [
       {
         label: t('components.logs.tokenLabels.cost'),
-        data: series.map((item) => Number(((item.total_cost ?? 0)).toFixed(4))),
+        data: series.map((item) => item.total_requests > 0 && item.unpriced_requests >= item.total_requests ? null : item.total_cost ?? 0),
         borderColor: '#f97316',
         backgroundColor: 'rgba(249, 115, 22, 0.2)',
         tension: 0.3,
@@ -844,6 +847,7 @@ const loadStats = async () => {
     const data = await fetchLogStats(filters.platform)
     stats.value = data ?? null
   } catch (error) {
+    stats.value = null
     console.error('failed to load log stats', error)
   }
 }
@@ -1016,18 +1020,19 @@ const formatLogTokenNumber = (item: RequestLog, value?: number) => {
 const formatCacheHitRate = (cacheRead?: number, inputTokens?: number) => {
   const read = cacheRead ?? 0
   const input = inputTokens ?? 0
-  const total = read + input
+  const total = input
 
-  if (total === 0) return '0%'
+  if (total <= 0) return '—'
 
-  const rate = (read / total) * 100
+  const rate = Math.min(1, read / total) * 100
   return `${rate.toFixed(1)}%`
 }
 
 const formatCurrency = (value?: number) => {
   if (value === undefined || value === null || Number.isNaN(value)) {
-    return '$0.0000'
+    return '—'
   }
+  if (value > 0 && value < 0.0001) return '<$0.0001'
   if (value >= 1) {
     return `$${value.toFixed(2)}`
   }
@@ -1035,6 +1040,12 @@ const formatCurrency = (value?: number) => {
     return `$${value.toFixed(3)}`
   }
   return `$${value.toFixed(4)}`
+}
+
+const formatEstimatedCost = (value: number | undefined, requests: number, unpriced = 0) => {
+  if (requests > 0 && unpriced >= requests) return t('components.logs.summary.unpricedAll')
+  const amount = formatCurrency(value)
+  return unpriced > 0 ? t('components.logs.summary.partialCost', { amount }) : amount
 }
 
 const startOfTodayLocal = () => {
@@ -1047,32 +1058,33 @@ const statsCards = computed(() => {
   const data = stats.value
   const summaryDate = summaryDateLabel.value
   const totalTokens =
-    (data?.input_tokens ?? 0) + (data?.output_tokens ?? 0) + (data?.reasoning_tokens ?? 0)
+    (data?.input_tokens ?? 0) + (data?.output_tokens ?? 0)
   return [
     {
       key: 'requests',
       label: t('components.logs.summary.total'),
-      hint: t('components.logs.summary.requests'),
+      hint: `${t('components.logs.summary.todayScope', { date: summaryDate })} · ${t('components.logs.summary.requests')}`,
       value: data ? formatNumber(data.total_requests) : '—',
     },
     {
       key: 'tokens',
       label: t('components.logs.summary.tokens'),
-      hint: t('components.logs.summary.tokenHint'),
+      hint: `${t('components.logs.summary.todayScope', { date: summaryDate })} · ${t('components.logs.summary.tokenHint')}`,
       value: data ? formatTokenNumber(totalTokens) : '—',
     },
     {
       key: 'cacheReads',
       label: t('components.logs.summary.cache'),
-      hint: t('components.logs.summary.cacheHint'),
+      hint: `${t('components.logs.summary.todayScope', { date: summaryDate })} · ${t('components.logs.summary.cacheHint')}`,
       value: data ? formatTokenNumber(data.cache_read_tokens) : '—',
       subValue: data ? formatCacheHitRate(data.cache_read_tokens, data.input_tokens) : '',
     },
     {
       key: 'cost',
-      label: t('components.logs.tokenLabels.cost'),
+      label: t('components.logs.summary.estimatedCost'),
+      subValue: data?.unpriced_requests ? t('components.logs.summary.unpriced', { count: data.unpriced_requests }) : '',
       hint: summaryDate ? t('components.logs.summary.todayScope', { date: summaryDate }) : '',
-      value: formatCurrency(data?.cost_total ?? 0),
+      value: data ? formatEstimatedCost(data.cost_total, data.total_requests, data.unpriced_requests) : '—',
     },
   ]
 })
