@@ -730,15 +730,22 @@
       },
       "summary": {
         "total": "Requests",
-        "requests": "Total requests",
+        "requests": "Forward attempts, including failures and retries",
         "errors": "Failures",
         "errorHint": "Count & failure rate",
         "tokens": "Tokens moved",
-        "tokenHint": "Input + output tokens",
+        "tokenHint": "Input + output, including cache and reasoning once",
         "cache": "Cache reads",
-        "cacheHint": "Read hits across responses",
+        "cacheHint": "Cache reads / total input",
         "costHint": "24h total cost",
-        "todayScope": "Today · {date}"
+        "todayScope": "Today · {date}",
+        "estimatedCost": "Estimated cost",
+        "unpriced": "{count} unpriced",
+        "unpricedAll": "Unpriced",
+        "partialCost": "{amount} (partial)",
+        "scope": "Today's persisted requests in your browser timezone, filtered by platform. The provider filter applies only to the log table.",
+        "tokenScope": "Total input includes cache reads and writes; total output includes reasoning. Cache and reasoning details are not added again.",
+        "costScope": "Historical requests estimated individually at current configured rates, not upstream billed charges. Unpriced requests are excluded."
       },
       "table": {
         "relayKey": "Calling key",

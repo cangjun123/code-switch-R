@@ -731,15 +731,22 @@
       },
       "summary": {
         "total": "请求量",
-        "requests": "累计请求次数",
+        "requests": "转发次数（含失败和重试）",
         "errors": "失败次数",
         "errorHint": "数量与失败率",
         "tokens": "Token 流量",
-        "tokenHint": "输入 + 输出 Tokens",
+        "tokenHint": "输入 + 输出，包含缓存与推理，不重复计数",
         "cache": "缓存命中",
-        "cacheHint": "响应中的读取命中数",
+        "cacheHint": "缓存读取 / 总输入",
         "costHint": "近 24 小时总花费",
-        "todayScope": "今日 · {date}"
+        "todayScope": "今日 · {date}",
+        "estimatedCost": "预估金额",
+        "unpriced": "{count} 条未定价",
+        "unpricedAll": "未定价",
+        "partialCost": "{amount}（部分）",
+        "scope": "统计浏览器时区的今日已落库请求，按平台筛选；供应商筛选仅作用于下方日志列表。",
+        "tokenScope": "总输入包含缓存读取与写入，总输出包含推理 Token；缓存和推理明细不再重复相加。",
+        "costScope": "按当前配置单价逐条估算历史请求，并非上游实扣账单；未定价请求不计入金额。"
       },
       "table": {
         "relayKey": "调用 Key",

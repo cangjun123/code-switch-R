@@ -62,6 +62,7 @@ export const fetchLogProviders = async (platform: LogPlatform | '' = ''): Promis
 }
 
 export type LogStatsSeries = {
+  unpriced_requests: number
   day: string
   total_requests: number
   input_tokens: number
@@ -73,6 +74,7 @@ export type LogStatsSeries = {
 }
 
 export type LogStats = {
+  unpriced_requests: number
   total_requests: number
   input_tokens: number
   output_tokens: number
@@ -96,6 +98,7 @@ export const fetchCostSince = async (start: string, platform: LogPlatform | '' =
 }
 
 export type ProviderDailyStat = {
+  unpriced_requests: number
   provider: string
   total_requests: number
   successful_requests: number
