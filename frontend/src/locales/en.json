@@ -741,6 +741,12 @@
         "todayScope": "Today · {date}"
       },
       "table": {
+        "relayKey": "Calling key",
+        "relayKeyId": "Key ID",
+        "requestedModel": "Requested model",
+        "upstreamModel": "Upstream request model (mapped)",
+        "responseModel": "Upstream response model",
+        "modelMatch": "Model name comparison",
         "time": "Time",
         "platform": "Platform",
         "provider": "Provider",
@@ -752,6 +758,13 @@
         "duration": "Duration",
         "cost": "Cost",
         "tokens": "Tokens"
+      },
+      "modelComparison": {
+        "same": "Match",
+        "different": "Mismatch",
+        "unknown": "Unavailable",
+        "unavailable": "Cannot compare",
+        "hint": "Exact model name comparison; aliases, version suffixes or model mappings may cause differences. The model is reported by the upstream and does not verify the model actually used. Historical logs or responses without model metadata show Unavailable."
       },
       "tokenLabels": {
         "input": "Input",

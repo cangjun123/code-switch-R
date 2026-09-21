@@ -742,6 +742,12 @@
         "todayScope": "今日 · {date}"
       },
       "table": {
+        "relayKey": "调用 Key",
+        "relayKeyId": "Key ID",
+        "requestedModel": "请求模型",
+        "upstreamModel": "上游请求模型（映射后）",
+        "responseModel": "上游返回模型",
+        "modelMatch": "模型名称对比",
         "time": "时间",
         "platform": "平台",
         "provider": "供应商",
@@ -753,6 +759,13 @@
         "duration": "耗时",
         "cost": "金额",
         "tokens": "Token 汇总"
+      },
+      "modelComparison": {
+        "same": "一致",
+        "different": "不一致",
+        "unknown": "未获取",
+        "unavailable": "无法比较",
+        "hint": "按模型名称精确比较；别名、版本后缀或模型映射可能导致不一致。返回模型来自上游声明，不能据此验证实际运行的模型。历史日志或上游未提供模型时显示未获取。"
       },
       "tokenLabels": {
         "input": "输入",

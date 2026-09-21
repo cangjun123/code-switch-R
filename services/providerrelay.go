@@ -633,6 +633,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 			bodyBytes = ensureChatCompletionUsageOption(bodyBytes)
 		}
 		requestedModel := gjson.GetBytes(bodyBytes, "model").String()
+		c.Set(requestedModelContextKey, requestedModel)
 		trace.setModel(requestedModel)
 		clientHeaders := cloneHeaders(c.Request.Header)
 		codexSessionRequest := prs.attachCodexSessionRequest(c, kind, endpoint, bodyBytes, clientHeaders)
@@ -1316,57 +1317,14 @@ func (prs *ProviderRelayService) forwardRequest(
 		RelayKeyID: relayKeyIDFromContext(c),
 		ClientIP:   clientIPFromRequest(c.Request),
 	}
+	populateRequestLogIdentity(c, requestLog)
 	requestLog.attachCodexTrace(codexTraceFromContext(c.Request.Context()))
 	start := time.Now()
 	activeRequestID := defaultActiveRequestTracker.Start(requestLog, start)
 	requestLog.ActiveRequestID = activeRequestID
 	defer func() {
-		requestLog.DurationSec = time.Since(start).Seconds()
 		defer defaultActiveRequestTracker.Finish(activeRequestID)
-		if requestLog.SkipLog {
-			return
-		}
-
-		// 【修复】判空保护：避免队列未初始化时 panic
-		if GlobalDBQueueLogs == nil {
-			fmt.Printf("⚠️  写入 request_log 失败: 队列未初始化\n")
-			return
-		}
-
-		// 使用批量队列写入 request_log（高频同构操作，批量提交）
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		err := GlobalDBQueueLogs.ExecBatchCtx(ctx, `
-		 INSERT INTO request_log (
-				platform, model, provider, relay_key_id, http_code,
-				input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-				reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
-				is_degraded, resend_count, error_message
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`,
-			requestLog.Platform,
-			requestLog.Model,
-			requestLog.Provider,
-			requestLog.RelayKeyID,
-			requestLog.HttpCode,
-			requestLog.InputTokens,
-			requestLog.OutputTokens,
-			requestLog.CacheCreateTokens,
-			requestLog.CacheReadTokens,
-			requestLog.ReasoningTokens,
-			boolToInt(requestLog.IsStream),
-			requestLog.DurationSec,
-			requestLog.FirstTokenDurationSec,
-			requestLog.ClientIP,
-			boolToInt(requestLog.IsDegraded),
-			requestLog.ResendCount,
-			requestLog.ErrorMessage,
-		)
-
-		if err != nil {
-			fmt.Printf("写入 request_log 失败: %v\n", err)
-		}
+		writeAttemptLog(requestLog, start)
 	}()
 
 	if hasWebSearchFallback {
@@ -3073,7 +3031,8 @@ func writeTransformedJSONResponse(w http.ResponseWriter, resp *xrequest.Response
 		return err
 	}
 
-	ClaudeCodeParseTokenUsageFromResponse(string(transformedBody), requestLog)
+	parseClaudeTokenUsage(string(transformedBody), requestLog)
+	captureResponseModel(string(resp.Bytes()), requestLog)
 
 	for key, values := range resp.Headers() {
 		lowerKey := strings.ToLower(key)
@@ -3366,6 +3325,9 @@ func ensureRequestLogTableWithDB(db *sql.DB) error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		platform TEXT,
 		model TEXT,
+		requested_model TEXT,
+		response_model TEXT,
+		relay_key_name TEXT,
 		provider TEXT,
 		relay_key_id TEXT,
 		http_code INTEGER,
@@ -3393,6 +3355,9 @@ func ensureRequestLogTableWithDB(db *sql.DB) error {
 	}{
 		{name: "platform", definition: "TEXT"},
 		{name: "model", definition: "TEXT"},
+		{name: "requested_model", definition: "TEXT"},
+		{name: "response_model", definition: "TEXT"},
+		{name: "relay_key_name", definition: "TEXT"},
 		{name: "provider", definition: "TEXT"},
 		{name: "relay_key_id", definition: "TEXT"},
 		{name: "http_code", definition: "INTEGER"},
@@ -3445,6 +3410,7 @@ func protocolConvertHook(converter SSEProtocolConverter, kind string, usage *Req
 	return func(data []byte) (bool, []byte) {
 		// xrequest 逐行回调，直接传给 ProcessLine
 		line := string(data)
+		parseEventPayload(line, captureResponseModel, usage)
 		converted := converter.ProcessLine(line)
 
 		// 如果没有输出，返回 flush=false 丢弃该行（避免写出空行）
@@ -3453,7 +3419,7 @@ func protocolConvertHook(converter SSEProtocolConverter, kind string, usage *Req
 		}
 
 		// 从转换后的 Anthropic SSE 中提取 usage（使用现有解析器）
-		parseEventPayload(converted, ClaudeCodeParseTokenUsageFromResponse, usage)
+		parseEventPayload(converted, parseClaudeTokenUsage, usage)
 
 		// 返回转换后的数据
 		return true, []byte(converted)
@@ -3563,7 +3529,10 @@ func parseEventPayload(payload string, parser func(string, *ReqeustLog), usage *
 type ReqeustLog struct {
 	ID                    int64   `json:"id"`
 	Platform              string  `json:"platform"` // claude、codex 或 gemini
-	Model                 string  `json:"model"`
+	Model                 string  `json:"model"`    // Model sent upstream (after mapping).
+	RequestedModel        string  `json:"requested_model,omitempty"`
+	ResponseModel         string  `json:"response_model,omitempty"`
+	RelayKeyName          string  `json:"relay_key_name,omitempty"`
 	Provider              string  `json:"provider"` // provider name
 	RelayKeyID            string  `json:"relay_key_id,omitempty"`
 	HttpCode              int     `json:"http_code"`
@@ -3581,19 +3550,19 @@ type ReqeustLog struct {
 	ResendCount           int     `json:"resend_count"`
 	// ErrorMessage 失败请求的错误摘要（上游响应体或传输错误），最长 512 字节，
 	// 供日志页点击行查看详情定位问题；成功请求为空。
-	ErrorMessage string `json:"error_message,omitempty"`
-	InputCost             float64 `json:"input_cost"`
-	OutputCost            float64 `json:"output_cost"`
-	ReasoningCost         float64 `json:"reasoning_cost"`
-	CacheCreateCost       float64 `json:"cache_create_cost"`
-	CacheReadCost         float64 `json:"cache_read_cost"`
-	Ephemeral5mCost       float64 `json:"ephemeral_5m_cost"`
-	Ephemeral1hCost       float64 `json:"ephemeral_1h_cost"`
-	TotalCost             float64 `json:"total_cost"`
-	HasPricing            bool    `json:"has_pricing"`
-	Status                string  `json:"status,omitempty"`
-	ActiveRequestID       int64   `json:"-"`
-	SkipLog               bool    `json:"-"`
+	ErrorMessage    string  `json:"error_message,omitempty"`
+	InputCost       float64 `json:"input_cost"`
+	OutputCost      float64 `json:"output_cost"`
+	ReasoningCost   float64 `json:"reasoning_cost"`
+	CacheCreateCost float64 `json:"cache_create_cost"`
+	CacheReadCost   float64 `json:"cache_read_cost"`
+	Ephemeral5mCost float64 `json:"ephemeral_5m_cost"`
+	Ephemeral1hCost float64 `json:"ephemeral_1h_cost"`
+	TotalCost       float64 `json:"total_cost"`
+	HasPricing      bool    `json:"has_pricing"`
+	Status          string  `json:"status,omitempty"`
+	ActiveRequestID int64   `json:"-"`
+	SkipLog         bool    `json:"-"`
 
 	// trace 指向本次请求的链路追踪上下文（不参与 DB/JSON 序列化），
 	// 供 markFirstTokenDuration 记录首个写给客户端的字节时刻。
@@ -3608,6 +3577,17 @@ func (usage *ReqeustLog) attachCodexTrace(trace *codexTrace) {
 
 // claude code usage parser
 func ClaudeCodeParseTokenUsageFromResponse(data string, usage *ReqeustLog) {
+	if usage == nil {
+		return
+	}
+	captureResponseModel(data, usage)
+	parseClaudeTokenUsage(data, usage)
+}
+
+func parseClaudeTokenUsage(data string, usage *ReqeustLog) {
+	if usage == nil {
+		return
+	}
 	usage.InputTokens += int(gjson.Get(data, "message.usage.input_tokens").Int())
 	usage.OutputTokens += int(gjson.Get(data, "message.usage.output_tokens").Int())
 	usage.CacheCreateTokens += int(gjson.Get(data, "message.usage.cache_creation_input_tokens").Int())
@@ -3629,6 +3609,7 @@ func CodexParseTokenUsageFromResponse(data string, usage *ReqeustLog) {
 	if usage == nil {
 		return
 	}
+	captureResponseModel(data, usage)
 	// Responses streams may emit cumulative usage more than once.  Always keep
 	// the largest observed value so the final event is counted exactly once.
 	usageCandidates := []string{"response.usage", "usage"}
@@ -3668,6 +3649,10 @@ func setMaxInt(dst *int, value int) {
 // gemini usage parser (流式响应专用)
 // Gemini SSE 流中每个 chunk 都会携带完整的 usageMetadata，需取最大值而非累加
 func GeminiParseTokenUsageFromResponse(data string, usage *ReqeustLog) {
+	if usage == nil {
+		return
+	}
+	captureResponseModel(data, usage)
 	usageResult := gjson.Get(data, "usageMetadata")
 	if !usageResult.Exists() {
 		return
@@ -3831,9 +3816,9 @@ type geminiFunctionCallStitcher struct {
 type stitchFragmentResult int
 
 const (
-	stitchNotFragment  stitchFragmentResult = iota // 非残片形态（完整 fc / 文本 / 终止事件等）
-	stitchFragmentA                                // 残片A：name 非空 + args 空
-	stitchFragmentB                                // 残片B：name 空 + args 对象（无参数工具可为 {}）
+	stitchNotFragment stitchFragmentResult = iota // 非残片形态（完整 fc / 文本 / 终止事件等）
+	stitchFragmentA                               // 残片A：name 非空 + args 空
+	stitchFragmentB                               // 残片B：name 空 + args 对象（无参数工具可为 {}）
 )
 
 // classifyGeminiFunctionCallEvent 判定事件是否为残片。
@@ -4015,7 +4000,7 @@ func parseGeminiSSEWithBuffer(chunk string, lineBuf *strings.Builder, requestLog
 }
 
 // parseGeminiSSELine 解析单个 SSE 事件提取 usageMetadata
-// 【优化】只在包含 usageMetadata 时才调用 gjson 解析
+// 同时提取上游 modelVersion，即使事件未携带 usageMetadata。
 func parseGeminiSSELine(event string, requestLog *ReqeustLog) {
 	lines := strings.Split(event, "\n")
 	for _, line := range lines {
@@ -4027,8 +4012,8 @@ func parseGeminiSSELine(event string, requestLog *ReqeustLog) {
 		if data == "[DONE]" || data == "" {
 			continue
 		}
-		// 【优化】快速检查是否包含 usageMetadata，避免无效解析
-		if !strings.Contains(data, "usageMetadata") {
+		// Skip events without usage or model metadata.
+		if !strings.Contains(data, "usageMetadata") && !strings.Contains(data, "modelVersion") {
 			continue
 		}
 		GeminiParseTokenUsageFromResponse(data, requestLog)
@@ -4059,6 +4044,7 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 		// 获取完整路径（例如 /v1beta/models/gemini-2.5-pro:generateContent）
 		fullPath := c.Param("any")
 		endpoint := apiVersion + fullPath
+		c.Set(requestedModelContextKey, extractGeminiModelFromEndpoint(endpoint))
 
 		// 保留查询参数（如 ?alt=sse），但剔除客户端的 key=，避免 relay key 泄漏给上游
 		query := c.Request.URL.RawQuery
@@ -4141,33 +4127,14 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 			ClientIP:     clientIPFromRequest(c.Request),
 			RelayKeyID:   relayKeyIDFromContext(c),
 		}
+		populateRequestLogIdentity(c, requestLog)
 		start := time.Now()
 		activeRequestID := defaultActiveRequestTracker.Start(requestLog, start)
 		requestLog.ActiveRequestID = activeRequestID
 
-		// 保存日志的 defer
 		defer func() {
-			requestLog.DurationSec = time.Since(start).Seconds()
 			defer defaultActiveRequestTracker.Finish(activeRequestID)
-			if GlobalDBQueueLogs == nil {
-				return
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = GlobalDBQueueLogs.ExecBatchCtx(ctx, `
-				INSERT INTO request_log (
-					platform, model, provider, relay_key_id, http_code,
-					input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-					reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
-					is_degraded, resend_count, error_message
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`,
-				requestLog.Platform, requestLog.Model, requestLog.Provider, requestLog.RelayKeyID, requestLog.HttpCode,
-				requestLog.InputTokens, requestLog.OutputTokens, requestLog.CacheCreateTokens,
-				requestLog.CacheReadTokens, requestLog.ReasoningTokens,
-				boolToInt(requestLog.IsStream), requestLog.DurationSec, requestLog.FirstTokenDurationSec, requestLog.ClientIP,
-				boolToInt(requestLog.IsDegraded), requestLog.ResendCount, requestLog.ErrorMessage,
-			)
+			writeAttemptLog(requestLog, start)
 		}()
 
 		// 获取拉黑功能开关状态
@@ -4397,6 +4364,7 @@ func (prs *ProviderRelayService) forwardGeminiRequest(
 	requestLog.Provider = provider.Name
 	// 【修复】每次尝试开始前重置 HttpCode，避免重试时沿用上一次的状态码
 	requestLog.HttpCode = 0
+	requestLog.ResponseModel = ""
 	// 优先从 endpoint 提取模型名（如 gemini-2.5-pro），否则回退到 provider.Model
 	if extractedModel := extractGeminiModelFromEndpoint(endpoint); extractedModel != "" {
 		requestLog.Model = extractedModel
@@ -4515,6 +4483,7 @@ func parseGeminiUsageMetadata(body []byte, reqLog *ReqeustLog) {
 	if len(body) == 0 || reqLog == nil {
 		return
 	}
+	captureResponseModel(string(body), reqLog)
 	usage := gjson.GetBytes(body, "usageMetadata")
 	if !usage.Exists() {
 		return
@@ -4554,33 +4523,14 @@ func (prs *ProviderRelayService) geminiModelsHandler(apiVersion string) gin.Hand
 			RelayKeyID:   relayKeyIDFromContext(c),
 		}
 		requestLog.Model = "models"
+		populateRequestLogIdentity(c, requestLog)
 		start := time.Now()
 		activeRequestID := defaultActiveRequestTracker.Start(requestLog, start)
 		requestLog.ActiveRequestID = activeRequestID
 
-		// 保存日志的 defer
 		defer func() {
-			requestLog.DurationSec = time.Since(start).Seconds()
 			defer defaultActiveRequestTracker.Finish(activeRequestID)
-			if GlobalDBQueueLogs == nil {
-				return
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = GlobalDBQueueLogs.ExecBatchCtx(ctx, `
-				INSERT INTO request_log (
-					platform, model, provider, relay_key_id, http_code,
-					input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-					reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
-					is_degraded, resend_count, error_message
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`,
-				requestLog.Platform, requestLog.Model, requestLog.Provider, requestLog.RelayKeyID, requestLog.HttpCode,
-				requestLog.InputTokens, requestLog.OutputTokens, requestLog.CacheCreateTokens,
-				requestLog.CacheReadTokens, requestLog.ReasoningTokens,
-				boolToInt(requestLog.IsStream), requestLog.DurationSec, requestLog.FirstTokenDurationSec, requestLog.ClientIP,
-				boolToInt(requestLog.IsDegraded), requestLog.ResendCount, requestLog.ErrorMessage,
-			)
+			writeAttemptLog(requestLog, start)
 		}()
 
 		// 顺序尝试，首个成功即返回
@@ -4634,6 +4584,7 @@ func (prs *ProviderRelayService) customCliProxyHandler() gin.HandlerFunc {
 
 		isStream := gjson.GetBytes(bodyBytes, "stream").Bool()
 		requestedModel := gjson.GetBytes(bodyBytes, "model").String()
+		c.Set(requestedModelContextKey, requestedModel)
 
 		if requestedModel == "" {
 			fmt.Printf("[CustomCLI][WARN] 请求未指定模型名，无法执行模型智能降级\n")
@@ -5336,6 +5287,7 @@ func (prs *ProviderRelayService) forwardCodexWithDegradationRetry(
 			ClientIP:    clientIP,
 			ResendCount: attempt,
 		}
+		populateRequestLogIdentity(c, attemptLog)
 		attemptLog.attachCodexTrace(codexTraceFromContext(clientCtx))
 		if attempt == 0 {
 			activeID = defaultActiveRequestTracker.Start(attemptLog, attemptStart)
@@ -5692,13 +5644,14 @@ func writeAttemptLog(log *ReqeustLog, start time.Time) {
 			platform, model, provider, relay_key_id, http_code,
 			input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
 			reasoning_tokens, is_stream, duration_sec, first_token_duration_sec, client_ip,
-			is_degraded, resend_count, error_message
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			is_degraded, resend_count, error_message, requested_model, response_model, relay_key_name
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		log.Platform, log.Model, log.Provider, log.RelayKeyID, log.HttpCode,
 		log.InputTokens, log.OutputTokens, log.CacheCreateTokens, log.CacheReadTokens,
 		log.ReasoningTokens, boolToInt(log.IsStream), log.DurationSec, log.FirstTokenDurationSec, log.ClientIP,
 		boolToInt(log.IsDegraded), log.ResendCount, log.ErrorMessage,
+		log.RequestedModel, log.ResponseModel, log.RelayKeyName,
 	)
 	if err != nil {
 		fmt.Printf("写入 request_log 失败: %v\n", err)
