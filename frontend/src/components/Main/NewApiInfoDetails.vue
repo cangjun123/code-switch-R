@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseModal from '../common/BaseModal.vue'
-import { newAPIAmount, newAPIExpiry, newAPIStates, infoNumber, infoTime, infoRate, type ProviderInfo } from '../../services/providerInfo'
+import { newAPIAccountReady, newAPIAccountAmount, newAPIAmount, newAPIExpiry, newAPIStates, infoNumber, infoTime, infoRate, type ProviderInfo } from '../../services/providerInfo'
 const props = defineProps<{ open: boolean; name: string; data: ProviderInfo | null; busy: boolean; failed: boolean }>()
 defineEmits<{ (e: 'close'): void; (e: 'refresh'): void }>()
 const { t } = useI18n()
@@ -28,6 +28,13 @@ const price = (value?: number) => value == null ? '—' : value === 0 ? t('upstr
       <div v-if="data" class="section-states" aria-live="polite">
         <p v-for="part in newAPIStates(data)" :key="part.label"><strong>{{ t(`upstreamInfo.${part.label}`) }}</strong> · {{ t(`upstreamInfo.status.${part.state.status}`) }}<span v-if="part.state.stale"> · {{ t('upstreamInfo.stale') }}</span><span v-if="part.state.updatedAt"> · {{ infoTime(part.state.updatedAt) }}</span><span v-if="part.state.retryAt"> · {{ t('upstreamInfo.retryAt') }} {{ infoTime(part.state.retryAt) }}</span></p>
       </div>
+      <section v-if="newAPIAccountReady(data)" class="quota account-quota">
+        <span>{{ t('upstreamInfo.wallet') }}</span>
+        <strong class="balance">{{ newAPIAccountAmount(data, t('upstreamInfo.rawUnit')) }}</strong>
+        <small>{{ t('upstreamInfo.rawRemaining') }}: {{ infoNumber(data?.account?.quota) }}</small>
+        <p class="hint">{{ t('upstreamInfo.accountScope') }}</p>
+      </section>
+      <p v-else-if="data?.accountState" class="hint">{{ t('upstreamInfo.accountFallback') }}</p>
       <section v-if="key" class="quota">
         <span>{{ t('upstreamInfo.keyQuota') }}</span>
         <strong class="balance">{{ key.unlimited_quota ? t('upstreamInfo.unlimited') : newAPIAmount(data, 'remaining', t('upstreamInfo.rawUnit')) }}</strong>

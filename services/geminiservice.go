@@ -655,7 +655,11 @@ func (s *GeminiService) saveProviders() error {
 	}
 
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	// Restrict a leftover temporary file before writing account credentials.
+	if err := os.Chmod(tmpPath, 0600); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
 		return err
 	}
 	return os.Rename(tmpPath, path)

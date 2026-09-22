@@ -19,8 +19,10 @@ import (
 
 // UpstreamInfoConfig is independent of the relay protocol and its accounting.
 type UpstreamInfoConfig struct {
-	Type    string `json:"type"`
-	BaseURL string `json:"baseUrl,omitempty"`
+	Type          string `json:"type"`
+	BaseURL       string `json:"baseUrl,omitempty"`
+	AccountToken  string `json:"accountToken,omitempty"`
+	AccountUserID string `json:"accountUserId,omitempty"`
 }
 type ProviderInfoRef struct {
 	Kind string `json:"kind"`
@@ -111,18 +113,20 @@ type ProviderInfoSection struct {
 	Stale     bool   `json:"stale"`
 }
 type ProviderInfoResult struct {
-	Platform      string              `json:"platform"`
-	Key           *NewAPIKey          `json:"key,omitempty"`
-	Site          *NewAPISite         `json:"site,omitempty"`
-	Pricing       *NewAPIPricing      `json:"pricing,omitempty"`
-	SiteState     ProviderInfoSection `json:"siteState"`
-	PricingState  ProviderInfoSection `json:"pricingState"`
-	Usage         *Sub2Usage          `json:"usage,omitempty"`
-	Billing       *Sub2Billing        `json:"billing,omitempty"`
-	UsageState    ProviderInfoSection `json:"usageState"`
-	BillingState  ProviderInfoSection `json:"billingState"`
-	DailyTimezone string              `json:"dailyTimezone"`
-	ModelPeriod   string              `json:"modelPeriod"`
+	Account       *NewAPIAccount       `json:"account,omitempty"`
+	AccountState  *ProviderInfoSection `json:"accountState,omitempty"`
+	Platform      string               `json:"platform"`
+	Key           *NewAPIKey           `json:"key,omitempty"`
+	Site          *NewAPISite          `json:"site,omitempty"`
+	Pricing       *NewAPIPricing       `json:"pricing,omitempty"`
+	SiteState     ProviderInfoSection  `json:"siteState"`
+	PricingState  ProviderInfoSection  `json:"pricingState"`
+	Usage         *Sub2Usage           `json:"usage,omitempty"`
+	Billing       *Sub2Billing         `json:"billing,omitempty"`
+	UsageState    ProviderInfoSection  `json:"usageState"`
+	BillingState  ProviderInfoSection  `json:"billingState"`
+	DailyTimezone string               `json:"dailyTimezone"`
+	ModelPeriod   string               `json:"modelPeriod"`
 }
 type providerInfoCache struct {
 	data      json.RawMessage
@@ -204,7 +208,7 @@ func (s *ProviderInfoService) query(draft ProviderInfoDraft, ref string, force b
 		return nil, err
 	}
 	key := strings.TrimSpace(draft.APIKey)
-	if key == "" || strings.ContainsAny(key, "\r\n") {
+	if (key == "" && !(draft.UpstreamInfo.Type == "newapi" && strings.TrimSpace(draft.UpstreamInfo.AccountToken) != "")) || strings.ContainsAny(key, "\r\n") {
 		return nil, errors.New("missing_key")
 	}
 	if tz == "" {
@@ -214,11 +218,11 @@ func (s *ProviderInfoService) query(draft ProviderInfoDraft, ref string, force b
 		return nil, errors.New("invalid_timezone")
 	}
 	// Hash the complete identity: no plaintext credentials in cache keys or errors.
-	identity, _ := json.Marshal([]string{ref, draft.UpstreamInfo.Type, base, key, tz})
+	identity, _ := json.Marshal([]string{ref, draft.UpstreamInfo.Type, base, key, tz, strings.TrimSpace(draft.UpstreamInfo.AccountToken), strings.TrimSpace(draft.UpstreamInfo.AccountUserID)})
 	sum := sha256.Sum256(identity)
 	cacheKey := hex.EncodeToString(sum[:])
 	if draft.UpstreamInfo.Type == "newapi" {
-		return s.queryNewAPI(cacheKey, base, key, force), nil
+		return s.queryNewAPI(cacheKey, base, key, force, draft.UpstreamInfo), nil
 	}
 	result := &ProviderInfoResult{Platform: "sub2api", DailyTimezone: tz, ModelPeriod: "upstream_last_30_days"}
 	var usage, billing providerInfoCache
@@ -226,11 +230,11 @@ func (s *ProviderInfoService) query(draft ProviderInfoDraft, ref string, force b
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		usage = s.section(cacheKey+":usage", base+"/v1/usage?days=30&timezone="+url.QueryEscape(tz), key, force, "usage")
+		usage = s.section(cacheKey+":usage", base+"/v1/usage?days=30&timezone="+url.QueryEscape(tz), key, force, "usage", "")
 	}()
 	go func() {
 		defer wg.Done()
-		billing = s.section(cacheKey+":billing", base+"/v1/sub2api/billing", key, force, "billing")
+		billing = s.section(cacheKey+":billing", base+"/v1/sub2api/billing", key, force, "billing", "")
 	}()
 	wg.Wait()
 	result.UsageState = usage.state
@@ -243,7 +247,7 @@ func (s *ProviderInfoService) query(draft ProviderInfoDraft, ref string, force b
 	}
 	return result, nil
 }
-func (s *ProviderInfoService) section(cacheKey, endpoint, key string, force bool, kind string) providerInfoCache {
+func (s *ProviderInfoService) section(cacheKey, endpoint, key string, force bool, kind, userID string) providerInfoCache {
 	s.mu.Lock()
 	cached, ok := s.cache[cacheKey]
 	s.mu.Unlock()
@@ -258,7 +262,7 @@ func (s *ProviderInfoService) section(cacheKey, endpoint, key string, force bool
 		if ok && (time.Now().Before(previous.retry) || (!force && time.Now().Before(previous.expires)) || previous.attempted.After(cached.attempted)) {
 			return previous, nil
 		}
-		next := s.fetch(endpoint, key, kind)
+		next := s.fetch(endpoint, key, kind, userID)
 		now := time.Now()
 		next.attempted = now
 		ttl := 5 * time.Minute
@@ -266,7 +270,8 @@ func (s *ProviderInfoService) section(cacheKey, endpoint, key string, force bool
 			ttl = 30 * time.Minute
 		}
 		next.expires = now.Add(ttl)
-		if next.state.Status != "ready" {
+		// Wallet lookup failures fall back to key quota instead of retaining an old balance.
+		if next.state.Status != "ready" && kind != "newapi_account" {
 			next.data = previous.data
 			next.state.UpdatedAt = previous.state.UpdatedAt
 			next.state.Stale = len(next.data) > 0
@@ -292,7 +297,7 @@ func (s *ProviderInfoService) section(cacheKey, endpoint, key string, force bool
 	})
 	return value.(providerInfoCache)
 }
-func (s *ProviderInfoService) fetch(endpoint, key string, kind string) providerInfoCache {
+func (s *ProviderInfoService) fetch(endpoint, key string, kind, userID string) providerInfoCache {
 	out := providerInfoCache{state: ProviderInfoSection{Status: "network"}}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -309,6 +314,9 @@ func (s *ProviderInfoService) fetch(endpoint, key string, kind string) providerI
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
+	if kind == "newapi_account" && userID != "" {
+		req.Header.Set("New-Api-User", userID)
+	}
 	req.Header.Set("Accept", "application/json")
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -318,6 +326,13 @@ func (s *ProviderInfoService) fetch(endpoint, key string, kind string) providerI
 	switch resp.StatusCode {
 	case 401, 403:
 		out.state.Status = "auth"
+		if kind == "newapi_account" && userID == "" {
+			// Classify known legacy authentication errors without exposing their body.
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+			if newAPIRequiresUserID(body) {
+				out.state.Status = "requires_user_id"
+			}
+		}
 		return out
 	case 404, 405:
 		out.state.Status = "unsupported"

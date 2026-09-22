@@ -20,6 +20,11 @@ func TestProviderInfoRPCRequiresAdminAndReturnsSanitizedData(t *testing.T) {
 				calls.Add(1)
 				if platform == "newapi" {
 					switch r.URL.Path {
+					case "/api/user/self":
+						if r.Header.Get("Authorization") != "Bearer account-secret" || r.Header.Get("New-Api-User") != "42" {
+							t.Error("wrong account credential")
+						}
+						fmt.Fprint(w, `{"success":true,"data":{"quota":300,"access_token":"do-not-forward","email":"do-not-forward"}}`)
 					case "/api/usage/token/":
 						if r.Header.Get("Authorization") != "Bearer rpc-test-secret" {
 							t.Error("missing token key")
@@ -50,7 +55,7 @@ func TestProviderInfoRPCRequiresAdminAndReturnsSanitizedData(t *testing.T) {
 				fmt.Fprint(w, `{"mode":"unrestricted","isValid":true,"balance":5,"unit":"USD","apiKey":"do-not-forward"}`)
 			}))
 			defer upstream.Close()
-			if err := rt.providerService.SaveProviders("codex", []services.Provider{{ID: 1, Name: "RPC test", APIURL: upstream.URL, APIKey: "rpc-test-secret", UpstreamInfo: &services.UpstreamInfoConfig{Type: platform}}}); err != nil {
+			if err := rt.providerService.SaveProviders("codex", []services.Provider{{ID: 1, Name: "RPC test", APIURL: upstream.URL, APIKey: "rpc-test-secret", UpstreamInfo: &services.UpstreamInfoConfig{Type: platform, AccountToken: "account-secret", AccountUserID: "42"}}}); err != nil {
 				t.Fatal(err)
 			}
 			server := newAdminServer(rt)
@@ -67,7 +72,7 @@ func TestProviderInfoRPCRequiresAdminAndReturnsSanitizedData(t *testing.T) {
 			response := performRequest(t, server.Handler, http.MethodPost, "/api/wails/call", body, cookie)
 			want, count := `"balance":5`, int32(2)
 			if platform == "newapi" {
-				want, count = `"remainingUSD":5`, 3
+				want, count = `"quotaUSD":3`, 4
 			}
 			if response.Code != 200 || !strings.Contains(response.Body.String(), want) || calls.Load() != count {
 				t.Fatalf("unexpected RPC response: %d", response.Code)

@@ -4,8 +4,16 @@ import (
 	"encoding/json"
 	"math"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 )
+
+// Only wallet quota is exposed; account profile, email and access tokens are excluded.
+type NewAPIAccount struct {
+	Quota    *float64 `json:"quota,omitempty"`
+	QuotaUSD *float64 `json:"quotaUSD,omitempty"`
+}
 
 // Raw quota units are retained even when a site conversion is available.
 type NewAPIKey struct {
@@ -56,25 +64,54 @@ type newAPIModelPrice struct {
 	Plugins              []json.RawMessage `json:"billing_plugin_variants"`
 }
 
-func (s *ProviderInfoService) queryNewAPI(cacheKey, base, key string, force bool) *ProviderInfoResult {
-	var quota, site, prices providerInfoCache
+func (s *ProviderInfoService) queryNewAPI(cacheKey, base, key string, force bool, config *UpstreamInfoConfig) *ProviderInfoResult {
+	var quota, site, prices, account providerInfoCache
+	accountToken, userID := strings.TrimSpace(config.AccountToken), strings.TrimSpace(config.AccountUserID)
 	var wg sync.WaitGroup
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		quota = s.section(cacheKey+":usage", base+"/api/usage/token/", key, force, "newapi_key")
+		if key == "" {
+			quota.state.Status = "missing_key"
+			return
+		}
+		quota = s.section(cacheKey+":usage", base+"/api/usage/token/", key, force, "newapi_key", "")
 	}()
 	// Public endpoints deliberately receive no credentials, even on the same host.
 	go func() {
 		defer wg.Done()
-		site = s.section(cacheKey+":site", base+"/api/status", "", force, "newapi_site")
+		site = s.section(cacheKey+":site", base+"/api/status", "", force, "newapi_site", "")
 	}()
 	go func() {
 		defer wg.Done()
-		prices = s.section(cacheKey+":pricing", base+"/api/pricing", "", force, "newapi_pricing")
+		prices = s.section(cacheKey+":pricing", base+"/api/pricing", "", force, "newapi_pricing", "")
 	}()
+	if accountToken != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if strings.ContainsAny(accountToken, "\r\n") {
+				account.state.Status = "auth"
+				return
+			}
+			if userID != "" {
+				id, err := strconv.ParseInt(userID, 10, 64)
+				if err != nil || id <= 0 {
+					account.state.Status = "invalid_user_id"
+					return
+				}
+			}
+			account = s.section(cacheKey+":account", base+"/api/user/self", accountToken, force, "newapi_account", userID)
+		}()
+	}
 	wg.Wait()
 	result := &ProviderInfoResult{Platform: "newapi", UsageState: quota.state, SiteState: site.state, PricingState: prices.state}
+	if accountToken != "" {
+		result.AccountState = &account.state
+		if account.state.Status == "ready" && len(account.data) > 0 {
+			_ = json.Unmarshal(account.data, &result.Account)
+		}
+	}
 	if len(quota.data) > 0 {
 		_ = json.Unmarshal(quota.data, &result.Key)
 	}
@@ -84,7 +121,7 @@ func (s *ProviderInfoService) queryNewAPI(cacheKey, base, key string, force bool
 	if len(prices.data) > 0 {
 		_ = json.Unmarshal(prices.data, &result.Pricing)
 	}
-	if result.Key != nil && result.Site != nil {
+	if result.Site != nil {
 		convert := func(raw *float64) *float64 {
 			if raw == nil {
 				return nil
@@ -95,9 +132,14 @@ func (s *ProviderInfoService) queryNewAPI(cacheKey, base, key string, force bool
 			}
 			return &value
 		}
-		result.Key.TotalUSD = convert(result.Key.Total)
-		result.Key.UsedUSD = convert(result.Key.Used)
-		result.Key.RemainingUSD = convert(result.Key.Remaining)
+		if result.Key != nil {
+			result.Key.TotalUSD = convert(result.Key.Total)
+			result.Key.UsedUSD = convert(result.Key.Used)
+			result.Key.RemainingUSD = convert(result.Key.Remaining)
+		}
+		if result.Account != nil {
+			result.Account.QuotaUSD = convert(result.Account.Quota)
+		}
 	}
 	return result
 }
@@ -120,6 +162,9 @@ func decodeNewAPI(body []byte, kind string) (json.RawMessage, string) {
 		return nil, "invalid_response"
 	}
 	if !*success {
+		if kind == "newapi_account" && newAPIRequiresUserID(body) {
+			return nil, "requires_user_id"
+		}
 		return nil, "upstream_error"
 	}
 	if len(envelope.Data) == 0 || string(envelope.Data) == "null" {
@@ -134,6 +179,13 @@ func decodeNewAPI(body []byte, kind string) (json.RawMessage, string) {
 		}
 		// Derived fields must never be accepted from upstream.
 		data.TotalUSD, data.UsedUSD, data.RemainingUSD = nil, nil, nil
+		value = data
+	case "newapi_account":
+		var data NewAPIAccount
+		if json.Unmarshal(envelope.Data, &data) != nil || data.Quota == nil {
+			return nil, "invalid_response"
+		}
+		data.QuotaUSD = nil
 		value = data
 	case "newapi_site":
 		var data NewAPISite
@@ -232,4 +284,15 @@ func priceProduct(values ...*float64) *float64 {
 		return nil
 	}
 	return &result
+}
+
+func newAPIRequiresUserID(body []byte) bool {
+	var data struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &data) != nil {
+		return false
+	}
+	message := strings.ToLower(data.Message)
+	return strings.Contains(message, "new-api-user") && (strings.Contains(message, "not provided") || strings.Contains(message, "missing") || strings.Contains(message, "未提供") || strings.Contains(message, "缺少"))
 }
