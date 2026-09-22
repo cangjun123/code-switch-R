@@ -29,6 +29,7 @@ type appRuntime struct {
 	eventHub            *services.EventHub
 	appService          *AppService
 	providerService     *services.ProviderService
+	providerInfoService *services.ProviderInfoService
 	settingsService     *services.SettingsService
 	blacklistService    *services.BlacklistService
 	claudeSettings      *services.ClaudeSettingsService
@@ -180,6 +181,7 @@ func newAppRuntime() (*appRuntime, error) {
 		eventHub:                    eventHub,
 		appService:                  &AppService{},
 		providerService:             providerService,
+		providerInfoService:         services.NewProviderInfoService(providerService, geminiService),
 		settingsService:             settingsService,
 		blacklistService:            blacklistService,
 		claudeSettings:              claudeSettings,
@@ -276,6 +278,7 @@ func (rt *appRuntime) registerServices(registry *rpcRegistry) {
 	registry.Register("main.AppService", rt.appService)
 	registry.Register("main.VersionService", rt.versionService)
 	registry.Register("codeswitch/services.ProviderService", rt.providerService)
+	registry.Register("codeswitch/services.ProviderInfoService", rt.providerInfoService)
 	registry.Register("codeswitch/services.SettingsService", rt.settingsService)
 	registry.Register("codeswitch/services.BlacklistService", rt.blacklistService)
 	registry.Register("codeswitch/services.ClaudeSettingsService", rt.claudeSettings)

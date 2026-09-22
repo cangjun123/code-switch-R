@@ -22,6 +22,9 @@ const (
 
 // GeminiProvider Gemini 供应商配置
 type GeminiProvider struct {
+	// Optional read-only upstream information configuration.
+	UpstreamInfo *UpstreamInfoConfig `json:"upstreamInfo,omitempty"`
+
 	ID                  string            `json:"id"`
 	Name                string            `json:"name"`
 	WebsiteURL          string            `json:"websiteUrl,omitempty"`
@@ -939,18 +942,23 @@ func (s *GeminiService) DuplicateProvider(sourceID string) (*GeminiProvider, err
 
 	// 3. 克隆配置（深拷贝）
 	cloned := GeminiProvider{
-		ID:                     newID,
-		Name:                   source.Name + " (副本)",
-		WebsiteURL:             source.WebsiteURL,
-		APIKeyURL:              source.APIKeyURL,
-		BaseURL:                source.BaseURL,
-		APIKey:                 source.APIKey,
-		Model:                  source.Model,
-		Description:            source.Description,
-		Category:               source.Category,
-		PartnerPromotionKey:    source.PartnerPromotionKey,
-		Enabled:                false, // 默认禁用，避免与源供应商冲突
+		ID:                       newID,
+		Name:                     source.Name + " (副本)",
+		WebsiteURL:               source.WebsiteURL,
+		APIKeyURL:                source.APIKeyURL,
+		BaseURL:                  source.BaseURL,
+		APIKey:                   source.APIKey,
+		Model:                    source.Model,
+		Description:              source.Description,
+		Category:                 source.Category,
+		PartnerPromotionKey:      source.PartnerPromotionKey,
+		Enabled:                  false, // 默认禁用，避免与源供应商冲突
 		FixFunctionCallFragments: source.FixFunctionCallFragments,
+	}
+
+	if source.UpstreamInfo != nil {
+		info := *source.UpstreamInfo
+		cloned.UpstreamInfo = &info
 	}
 
 	// 4. 深拷贝 map（避免共享引用）

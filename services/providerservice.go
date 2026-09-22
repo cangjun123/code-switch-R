@@ -22,6 +22,9 @@ type AvailabilityConfig struct {
 }
 
 type Provider struct {
+	// Optional read-only upstream information configuration.
+	UpstreamInfo *UpstreamInfoConfig `json:"upstreamInfo,omitempty"`
+
 	ID      int64  `json:"id"` // 修复：使用 int64 支持大 ID 值
 	Name    string `json:"name"`
 	APIURL  string `json:"apiUrl"`
@@ -681,6 +684,11 @@ func (ps *ProviderService) DuplicateProvider(kind string, sourceID int64) (*Prov
 		AvailabilityMonitorEnabled: source.AvailabilityMonitorEnabled,
 		ConnectivityAutoBlacklist:  false, // 副本默认关闭自动拉黑
 		NeverBlacklist:             false, // 副本默认关闭永不拉黑
+	}
+
+	if source.UpstreamInfo != nil {
+		info := *source.UpstreamInfo
+		cloned.UpstreamInfo = &info
 	}
 
 	// 6. 深拷贝 map（避免共享引用）

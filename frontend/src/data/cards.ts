@@ -1,4 +1,7 @@
+import type { UpstreamInfoConfig } from '../services/providerInfo'
 export type AutomationCard = {
+  upstreamInfo?: UpstreamInfoConfig
+  sourceProviderId?: string
   id: number
   name: string
   apiUrl: string

@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import ProviderInfoSettings from './ProviderInfoSettings.vue'
+import type { UpstreamInfoConfig } from '../../services/providerInfo'
 import { useI18n } from 'vue-i18n'
 import {
   Listbox,
@@ -19,6 +21,7 @@ import type { CLIPlatform } from '../../services/cliConfig'
 export type ProviderTab = 'claude' | 'codex' | 'gemini' | 'gpt-image' | 'others'
 
 export interface ProviderFormState {
+  upstreamInfo?: UpstreamInfoConfig
   name: string
   apiUrl: string
   officialSite: string
@@ -131,6 +134,7 @@ const modalTitle = computed(() =>
     <form class="vendor-form" @submit.prevent="emit('submit')">
       <!-- Tab 1: 基本配置 -->
       <div v-show="activeFormTab === 'general'" class="tab-pane">
+        <ProviderInfoSettings :form="form" :open="open" />
         <label class="form-field">
           <span class="label-row">
             {{ t('components.main.form.labels.name') }}
