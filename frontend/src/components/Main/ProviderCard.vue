@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import ProviderInfoPanel from './ProviderInfoPanel.vue'
+import type { ProviderInfoRef } from '../../services/providerInfo'
 import { useI18n } from 'vue-i18n'
 import type { AutomationCard } from '../../data/cards'
 import lobeIcons from '../../icons/lobeIconMap'
@@ -23,6 +25,8 @@ export interface ProviderStatDisplay {
 }
 
 const props = defineProps<{
+  infoRef: ProviderInfoRef
+  infoRevision: number
   card: AutomationCard
   activeTab: ProviderTab
   activeProxyState: boolean
@@ -97,6 +101,7 @@ const showBlBadge = computed(() => {
   <article
     :class="[
       'automation-card',
+      { 'has-upstream-info': card.upstreamInfo?.type === 'sub2api' },
       { dragging: isDragging },
       { 'is-last-used': isLastUsed },
       { 'is-highlighted': isHighlighted }
@@ -177,6 +182,8 @@ const showBlBadge = computed(() => {
             {{ formatOfficialSite(card.officialSite) }}
           </button>
         </div>
+
+        <ProviderInfoPanel v-if="card.upstreamInfo?.type === 'sub2api'" :card="card" :provider-ref="infoRef" :revision="infoRevision" :theme="resolvedTheme" />
 
         <!-- 卡片运行指标 -->
         <p class="card-metrics">
@@ -371,6 +378,10 @@ const showBlBadge = computed(() => {
 </template>
 
 <style scoped>
+.has-upstream-info .card-leading { min-width: 0; }
+.has-upstream-info .card-text { flex: 1; min-width: 0; }
+.has-upstream-info .card-icon { flex-shrink: 0; }
+
 .automation-card.is-last-used {
   position: relative;
   border: 2px solid rgb(16, 185, 129);

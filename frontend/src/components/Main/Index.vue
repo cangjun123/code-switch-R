@@ -260,6 +260,8 @@
         >
           <ProviderCard
             :card="card"
+            :info-ref="providerInfoRef(card)"
+            :info-revision="upstreamInfoRevision"
             :active-tab="activeTab"
             :active-proxy-state="activeProxyState"
             :is-last-used="isLastUsedProvider(card.name)"
@@ -517,6 +519,7 @@ import BaseModal from '../common/BaseModal.vue'
 import BaseInput from '../common/BaseInput.vue'
 import ContribHeatmap from './ContribHeatmap.vue'
 import ProviderCard from './ProviderCard.vue'
+import type { UpstreamInfoConfig, ProviderInfoRef } from '../../services/providerInfo'
 import ProviderEditModal from './ProviderEditModal.vue'
 import CustomCliConfigEditor from '../common/CustomCliConfigEditor.vue'
 import ModelTraceModal from './ModelTraceModal.vue'
@@ -780,6 +783,7 @@ const normalizeProviderKey = (value: string) => value?.trim().toLowerCase() ?? '
 
 // 本地 GeminiProvider 类型定义（避免依赖 CI 生成的 bindings）
 interface GeminiProvider {
+  upstreamInfo?: UpstreamInfoConfig
   id: string
   name: string
   websiteUrl?: string
@@ -819,6 +823,8 @@ const draggingId = ref<number | null>(null)
 // Gemini Provider 到 AutomationCard 的转换
 const geminiToCard = (provider: GeminiProvider, index: number): AutomationCard => ({
   id: 300 + index, // Gemini 使用 300+ 的 ID 范围
+  upstreamInfo: provider.upstreamInfo,
+  sourceProviderId: provider.id,
   name: provider.name,
   apiUrl: provider.baseUrl || '',
   apiKey: provider.apiKey || '',
@@ -838,6 +844,7 @@ const geminiToCard = (provider: GeminiProvider, index: number): AutomationCard =
 // AutomationCard 到 Gemini Provider 的转换
 const cardToGemini = (card: AutomationCard, original: GeminiProvider): GeminiProvider => ({
   ...original,
+  upstreamInfo: card.upstreamInfo,
   name: card.name,
   baseUrl: card.apiUrl,
   apiKey: card.apiKey,
@@ -846,6 +853,12 @@ const cardToGemini = (card: AutomationCard, original: GeminiProvider): GeminiPro
   fixFunctionCallFragments: !!card.fixFunctionCallFragments,
   level: card.level || 1,
   // 注意：Gemini 不支持可用性监控配置，这些字段不会保存
+})
+
+const upstreamInfoRevision = ref(0)
+const providerInfoRef = (card: AutomationCard): ProviderInfoRef => ({
+  kind: activeTab.value === 'others' ? getCustomProviderKind(selectedToolId.value || '') : activeTab.value,
+  id: activeTab.value === 'gemini' ? (card.sourceProviderId || '') : String(card.id),
 })
 
 const serializeProviders = (providers: AutomationCard[]) =>
@@ -912,6 +925,7 @@ const persistProviders = async (tabId: ProviderTab): Promise<{ ok: boolean; erro
           // 新添加的 provider，调用 AddProvider
           const newProvider: GeminiProvider = {
             id: `gemini-${Date.now()}`,
+            upstreamInfo: card.upstreamInfo,
             name: card.name,
             baseUrl: card.apiUrl,
             apiKey: card.apiKey,
@@ -926,6 +940,7 @@ const persistProviders = async (tabId: ProviderTab): Promise<{ ok: boolean; erro
       // 4. 刷新缓存以获取最新的 ID
       const updatedProviders = await GetGeminiProviders()
       geminiProvidersCache.value = updatedProviders
+      for (const card of cards.gemini) card.sourceProviderId = updatedProviders.find(p => p.name === card.name)?.id
 
       // 5. 保存排序：按 cards.gemini 的顺序构建 ID 列表
       const orderedIds: string[] = []
@@ -943,6 +958,7 @@ const persistProviders = async (tabId: ProviderTab): Promise<{ ok: boolean; erro
     } else {
       await SaveProviders(tabId, serializeProviders(cards[tabId]))
     }
+    upstreamInfoRevision.value++
     return { ok: true }
   } catch (error) {
     console.error('Failed to save providers', error)
@@ -1617,7 +1633,7 @@ onMounted(async () => {
 
   // 监听可用性页面的 Provider 更新事件
   const handleProvidersUpdated = () => {
-    void loadProvidersFromDisk()
+    void loadProvidersFromDisk().then(() => { upstreamInfoRevision.value++ })
   }
   window.addEventListener('providers-updated', handleProvidersUpdated)
   ;(window as any).__handleProvidersUpdated = handleProvidersUpdated
@@ -1813,6 +1829,7 @@ const syncDefaultTestEndpoint = (
 }
 
 type VendorForm = {
+  upstreamInfo?: UpstreamInfoConfig
   name: string
   apiUrl: string
   apiKey: string
@@ -1919,6 +1936,7 @@ const filteredIconOptions = computed(() => {
 })
 
 const defaultFormValues = (platform?: string): VendorForm => ({
+  upstreamInfo: { type: '', baseUrl: '' },
   name: '',
   apiUrl: '',
   apiKey: '',
@@ -2051,6 +2069,7 @@ const openEditModal = (card: AutomationCard) => {
   modalState.editingId = card.id
   editingCard.value = card
   Object.assign(modalState.form, {
+    upstreamInfo: { type: card.upstreamInfo?.type || '', baseUrl: card.upstreamInfo?.baseUrl || '' },
     name: card.name,
     apiUrl: card.apiUrl,
     apiKey: card.apiKey,
@@ -2178,6 +2197,15 @@ const submitModal = async (): Promise<boolean> => {
   const apiKey = modalState.form.apiKey.trim()
   const officialSite = modalState.form.officialSite.trim()
   const icon = (modalState.form.icon || defaultIconKey).toString().trim().toLowerCase() || defaultIconKey
+  if (modalState.form.upstreamInfo?.type === 'sub2api' && modalState.form.upstreamInfo.baseUrl?.trim()) {
+    try {
+      const queryURL = new URL(modalState.form.upstreamInfo.baseUrl.trim())
+      if (!['http:', 'https:'].includes(queryURL.protocol) || queryURL.username || queryURL.password || queryURL.search || queryURL.hash) throw new Error('url')
+    } catch {
+      showToast(t('upstreamInfo.invalidUrl'), 'error')
+      return false
+    }
+  }
   const dropResponsesFields = parseResponsesDropFields(modalState.form.dropResponsesFieldsText)
   const dropImageFields = parseImageDropFields(modalState.form.dropImageFieldsText)
   modalState.errors.apiUrl = ''
@@ -2214,6 +2242,7 @@ const submitModal = async (): Promise<boolean> => {
       officialSite,
       icon,
       level: nextLevel,
+      upstreamInfo: { ...modalState.form.upstreamInfo! },
       enabled: modalState.form.enabled,
       supportedModels: modalState.form.supportedModels || {},
       modelMapping: modalState.form.modelMapping || {},
@@ -2266,6 +2295,7 @@ const submitModal = async (): Promise<boolean> => {
       accent: '#0a84ff',
       tint: 'rgba(15, 23, 42, 0.12)',
       level: normalizeLevel(modalState.form.level),
+      upstreamInfo: { ...modalState.form.upstreamInfo! },
       enabled: modalState.form.enabled,
       supportedModels: modalState.form.supportedModels || {},
       modelMapping: modalState.form.modelMapping || {},
@@ -2395,13 +2425,12 @@ const handleDuplicate = async (card: AutomationCard) => {
 
     if (tab === 'gemini') {
       // Gemini 使用字符串 ID，需要从 cache 中找到原始 provider
-      const index = cards.gemini.findIndex(c => c.id === card.id)
-      if (index === -1 || !geminiProvidersCache.value[index]) {
+      const originalProvider = geminiProvidersCache.value.find(p => p.id === card.sourceProviderId)
+      if (!originalProvider) {
         console.error('[Duplicate] 未找到 Gemini provider')
         return
       }
 
-      const originalProvider = geminiProvidersCache.value[index]
       // 调用 Gemini 的 DuplicateProvider API（字符串 ID）
       const newProvider = await Call.ByName(
         'codeswitch/services.GeminiService.DuplicateProvider',
@@ -2416,7 +2445,8 @@ const handleDuplicate = async (card: AutomationCard) => {
       console.log(`[Duplicate] Gemini Provider "${card.name}" duplicated`)
     } else {
       // Claude/Codex 使用数字 ID
-      const newProvider = await DuplicateProvider(tab, card.id)
+      const kind = tab === 'others' ? getCustomProviderKind(selectedToolId.value || '') : tab
+      const newProvider = await DuplicateProvider(kind, card.id)
       if (!newProvider) {
         console.warn('[Duplicate] DuplicateProvider 返回空结果，已跳过刷新')
         return
