@@ -1345,6 +1345,38 @@
       "expired": "已过期",
       "quota_exhausted": "额度已耗尽",
       "disabled": "已停用"
-    }
+    },
+    "site": "额度换算",
+    "pricing": "公开参考价格",
+    "rawUnit": "额度单位",
+    "noExpiry": "永不过期",
+    "newapiScope": "仅显示当前 Key 的额度。无限额度不代表账户余额充足；模型限制仅供查看，不修改本地白名单。",
+    "keyName": "Key 名称",
+    "quotaTotal": "总额度",
+    "modelLimits": "上游模型限制",
+    "noModelLimits": "未启用",
+    "conversionHint": "美元数值为站点计费额度：原始额度 ÷ quota_per_unit，不包含充值折扣或汇率换算。",
+    "rawFallback": "站点未提供有效换算参数，显示原始额度单位。",
+    "rawRemaining": "原始剩余额度",
+    "rawUsed": "原始已用额度",
+    "rawTotal": "原始总额度",
+    "publicPriceHint": "价格按公开分组展示，不代表当前 Key 的实际分组或专属倍率。复杂计费请以站点说明为准；— 表示未知或不适用。",
+    "searchModel": "搜索模型",
+    "group": "分组",
+    "allGroups": "全部分组",
+    "priceUnits": "输入、输出及缓存价格：USD / 百万 tokens；按次价格：USD / 请求。",
+    "priceMode": "计费方式",
+    "perRequest": "按次价格",
+    "free": "免费",
+    "priceModes": {
+      "tokens": "按 token",
+      "request": "按次",
+      "complex": "复杂计费"
+    },
+    "noPrices": "没有匹配的公开价格",
+    "priceUnavailable": "公开价格不可访问或需要登录；额度查询和保存不受影响。",
+    "previous": "上一页",
+    "next": "下一页",
+    "priceRows": "条"
   }
 }

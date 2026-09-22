@@ -2197,7 +2197,7 @@ const submitModal = async (): Promise<boolean> => {
   const apiKey = modalState.form.apiKey.trim()
   const officialSite = modalState.form.officialSite.trim()
   const icon = (modalState.form.icon || defaultIconKey).toString().trim().toLowerCase() || defaultIconKey
-  if (modalState.form.upstreamInfo?.type === 'sub2api' && modalState.form.upstreamInfo.baseUrl?.trim()) {
+  if (modalState.form.upstreamInfo?.type && modalState.form.upstreamInfo.baseUrl?.trim()) {
     try {
       const queryURL = new URL(modalState.form.upstreamInfo.baseUrl.trim())
       if (!['http:', 'https:'].includes(queryURL.protocol) || queryURL.username || queryURL.password || queryURL.search || queryURL.hash) throw new Error('url')

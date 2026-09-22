@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { testProviderInfo, infoAmount, infoUnlimited, infoRemaining, type ProviderInfoDraft, type ProviderInfo } from '../../services/providerInfo'
+import { newAPIStates, newAPIAmount, testProviderInfo, infoAmount, infoUnlimited, infoRemaining, type ProviderInfoDraft, type ProviderInfo } from '../../services/providerInfo'
 const props = defineProps<{ form: ProviderInfoDraft; open: boolean }>()
 const { t } = useI18n()
 const busy = ref(false)
@@ -12,7 +12,8 @@ watch(() => [props.open, props.form.apiUrl, props.form.apiKey, props.form.upstre
   generation++; result.value = null; failed.value = false; busy.value = false
 })
 function selectType(event: Event) {
-  const type = (event.target as HTMLSelectElement).value === 'sub2api' ? 'sub2api' : ''
+  const selected = (event.target as HTMLSelectElement).value
+  const type = selected === 'sub2api' || selected === 'newapi' ? selected : ''
   props.form.upstreamInfo = { type, baseUrl: props.form.upstreamInfo?.baseUrl || '' }
 }
 async function test() {
@@ -32,10 +33,10 @@ async function test() {
     <label class="form-field">
       <span>{{ t('upstreamInfo.service') }}</span>
       <select :value="form.upstreamInfo?.type || ''" @change="selectType">
-        <option value="">{{ t('upstreamInfo.off') }}</option><option value="sub2api">sub2api</option>
+        <option value="">{{ t('upstreamInfo.off') }}</option><option value="sub2api">sub2api</option><option value="newapi">New API</option>
       </select>
     </label>
-    <template v-if="form.upstreamInfo?.type === 'sub2api'">
+    <template v-if="form.upstreamInfo?.type">
       <label class="form-field">
         <span>{{ t('upstreamInfo.baseUrl') }}</span>
         <input v-model="form.upstreamInfo.baseUrl" type="url" placeholder="https://example.com" />
@@ -44,7 +45,11 @@ async function test() {
       <button type="button" class="info-button" :disabled="busy || !form.apiKey.trim() || !form.apiUrl.trim()" @click="test">{{ t(busy ? 'upstreamInfo.loading' : 'upstreamInfo.test') }}</button>
       <div aria-live="polite" class="test-result">
         <p v-if="failed">{{ t('upstreamInfo.testFailed') }}</p>
-        <template v-if="result">
+        <template v-if="result?.platform === 'newapi'">
+          <p v-for="part in newAPIStates(result)" :key="part.label">{{ t(`upstreamInfo.${part.label}`) }}: {{ t(`upstreamInfo.status.${part.state.status}`) }}<span v-if="part.state.stale"> · {{ t('upstreamInfo.stale') }}</span></p>
+          <p v-if="result.key">{{ t('upstreamInfo.keyQuota') }}: {{ result.key.unlimited_quota ? t('upstreamInfo.unlimited') : newAPIAmount(result, 'remaining', t('upstreamInfo.rawUnit')) }}</p>
+        </template>
+        <template v-else-if="result">
           <p>{{ t('upstreamInfo.usage') }}: {{ t(`upstreamInfo.status.${result.usageState.status}`) }}<span v-if="result.usage"> · {{ t('upstreamInfo.remaining') }} {{ infoUnlimited(result.usage) ? t('upstreamInfo.unlimited') : infoAmount(infoRemaining(result.usage), result.usage.unit || result.usage.quota?.unit) }}</span></p>
           <p>{{ t('upstreamInfo.billing') }}: {{ t(`upstreamInfo.status.${result.billingState.status}`) }}</p>
         </template>

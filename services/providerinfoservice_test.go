@@ -285,54 +285,64 @@ func TestProviderInfoTimeoutAndCoalescing(t *testing.T) {
 	}
 }
 func TestProviderInfoPersistenceAndReferences(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	server := infoServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/billing") {
-			fmt.Fprint(w, infoBillingFixture)
-		} else {
-			fmt.Fprint(w, infoWalletFixture)
-		}
-	})
-	providers := NewProviderService()
-	gemini := NewGeminiService("")
-	config := &UpstreamInfoConfig{Type: "sub2api", BaseURL: server.URL}
-	p := Provider{ID: 42, Name: "Info test", APIURL: server.URL + "/v1", APIKey: "test-secret", UpstreamInfo: config}
-	for _, kind := range []string{"claude", "codex", "gpt-image", "custom:test"} {
-		if err := providers.SaveProviders(kind, []Provider{p}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := gemini.AddProvider(GeminiProvider{ID: "native-id", Name: "Info Gemini", BaseURL: server.URL, APIKey: "test-secret", UpstreamInfo: config}); err != nil {
-		t.Fatal(err)
-	}
-	reloaded := NewGeminiService("")
-	svc := NewProviderInfoService(providers, reloaded)
-	for _, ref := range []ProviderInfoRef{{"claude", "42"}, {"codex", "42"}, {"gpt-image", "42"}, {"custom:test", "42"}, {"gemini", "native-id"}} {
-		got, err := svc.GetInfo(ref, false, "UTC")
-		if err != nil || got.Usage == nil {
-			t.Fatalf("ref %+v: %v", ref, err)
-		}
-	}
-	if _, err := svc.GetInfo(ProviderInfoRef{"gemini", "300"}, false, "UTC"); err == nil {
-		t.Fatal("accepted synthetic Gemini id")
-	}
-	copy, err := providers.DuplicateProvider("codex", 42)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if copy.UpstreamInfo == nil || copy.UpstreamInfo.BaseURL != server.URL {
-		t.Fatal("copy lost info config")
-	}
-	geminiCopy, err := reloaded.DuplicateProvider("native-id")
-	if err != nil || geminiCopy.UpstreamInfo == nil || geminiCopy.UpstreamInfo.BaseURL != server.URL {
-		t.Fatal("Gemini copy lost info config")
-	}
-	p.UpstreamInfo = nil
-	if err := providers.SaveProviders("claude", []Provider{p}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.GetInfo(ProviderInfoRef{"claude", "42"}, false, "UTC"); err == nil || err.Error() != "info_disabled" {
-		t.Fatal("disabled config still queried")
+	for _, platform := range []string{"sub2api", "newapi"} {
+		t.Run(platform, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			server := infoServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if platform == "newapi" {
+					serveNewAPI(t, w, r)
+					return
+				}
+				if strings.HasSuffix(r.URL.Path, "/billing") {
+					fmt.Fprint(w, infoBillingFixture)
+				} else {
+					fmt.Fprint(w, infoWalletFixture)
+				}
+			})
+			providers := NewProviderService()
+			gemini := NewGeminiService("")
+			config := &UpstreamInfoConfig{Type: platform, BaseURL: server.URL}
+			p := Provider{ID: 42, Name: "Info test", APIURL: server.URL + "/v1", APIKey: "test-secret", UpstreamInfo: config}
+			for _, kind := range []string{"claude", "codex", "gpt-image", "custom:test"} {
+				if err := providers.SaveProviders(kind, []Provider{p}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := gemini.AddProvider(GeminiProvider{ID: "native-id", Name: "Info Gemini", BaseURL: server.URL, APIKey: "test-secret", UpstreamInfo: config}); err != nil {
+				t.Fatal(err)
+			}
+			reloaded := NewGeminiService("")
+			svc := NewProviderInfoService(providers, reloaded)
+			for _, ref := range []ProviderInfoRef{{"claude", "42"}, {"codex", "42"}, {"gpt-image", "42"}, {"custom:test", "42"}, {"gemini", "native-id"}} {
+				got, err := svc.GetInfo(ref, false, "UTC")
+				if err != nil || (platform == "sub2api" && got.Usage == nil) || (platform == "newapi" && got.Key == nil) {
+					t.Fatalf("ref %+v: %v", ref, err)
+				}
+			}
+			if _, err := svc.GetInfo(ProviderInfoRef{"gemini", "300"}, false, "UTC"); err == nil {
+				t.Fatal("accepted synthetic Gemini id")
+			}
+			for _, copyKind := range []string{"codex", "custom:test"} {
+				copy, err := providers.DuplicateProvider(copyKind, 42)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if copy.UpstreamInfo == nil || copy.UpstreamInfo.BaseURL != server.URL || copy.UpstreamInfo.Type != platform {
+					t.Fatal("copy lost info config")
+				}
+			}
+			geminiCopy, err := reloaded.DuplicateProvider("native-id")
+			if err != nil || geminiCopy.UpstreamInfo == nil || geminiCopy.UpstreamInfo.BaseURL != server.URL || geminiCopy.UpstreamInfo.Type != platform {
+				t.Fatal("Gemini copy lost info config")
+			}
+			p.UpstreamInfo = nil
+			if err := providers.SaveProviders("claude", []Provider{p}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := svc.GetInfo(ProviderInfoRef{"claude", "42"}, false, "UTC"); err == nil || err.Error() != "info_disabled" {
+				t.Fatal("disabled config still queried")
+			}
+		})
 	}
 }
 

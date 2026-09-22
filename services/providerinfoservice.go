@@ -111,6 +111,12 @@ type ProviderInfoSection struct {
 	Stale     bool   `json:"stale"`
 }
 type ProviderInfoResult struct {
+	Platform      string              `json:"platform"`
+	Key           *NewAPIKey          `json:"key,omitempty"`
+	Site          *NewAPISite         `json:"site,omitempty"`
+	Pricing       *NewAPIPricing      `json:"pricing,omitempty"`
+	SiteState     ProviderInfoSection `json:"siteState"`
+	PricingState  ProviderInfoSection `json:"pricingState"`
 	Usage         *Sub2Usage          `json:"usage,omitempty"`
 	Billing       *Sub2Billing        `json:"billing,omitempty"`
 	UsageState    ProviderInfoSection `json:"usageState"`
@@ -119,10 +125,11 @@ type ProviderInfoResult struct {
 	ModelPeriod   string              `json:"modelPeriod"`
 }
 type providerInfoCache struct {
-	data    json.RawMessage
-	state   ProviderInfoSection
-	expires time.Time
-	retry   time.Time
+	data      json.RawMessage
+	state     ProviderInfoSection
+	expires   time.Time
+	attempted time.Time
+	retry     time.Time
 }
 type ProviderInfoService struct {
 	providers *ProviderService
@@ -172,7 +179,7 @@ func (s *ProviderInfoService) TestConnection(draft ProviderInfoDraft, timezone s
 	return s.query(draft, "preview", true, timezone)
 }
 func providerInfoBase(draft ProviderInfoDraft) (string, error) {
-	if draft.UpstreamInfo == nil || draft.UpstreamInfo.Type != "sub2api" {
+	if draft.UpstreamInfo == nil || (draft.UpstreamInfo.Type != "sub2api" && draft.UpstreamInfo.Type != "newapi") {
 		return "", errors.New("info_disabled")
 	}
 	raw := strings.TrimSpace(draft.UpstreamInfo.BaseURL)
@@ -207,20 +214,23 @@ func (s *ProviderInfoService) query(draft ProviderInfoDraft, ref string, force b
 		return nil, errors.New("invalid_timezone")
 	}
 	// Hash the complete identity: no plaintext credentials in cache keys or errors.
-	identity, _ := json.Marshal([]string{ref, base, key, tz})
+	identity, _ := json.Marshal([]string{ref, draft.UpstreamInfo.Type, base, key, tz})
 	sum := sha256.Sum256(identity)
 	cacheKey := hex.EncodeToString(sum[:])
-	result := &ProviderInfoResult{DailyTimezone: tz, ModelPeriod: "upstream_last_30_days"}
+	if draft.UpstreamInfo.Type == "newapi" {
+		return s.queryNewAPI(cacheKey, base, key, force), nil
+	}
+	result := &ProviderInfoResult{Platform: "sub2api", DailyTimezone: tz, ModelPeriod: "upstream_last_30_days"}
 	var usage, billing providerInfoCache
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		usage = s.section(cacheKey+":usage", base+"/v1/usage?days=30&timezone="+url.QueryEscape(tz), key, force, false)
+		usage = s.section(cacheKey+":usage", base+"/v1/usage?days=30&timezone="+url.QueryEscape(tz), key, force, "usage")
 	}()
 	go func() {
 		defer wg.Done()
-		billing = s.section(cacheKey+":billing", base+"/v1/sub2api/billing", key, force, true)
+		billing = s.section(cacheKey+":billing", base+"/v1/sub2api/billing", key, force, "billing")
 	}()
 	wg.Wait()
 	result.UsageState = usage.state
@@ -233,7 +243,7 @@ func (s *ProviderInfoService) query(draft ProviderInfoDraft, ref string, force b
 	}
 	return result, nil
 }
-func (s *ProviderInfoService) section(cacheKey, endpoint, key string, force, billing bool) providerInfoCache {
+func (s *ProviderInfoService) section(cacheKey, endpoint, key string, force bool, kind string) providerInfoCache {
 	s.mu.Lock()
 	cached, ok := s.cache[cacheKey]
 	s.mu.Unlock()
@@ -245,12 +255,17 @@ func (s *ProviderInfoService) section(cacheKey, endpoint, key string, force, bil
 		previous, ok := s.cache[cacheKey]
 		s.mu.Unlock()
 		// A completed overlapping refresh must not trigger a second request.
-		if ok && (time.Now().Before(previous.retry) || (!force && time.Now().Before(previous.expires)) || previous.expires.After(cached.expires)) {
+		if ok && (time.Now().Before(previous.retry) || (!force && time.Now().Before(previous.expires)) || previous.attempted.After(cached.attempted)) {
 			return previous, nil
 		}
-		next := s.fetch(endpoint, key, billing)
+		next := s.fetch(endpoint, key, kind)
 		now := time.Now()
-		next.expires = now.Add(5 * time.Minute)
+		next.attempted = now
+		ttl := 5 * time.Minute
+		if kind == "newapi_pricing" && next.state.Status == "ready" {
+			ttl = 30 * time.Minute
+		}
+		next.expires = now.Add(ttl)
 		if next.state.Status != "ready" {
 			next.data = previous.data
 			next.state.UpdatedAt = previous.state.UpdatedAt
@@ -277,7 +292,7 @@ func (s *ProviderInfoService) section(cacheKey, endpoint, key string, force, bil
 	})
 	return value.(providerInfoCache)
 }
-func (s *ProviderInfoService) fetch(endpoint, key string, billing bool) providerInfoCache {
+func (s *ProviderInfoService) fetch(endpoint, key string, kind string) providerInfoCache {
 	out := providerInfoCache{state: ProviderInfoSection{Status: "network"}}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -291,7 +306,9 @@ func (s *ProviderInfoService) fetch(endpoint, key string, billing bool) provider
 	if err != nil {
 		return out
 	}
-	req.Header.Set("Authorization", "Bearer "+key)
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
 	req.Header.Set("Accept", "application/json")
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -326,21 +343,34 @@ func (s *ProviderInfoService) fetch(endpoint, key string, billing bool) provider
 	if err != nil || len(body) > maxBody {
 		return out
 	}
-	// Decode into an allowlist of fields; never forward raw error bodies or account metadata.
-	if billing {
+	// Decode into an allowlist; never forward raw error bodies or account metadata.
+	out.data, out.state.Status = decodeProviderInfo(body, kind)
+	if out.state.Status == "ready" {
+		out.state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	return out
+}
+func decodeProviderInfo(body []byte, kind string) (json.RawMessage, string) {
+	if strings.HasPrefix(kind, "newapi_") {
+		return decodeNewAPI(body, kind)
+	}
+	var value any
+	if kind == "billing" {
 		var data Sub2Billing
 		if json.Unmarshal(body, &data) != nil || data.Object != "sub2api.key_billing" || data.SchemaVersion != 1 || data.EffectiveRate == nil {
-			return out
+			return nil, "invalid_response"
 		}
-		out.data, _ = json.Marshal(data)
+		value = data
 	} else {
 		var data Sub2Usage
 		if json.Unmarshal(body, &data) != nil || (data.Mode != "quota_limited" && data.Mode != "unrestricted") || data.IsValid == nil {
-			return out
+			return nil, "invalid_response"
 		}
-		out.data, _ = json.Marshal(data)
+		value = data
 	}
-	out.state.Status = "ready"
-	out.state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	return out
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, "invalid_response"
+	}
+	return data, "ready"
 }

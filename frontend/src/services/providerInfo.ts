@@ -1,6 +1,6 @@
 import { Call } from '@wailsio/runtime'
 
-export type UpstreamInfoConfig = { type: '' | 'sub2api'; baseUrl?: string }
+export type UpstreamInfoConfig = { type: '' | 'sub2api' | 'newapi'; baseUrl?: string }
 export type ProviderInfoRef = { kind: string; id: string }
 export type ProviderInfoDraft = { apiUrl: string; apiKey: string; upstreamInfo?: UpstreamInfoConfig }
 export type InfoState = { status: string; updatedAt?: string; retryAt?: string; stale: boolean }
@@ -28,7 +28,15 @@ export type UpstreamBilling = {
   peak_start?: string; peak_end?: string; peak_rate_multiplier?: number; applied_peak_multiplier?: number
   timezone?: string; observed_at?: string
 }
+export type NewAPIKey = {
+  name: string; total_granted?: number; total_used?: number; total_available?: number
+  unlimited_quota?: boolean; expires_at?: number; model_limits_enabled?: boolean; model_limits?: Record<string, boolean>
+  totalUSD?: number; usedUSD?: number; remainingUSD?: number
+}
+export type NewAPIPrice = { model: string; group: string; groupRatio?: number; mode: 'tokens' | 'request' | 'complex'; input?: number; output?: number; cacheRead?: number; cacheWrite?: number; request?: number }
 export type ProviderInfo = {
+  platform?: 'sub2api' | 'newapi'; key?: NewAPIKey; site?: { quota_per_unit: number }
+  pricing?: { rows: NewAPIPrice[] }; siteState?: InfoState; pricingState?: InfoState
   usage?: UpstreamUsage; billing?: UpstreamBilling; usageState: InfoState; billingState: InfoState
   dailyTimezone: string; modelPeriod: string
 }
@@ -59,3 +67,13 @@ export const infoRemaining = (usage?: UpstreamUsage) => usage?.balance ?? usage?
 
 // Only the non-wallet remaining field uses -1 as an unlimited sentinel.
 export const infoUnlimited = (usage?: UpstreamUsage) => usage?.balance == null && infoRemaining(usage) === -1
+
+export const newAPIAmount = (data: ProviderInfo | null | undefined, field: 'remaining' | 'used' | 'total', rawUnit: string) => {
+  const raw = { remaining: data?.key?.total_available, used: data?.key?.total_used, total: data?.key?.total_granted }[field]
+  const usd = { remaining: data?.key?.remainingUSD, used: data?.key?.usedUSD, total: data?.key?.totalUSD }[field]
+  return usd != null ? infoAmount(usd, 'USD') : infoAmount(raw, rawUnit)
+}
+export const newAPIExpiry = (seconds: number | undefined, noExpiry: string) => seconds == null ? '—' : seconds === 0 || seconds === -1 ? noExpiry : infoTime(String(new Date(seconds * 1000)))
+export const newAPIStates = (data: ProviderInfo) => [
+  { label: 'usage', state: data.usageState }, { label: 'site', state: data.siteState }, { label: 'pricing', state: data.pricingState },
+].filter((part): part is { label: string; state: InfoState } => !!part.state)

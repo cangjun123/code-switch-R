@@ -2,7 +2,8 @@
 import { computed, ref, watch, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { AutomationCard } from '../../data/cards'
-import { getProviderInfo, infoAmount, infoUnlimited, infoScope, infoRemaining, infoRate, infoTime, type ProviderInfo, type ProviderInfoRef } from '../../services/providerInfo'
+import { newAPIStates, newAPIAmount, newAPIExpiry, getProviderInfo, infoAmount, infoUnlimited, infoScope, infoRemaining, infoRate, infoTime, type ProviderInfo, type ProviderInfoRef } from '../../services/providerInfo'
+import NewApiInfoDetails from './NewApiInfoDetails.vue'
 import ProviderInfoDetails from './ProviderInfoDetails.vue'
 const props = defineProps<{ card: AutomationCard; providerRef: ProviderInfoRef; revision: number; theme: string }>()
 const { t } = useI18n()
@@ -16,7 +17,8 @@ let timer: number | undefined
 const identity = computed(() => JSON.stringify([props.providerRef, props.card.apiUrl, props.card.apiKey, props.card.upstreamInfo]))
 const remaining = computed(() => infoRemaining(data.value?.usage))
 const amount = computed(() => infoUnlimited(data.value?.usage) ? t('upstreamInfo.unlimited') : infoAmount(remaining.value, data.value?.usage?.unit || data.value?.usage?.quota?.unit))
-const states = computed(() => data.value ? [data.value.usageState, data.value.billingState] : [])
+const isNewAPI = computed(() => props.card.upstreamInfo?.type === 'newapi')
+const states = computed(() => data.value ? (isNewAPI.value ? newAPIStates(data.value).map(p => p.state) : [data.value.usageState, data.value.billingState]) : [])
 const stale = computed(() => states.value.some(s => s.stale))
 const partial = computed(() => states.value.some(s => s.status !== 'ready'))
 const refreshedAt = computed(() => states.value.map(s => s.updatedAt).filter((s): s is string => !!s).sort()[0])
@@ -48,13 +50,18 @@ onUnmounted(() => { active = false; generation++; stop(); document.removeEventLi
 <template>
   <div class="upstream-panel" draggable="false" @click.stop @mousedown.stop @dragstart.stop.prevent>
     <div class="upstream-head">
-      <span class="upstream-label">{{ t('upstreamInfo.title') }} <small>sub2api</small></span>
+      <span class="upstream-label">{{ t('upstreamInfo.title') }} <small>{{ isNewAPI ? 'New API' : 'sub2api' }}</small></span>
       <div class="upstream-actions">
         <button type="button" :disabled="busy" :aria-label="t('upstreamInfo.refresh')" @click="refresh(true)">{{ t(busy ? 'upstreamInfo.loading' : 'upstreamInfo.refresh') }}</button>
         <button type="button" @click="open = true">{{ t('upstreamInfo.details') }} ↗</button>
       </div>
     </div>
-    <div v-if="data?.usage || data?.billing" class="upstream-metrics">
+    <div v-if="isNewAPI && data?.key" class="upstream-metrics">
+      <span>{{ t('upstreamInfo.keyQuota') }} <strong :class="{ exhausted: !data.key.unlimited_quota && data.key.total_available != null && data.key.total_available <= 0 }">{{ data.key.unlimited_quota ? t('upstreamInfo.unlimited') : newAPIAmount(data, 'remaining', t('upstreamInfo.rawUnit')) }}</strong></span>
+      <span>{{ t('upstreamInfo.used') }} <strong>{{ newAPIAmount(data, 'used', t('upstreamInfo.rawUnit')) }}</strong></span>
+      <span>{{ t('upstreamInfo.expires') }} <strong>{{ newAPIExpiry(data.key.expires_at, t('upstreamInfo.noExpiry')) }}</strong></span>
+    </div>
+    <div v-else-if="!isNewAPI && (data?.usage || data?.billing)" class="upstream-metrics">
       <span>{{ t(`upstreamInfo.${infoScope(data?.usage)}`) }} <strong :class="{ exhausted: remaining != null && !infoUnlimited(data?.usage) && remaining <= 0 }">{{ amount }}</strong></span>
       <span>{{ t('upstreamInfo.todayActual') }} <strong>{{ infoAmount(data?.usage?.usage?.today?.actual_cost, 'USD') }}</strong></span>
       <span>{{ t('upstreamInfo.effectiveRate') }} <strong>{{ infoRate(data?.billing?.effective_rate_multiplier) }}</strong></span>
@@ -66,7 +73,8 @@ onUnmounted(() => { active = false; generation++; stop(); document.removeEventLi
       <span v-else-if="!data">{{ t('upstreamInfo.pending') }}</span>
       <span v-if="refreshedAt">{{ t('upstreamInfo.updated') }} {{ infoTime(refreshedAt) }}</span>
     </p>
-    <ProviderInfoDetails :open="open" :name="card.name" :data="data" :busy="busy" :failed="failed" :theme="theme" @close="open = false" @refresh="refresh(true)" />
+    <NewApiInfoDetails v-if="isNewAPI" :open="open" :name="card.name" :data="data" :busy="busy" :failed="failed" @close="open = false" @refresh="refresh(true)" />
+    <ProviderInfoDetails v-else :open="open" :name="card.name" :data="data" :busy="busy" :failed="failed" :theme="theme" @close="open = false" @refresh="refresh(true)" />
   </div>
 </template>
 <style scoped>
