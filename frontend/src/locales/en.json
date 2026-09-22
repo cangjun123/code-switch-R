@@ -1344,6 +1344,38 @@
       "expired": "Expired",
       "quota_exhausted": "Quota exhausted",
       "disabled": "Disabled"
-    }
+    },
+    "site": "Quota conversion",
+    "pricing": "Public reference prices",
+    "rawUnit": "quota units",
+    "noExpiry": "Never",
+    "newapiScope": "Quota belongs to this key only. Unlimited quota does not guarantee a funded account. Model restrictions are informational and do not change the local allowlist.",
+    "keyName": "Key name",
+    "quotaTotal": "Total quota",
+    "modelLimits": "Upstream model restrictions",
+    "noModelLimits": "Disabled",
+    "conversionHint": "USD values represent site billing credits: raw quota ÷ quota_per_unit. Recharge discounts and currency exchange are excluded.",
+    "rawFallback": "No valid site conversion is available; showing raw quota units.",
+    "rawRemaining": "Raw remaining quota",
+    "rawUsed": "Raw used quota",
+    "rawTotal": "Raw total quota",
+    "publicPriceHint": "Prices use public groups, which may differ from this key’s group or personal multiplier. Refer to the site for complex billing. — means unknown or not applicable.",
+    "searchModel": "Search models",
+    "group": "Group",
+    "allGroups": "All groups",
+    "priceUnits": "Input, output and cache prices: USD / million tokens. Per request prices: USD / request.",
+    "priceMode": "Billing mode",
+    "perRequest": "Per request",
+    "free": "Free",
+    "priceModes": {
+      "tokens": "Tokens",
+      "request": "Per request",
+      "complex": "Complex pricing"
+    },
+    "noPrices": "No matching public prices",
+    "priceUnavailable": "Public prices are inaccessible or require login. Quota queries and saving remain available.",
+    "previous": "Previous",
+    "next": "Next",
+    "priceRows": "rows"
   }
 }

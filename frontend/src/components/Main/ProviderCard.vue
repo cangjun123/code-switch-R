@@ -101,7 +101,7 @@ const showBlBadge = computed(() => {
   <article
     :class="[
       'automation-card',
-      { 'has-upstream-info': card.upstreamInfo?.type === 'sub2api' },
+      { 'has-upstream-info': ['sub2api', 'newapi'].includes(card.upstreamInfo?.type || '') },
       { dragging: isDragging },
       { 'is-last-used': isLastUsed },
       { 'is-highlighted': isHighlighted }
@@ -183,7 +183,7 @@ const showBlBadge = computed(() => {
           </button>
         </div>
 
-        <ProviderInfoPanel v-if="card.upstreamInfo?.type === 'sub2api'" :card="card" :provider-ref="infoRef" :revision="infoRevision" :theme="resolvedTheme" />
+        <ProviderInfoPanel v-if="['sub2api', 'newapi'].includes(card.upstreamInfo?.type || '')" :card="card" :provider-ref="infoRef" :revision="infoRevision" :theme="resolvedTheme" />
 
         <!-- 卡片运行指标 -->
         <p class="card-metrics">
