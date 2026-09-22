@@ -349,7 +349,11 @@ func (ps *ProviderService) saveProvidersLocked(kind string, providers []Provider
 	}
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	// Restrict a leftover temporary file before writing account credentials.
+	if err := os.Chmod(tmp, 0o600); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {

@@ -1,6 +1,6 @@
 import { Call } from '@wailsio/runtime'
 
-export type UpstreamInfoConfig = { type: '' | 'sub2api' | 'newapi'; baseUrl?: string }
+export type UpstreamInfoConfig = { type: '' | 'sub2api' | 'newapi'; baseUrl?: string; accountToken?: string; accountUserId?: string }
 export type ProviderInfoRef = { kind: string; id: string }
 export type ProviderInfoDraft = { apiUrl: string; apiKey: string; upstreamInfo?: UpstreamInfoConfig }
 export type InfoState = { status: string; updatedAt?: string; retryAt?: string; stale: boolean }
@@ -35,6 +35,7 @@ export type NewAPIKey = {
 }
 export type NewAPIPrice = { model: string; group: string; groupRatio?: number; mode: 'tokens' | 'request' | 'complex'; input?: number; output?: number; cacheRead?: number; cacheWrite?: number; request?: number }
 export type ProviderInfo = {
+  account?: { quota: number; quotaUSD?: number }; accountState?: InfoState
   platform?: 'sub2api' | 'newapi'; key?: NewAPIKey; site?: { quota_per_unit: number }
   pricing?: { rows: NewAPIPrice[] }; siteState?: InfoState; pricingState?: InfoState
   usage?: UpstreamUsage; billing?: UpstreamBilling; usageState: InfoState; billingState: InfoState
@@ -75,5 +76,8 @@ export const newAPIAmount = (data: ProviderInfo | null | undefined, field: 'rema
 }
 export const newAPIExpiry = (seconds: number | undefined, noExpiry: string) => seconds == null ? '—' : seconds === 0 || seconds === -1 ? noExpiry : infoTime(String(new Date(seconds * 1000)))
 export const newAPIStates = (data: ProviderInfo) => [
-  { label: 'usage', state: data.usageState }, { label: 'site', state: data.siteState }, { label: 'pricing', state: data.pricingState },
+  { label: 'wallet', state: data.accountState }, { label: 'usage', state: data.usageState }, { label: 'site', state: data.siteState }, { label: 'pricing', state: data.pricingState },
 ].filter((part): part is { label: string; state: InfoState } => !!part.state)
+
+export const newAPIAccountReady = (data: ProviderInfo | null | undefined) => data?.accountState?.status === 'ready' && data.account?.quota != null
+export const newAPIAccountAmount = (data: ProviderInfo | null | undefined, rawUnit: string) => data?.account?.quotaUSD != null ? infoAmount(data.account.quotaUSD, 'USD') : infoAmount(data?.account?.quota, rawUnit)

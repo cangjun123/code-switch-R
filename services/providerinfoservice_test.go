@@ -290,6 +290,13 @@ func TestProviderInfoPersistenceAndReferences(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			server := infoServer(t, func(w http.ResponseWriter, r *http.Request) {
 				if platform == "newapi" {
+					if r.URL.Path == "/api/user/self" {
+						if r.Header.Get("Authorization") != "Bearer account-secret" || r.Header.Get("New-Api-User") != "42" {
+							t.Error("persisted account credential lost")
+						}
+						fmt.Fprint(w, accountFixture)
+						return
+					}
 					serveNewAPI(t, w, r)
 					return
 				}
@@ -302,6 +309,10 @@ func TestProviderInfoPersistenceAndReferences(t *testing.T) {
 			providers := NewProviderService()
 			gemini := NewGeminiService("")
 			config := &UpstreamInfoConfig{Type: platform, BaseURL: server.URL}
+			if platform == "newapi" {
+				config.AccountToken = "account-secret"
+				config.AccountUserID = "42"
+			}
 			p := Provider{ID: 42, Name: "Info test", APIURL: server.URL + "/v1", APIKey: "test-secret", UpstreamInfo: config}
 			for _, kind := range []string{"claude", "codex", "gpt-image", "custom:test"} {
 				if err := providers.SaveProviders(kind, []Provider{p}); err != nil {
@@ -315,7 +326,7 @@ func TestProviderInfoPersistenceAndReferences(t *testing.T) {
 			svc := NewProviderInfoService(providers, reloaded)
 			for _, ref := range []ProviderInfoRef{{"claude", "42"}, {"codex", "42"}, {"gpt-image", "42"}, {"custom:test", "42"}, {"gemini", "native-id"}} {
 				got, err := svc.GetInfo(ref, false, "UTC")
-				if err != nil || (platform == "sub2api" && got.Usage == nil) || (platform == "newapi" && got.Key == nil) {
+				if err != nil || (platform == "sub2api" && got.Usage == nil) || (platform == "newapi" && (got.Key == nil || got.Account == nil)) {
 					t.Fatalf("ref %+v: %v", ref, err)
 				}
 			}
@@ -327,13 +338,22 @@ func TestProviderInfoPersistenceAndReferences(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if copy.UpstreamInfo == nil || copy.UpstreamInfo.BaseURL != server.URL || copy.UpstreamInfo.Type != platform {
+				if copy.UpstreamInfo == nil || copy.UpstreamInfo.BaseURL != server.URL || copy.UpstreamInfo.Type != platform || copy.UpstreamInfo.AccountToken != config.AccountToken || copy.UpstreamInfo.AccountUserID != config.AccountUserID {
 					t.Fatal("copy lost info config")
 				}
 			}
 			geminiCopy, err := reloaded.DuplicateProvider("native-id")
-			if err != nil || geminiCopy.UpstreamInfo == nil || geminiCopy.UpstreamInfo.BaseURL != server.URL || geminiCopy.UpstreamInfo.Type != platform {
+			if err != nil || geminiCopy.UpstreamInfo == nil || geminiCopy.UpstreamInfo.BaseURL != server.URL || geminiCopy.UpstreamInfo.Type != platform || geminiCopy.UpstreamInfo.AccountToken != config.AccountToken || geminiCopy.UpstreamInfo.AccountUserID != config.AccountUserID {
 				t.Fatal("Gemini copy lost info config")
+			}
+			for _, kind := range []string{"codex", "custom:test", "gemini"} {
+				path, _ := providerFilePath(kind)
+				if kind == "gemini" {
+					path = getGeminiProvidersPath()
+				}
+				if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0600 {
+					t.Fatalf("private provider file permissions for %s", kind)
+				}
 			}
 			p.UpstreamInfo = nil
 			if err := providers.SaveProviders("claude", []Provider{p}); err != nil {

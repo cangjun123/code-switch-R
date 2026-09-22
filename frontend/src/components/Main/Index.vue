@@ -2069,7 +2069,7 @@ const openEditModal = (card: AutomationCard) => {
   modalState.editingId = card.id
   editingCard.value = card
   Object.assign(modalState.form, {
-    upstreamInfo: { type: card.upstreamInfo?.type || '', baseUrl: card.upstreamInfo?.baseUrl || '' },
+    upstreamInfo: { ...card.upstreamInfo, type: card.upstreamInfo?.type || '', baseUrl: card.upstreamInfo?.baseUrl || '' },
     name: card.name,
     apiUrl: card.apiUrl,
     apiKey: card.apiKey,

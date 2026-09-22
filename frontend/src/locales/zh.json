@@ -1338,7 +1338,10 @@
       "rate_limited": "上游限流，请稍后重试",
       "network": "网络错误或请求超时",
       "invalid_response": "上游响应格式不受支持",
-      "upstream_error": "上游服务异常"
+      "upstream_error": "上游服务异常",
+      "requires_user_id": "请填写账户用户 ID 后重试",
+      "invalid_user_id": "用户 ID 必须为正整数",
+      "missing_key": "未填写 API Key"
     },
     "keyState": {
       "active": "正常",
@@ -1350,7 +1353,7 @@
     "pricing": "公开参考价格",
     "rawUnit": "额度单位",
     "noExpiry": "永不过期",
-    "newapiScope": "仅显示当前 Key 的额度。无限额度不代表账户余额充足；模型限制仅供查看，不修改本地白名单。",
+    "newapiScope": "Key 额度与账户余额独立展示。无限 Key 不代表账户余额充足；模型限制仅供查看，不修改本地白名单。",
     "keyName": "Key 名称",
     "quotaTotal": "总额度",
     "modelLimits": "上游模型限制",
@@ -1377,6 +1380,15 @@
     "priceUnavailable": "公开价格不可访问或需要登录；额度查询和保存不受影响。",
     "previous": "上一页",
     "next": "下一页",
-    "priceRows": "条"
+    "priceRows": "条",
+    "accountToken": "账户访问令牌（可选）",
+    "accountTokenPlaceholder": "留空则仅查询 Key 额度",
+    "accountTokenHint": "填写上游个人设置中的访问令牌，用于只读查询账户余额；不是调用模型的 API Key。令牌不可用时仍显示 Key 额度。",
+    "accountUserId": "账户用户 ID（部分站点必填）",
+    "accountUserIdPlaceholder": "上游个人资料中的数字 ID",
+    "accountUserIdHint": "如果测试提示缺少 New-Api-User，请填写对应账户的用户 ID。",
+    "accountFallback": "账户余额不可用，按 Key 额度展示",
+    "accountScope": "余额属于该访问令牌对应的账户，请确认与当前 API Key 属于同一账户。同一账户的余额不要跨卡片累加。",
+    "keyUsed": "Key 已用额度"
   }
 }

@@ -2,7 +2,7 @@
 import { computed, ref, watch, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { AutomationCard } from '../../data/cards'
-import { newAPIStates, newAPIAmount, newAPIExpiry, getProviderInfo, infoAmount, infoUnlimited, infoScope, infoRemaining, infoRate, infoTime, type ProviderInfo, type ProviderInfoRef } from '../../services/providerInfo'
+import { newAPIAccountReady, newAPIAccountAmount, newAPIStates, newAPIAmount, newAPIExpiry, getProviderInfo, infoAmount, infoUnlimited, infoScope, infoRemaining, infoRate, infoTime, type ProviderInfo, type ProviderInfoRef } from '../../services/providerInfo'
 import NewApiInfoDetails from './NewApiInfoDetails.vue'
 import ProviderInfoDetails from './ProviderInfoDetails.vue'
 const props = defineProps<{ card: AutomationCard; providerRef: ProviderInfoRef; revision: number; theme: string }>()
@@ -29,7 +29,12 @@ async function refresh(force = false) {
   try {
     const result = await getProviderInfo({ ...props.providerRef }, force)
     if (generation === run) data.value = result
-  } catch { if (generation === run) failed.value = true }
+  } catch {
+    if (generation === run) {
+      failed.value = true
+      if (data.value?.accountState) data.value = { ...data.value, account: undefined, accountState: { status: 'network', stale: false } }
+    }
+  }
   finally { if (generation === run) busy.value = false }
 }
 function start() {
@@ -56,10 +61,13 @@ onUnmounted(() => { active = false; generation++; stop(); document.removeEventLi
         <button type="button" @click="open = true">{{ t('upstreamInfo.details') }} ↗</button>
       </div>
     </div>
-    <div v-if="isNewAPI && data?.key" class="upstream-metrics">
+    <div v-if="isNewAPI && (data?.key || newAPIAccountReady(data))" class="upstream-metrics">
+      <span v-if="newAPIAccountReady(data)" class="account-balance">{{ t('upstreamInfo.wallet') }} <strong :class="{ exhausted: data?.account?.quota != null && data.account.quota <= 0 }">{{ newAPIAccountAmount(data, t('upstreamInfo.rawUnit')) }}</strong></span>
+      <template v-if="data?.key">
       <span>{{ t('upstreamInfo.keyQuota') }} <strong :class="{ exhausted: !data.key.unlimited_quota && data.key.total_available != null && data.key.total_available <= 0 }">{{ data.key.unlimited_quota ? t('upstreamInfo.unlimited') : newAPIAmount(data, 'remaining', t('upstreamInfo.rawUnit')) }}</strong></span>
-      <span>{{ t('upstreamInfo.used') }} <strong>{{ newAPIAmount(data, 'used', t('upstreamInfo.rawUnit')) }}</strong></span>
+      <span>{{ t('upstreamInfo.keyUsed') }} <strong>{{ newAPIAmount(data, 'used', t('upstreamInfo.rawUnit')) }}</strong></span>
       <span>{{ t('upstreamInfo.expires') }} <strong>{{ newAPIExpiry(data.key.expires_at, t('upstreamInfo.noExpiry')) }}</strong></span>
+      </template>
     </div>
     <div v-else-if="!isNewAPI && (data?.usage || data?.billing)" class="upstream-metrics">
       <span>{{ t(`upstreamInfo.${infoScope(data?.usage)}`) }} <strong :class="{ exhausted: remaining != null && !infoUnlimited(data?.usage) && remaining <= 0 }">{{ amount }}</strong></span>
@@ -69,6 +77,7 @@ onUnmounted(() => { active = false; generation++; stop(); document.removeEventLi
     <p class="upstream-caption" aria-live="polite">
       <span v-if="busy && !data">{{ t('upstreamInfo.loading') }}</span>
       <span v-else-if="failed">{{ t('upstreamInfo.fetchFailed') }}</span>
+      <span v-else-if="data?.accountState && !newAPIAccountReady(data)">{{ t('upstreamInfo.accountFallback') }}</span>
       <span v-else-if="partial">{{ t(stale ? 'upstreamInfo.stale' : 'upstreamInfo.partial') }}</span>
       <span v-else-if="!data">{{ t('upstreamInfo.pending') }}</span>
       <span v-if="refreshedAt">{{ t('upstreamInfo.updated') }} {{ infoTime(refreshedAt) }}</span>
