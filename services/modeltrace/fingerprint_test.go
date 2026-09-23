@@ -41,12 +41,26 @@ func TestAnalyzeAgainstGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载指纹库失败: %v", err)
 	}
-	if len(bank.Models) != 13 {
-		t.Fatalf("指纹库模型数 = %d, 期望 13", len(bank.Models))
+	// 指纹库模型数随上游更新而增长，这里只要求非空；具体覆盖范围由
+	// golden 对拍与 TestBankContains 校验，避免每次上游扩容都要改测试。
+	if len(bank.Models) == 0 {
+		t.Fatal("指纹库为空")
+	}
+	if len(bank.ModelOrder) != len(bank.Models) {
+		t.Fatalf("model_order 长度 = %d, 与 models 数 %d 不一致",
+			len(bank.ModelOrder), len(bank.Models))
 	}
 
 	for _, testCase := range loadGolden(t) {
 		t.Run(testCase.Name, func(t *testing.T) {
+			if len(testCase.Probabilities) != len(bank.ModelOrder) {
+				t.Fatalf("golden 概率维度 = %d, 指纹库模型数 = %d（需重新生成 golden.json）",
+					len(testCase.Probabilities), len(bank.ModelOrder))
+			}
+			if len(testCase.Scores) != len(bank.ModelOrder) {
+				t.Fatalf("golden 分数维度 = %d, 指纹库模型数 = %d（需重新生成 golden.json）",
+					len(testCase.Scores), len(bank.ModelOrder))
+			}
 			result, err := Analyze(testCase.Outputs, testCase.ExpectedModel, bank)
 			if err != nil {
 				t.Fatalf("Analyze 失败: %v", err)
@@ -127,7 +141,8 @@ func TestBankContains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载指纹库失败: %v", err)
 	}
-	for _, id := range []string{"gpt-5.4", "gpt-6-astra", "claude-opus-4-8", "claude-haiku-4-5-20251001"} {
+	for _, id := range []string{"gpt-5.4", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+		"claude-opus-4-8", "claude-haiku-4-5-20251001", "claude-opus-5-5"} {
 		if !bank.ContainsModel(id) {
 			t.Errorf("指纹库应包含 %s", id)
 		}
