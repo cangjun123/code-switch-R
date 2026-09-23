@@ -231,8 +231,14 @@ func TestModelTraceSupportedModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSupportedModels 失败: %v", err)
 	}
-	if len(models) != 13 {
-		t.Fatalf("模型数 = %d, 期望 13", len(models))
+	// 指纹库模型数随上游更新增长，这里校验非空且字段完整即可
+	if len(models) == 0 {
+		t.Fatal("指纹库模型列表为空")
+	}
+	for _, m := range models {
+		if m.ID == "" || m.DisplayName == "" || m.Family == "" || m.FamilyName == "" {
+			t.Fatalf("模型条目字段不完整: %+v", m)
+		}
 	}
 }
 
