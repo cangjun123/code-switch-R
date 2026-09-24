@@ -649,19 +649,28 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 			return
 		}
 		accessSkippedCount := 0
-		if kind == ProviderKindCodex {
+		if kind == ProviderKindCodex || kind == ProviderKindClaude {
 			relayKey, keyErr := prs.relayKeyForRequest(c)
 			if keyErr != nil {
-				writeOpenAIQuotaServiceError(c, http.StatusUnauthorized, "relay_key_not_found", "relay key no longer exists")
+				if kind == ProviderKindClaude {
+					writeClaudeRelayKeyError(c, http.StatusUnauthorized, "authentication_error", "relay key no longer exists")
+				} else {
+					writeOpenAIQuotaServiceError(c, http.StatusUnauthorized, "relay_key_not_found", "relay key no longer exists")
+				}
 				return
 			}
-			providers, accessSkippedCount = filterCodexProvidersForRelayKey(relayKey, providers)
-			if relayKey != nil && len(relayKey.AllowedProviderIDs) > 0 && len(providers) == 0 {
-				writeOpenAIProviderAccessDenied(c)
+			allowlist := relayKeyProviderAllowlist(relayKey, kind)
+			providers, accessSkippedCount = filterProvidersByAllowlist(allowlist, providers)
+			if len(allowlist) > 0 && len(providers) == 0 {
+				if kind == ProviderKindClaude {
+					writeClaudeRelayKeyError(c, http.StatusForbidden, "permission_error", "Relay key is not allowed to access any configured Claude provider")
+				} else {
+					writeOpenAIProviderAccessDenied(c)
+				}
 				return
 			}
 			if accessSkippedCount > 0 {
-				fmt.Printf("[INFO] Codex relay key provider 白名单已过滤 %d 个 provider\n", accessSkippedCount)
+				fmt.Printf("[INFO] %s relay key provider 白名单已过滤 %d 个 provider\n", kind, accessSkippedCount)
 			}
 		}
 

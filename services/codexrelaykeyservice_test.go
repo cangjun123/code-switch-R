@@ -178,3 +178,52 @@ func TestCodexRelayKeyQuotaAllowsOnlyOneActiveLimit(t *testing.T) {
 		t.Fatalf("unexpected saved quota: %+v", key)
 	}
 }
+
+func TestCodexRelayKeyClaudeProviderAllowlistIsIndependent(t *testing.T) {
+	var decoded CodexRelayKey
+	if err := json.Unmarshal([]byte(`{"id":"k","key":"csk_test","enabled":true,"allowedProviderIds":[4],"allowed_claude_provider_ids":[9,3,9]}`), &decoded); err != nil {
+		t.Fatalf("unmarshal key: %v", err)
+	}
+	if !equalInt64Slices(decoded.AllowedProviderIDs, []int64{4}) || !equalInt64Slices(decoded.AllowedClaudeProviderIDs, []int64{3, 9}) {
+		t.Fatalf("codex=%v claude=%v", decoded.AllowedProviderIDs, decoded.AllowedClaudeProviderIDs)
+	}
+
+	service := &CodexRelayKeyService{path: t.TempDir() + "/keys.json"}
+	created, err := service.CreateKey("claude-scope")
+	if err != nil {
+		t.Fatalf("CreateKey() failed: %v", err)
+	}
+	if err := service.UpdateAllowedProviderIDs(created.ID, []int64{1}); err != nil {
+		t.Fatalf("UpdateAllowedProviderIDs() failed: %v", err)
+	}
+	if err := service.UpdateAllowedClaudeProviderIDs(created.ID, []int64{7, 2, 7}); err != nil {
+		t.Fatalf("UpdateAllowedClaudeProviderIDs() failed: %v", err)
+	}
+	key, err := service.GetKeyByID(created.ID)
+	if err != nil {
+		t.Fatalf("GetKeyByID() failed: %v", err)
+	}
+	if !equalInt64Slices(key.AllowedProviderIDs, []int64{1}) || !equalInt64Slices(key.AllowedClaudeProviderIDs, []int64{2, 7}) {
+		t.Fatalf("codex=%v claude=%v", key.AllowedProviderIDs, key.AllowedClaudeProviderIDs)
+	}
+	list, err := service.ListKeys()
+	if err != nil {
+		t.Fatalf("ListKeys() failed: %v", err)
+	}
+	if len(list) != 1 || !equalInt64Slices(list[0].AllowedClaudeProviderIDs, []int64{2, 7}) {
+		t.Fatalf("unexpected list: %+v", list)
+	}
+	if err := service.UpdateAllowedClaudeProviderIDs(created.ID, nil); err != nil {
+		t.Fatalf("clear Claude allowlist: %v", err)
+	}
+	key, err = service.GetKeyByID(created.ID)
+	if err != nil {
+		t.Fatalf("GetKeyByID() failed: %v", err)
+	}
+	if len(key.AllowedClaudeProviderIDs) != 0 || !equalInt64Slices(key.AllowedProviderIDs, []int64{1}) {
+		t.Fatalf("clearing Claude must not touch Codex: codex=%v claude=%v", key.AllowedProviderIDs, key.AllowedClaudeProviderIDs)
+	}
+	if err := service.UpdateAllowedClaudeProviderIDs(created.ID, []int64{-1}); err == nil {
+		t.Fatal("negative Claude provider ID should be rejected")
+	}
+}

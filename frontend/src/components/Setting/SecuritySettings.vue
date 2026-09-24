@@ -10,11 +10,13 @@ import {
   listCodexRelayKeys,
   listCodexRelayModelPrices,
   listCodexRelayProviders,
+  listClaudeRelayProviders,
   listCodexRelayUnpricedModels,
   logoutAdmin,
   resetCodexRelayKeyQuota,
   updateCodexRelayKeyName,
   updateCodexRelayKeyProviders,
+  updateCodexRelayKeyClaudeProviders,
   updateCodexRelayKeyQuota,
   upsertCodexRelayModelPrice,
   updateAdminCredentials,
@@ -24,6 +26,7 @@ import {
   type CodexRelayModelPrice,
   type CodexRelayProviderOption,
   type CodexRelayUnpricedModel,
+  type RelayProviderKind,
 } from '../../services/adminAuth'
 import { extractErrorMessage } from '../../utils/error'
 import { showToast } from '../../utils/toast'
@@ -49,20 +52,39 @@ const createName = ref('')
 type QuotaMode = 'usd' | 'token'
 type QuotaPeriod = 'once' | 'daily' | 'weekly' | 'monthly'
 type QuotaDraft = { mode: QuotaMode; tokenLimit: string; usdLimit: string; period: QuotaPeriod }
+type AccessDraft = { restricted: boolean; allowedProviderIds: number[] }
+
+// Codex 与 Claude 的 provider ID 各自独立分配，白名单也分开保存
+const providerKinds: RelayProviderKind[] = ['codex', 'claude']
+// 各 kind 对应的 i18n key（Codex 沿用原有 key）
+const providerKindText: Record<RelayProviderKind, { restrict: string; empty: string; loadFailed: string; scope: string }> = {
+  codex: {
+    restrict: 'auth.security.restrictProviders',
+    empty: 'auth.security.noProviders',
+    loadFailed: 'auth.security.loadProvidersFailed',
+    scope: 'auth.security.codexScope',
+  },
+  claude: {
+    restrict: 'auth.security.restrictClaudeProviders',
+    empty: 'auth.security.noClaudeProviders',
+    loadFailed: 'auth.security.loadClaudeProvidersFailed',
+    scope: 'auth.security.claudeScope',
+  },
+}
 
 const createQuotaMode = ref<QuotaMode>('usd')
 const createTokenLimit = ref('0')
 const createUsdLimit = ref('0')
 const createPeriod = ref<QuotaPeriod>('once')
-const createRestrictProviders = ref(false)
-const createAllowedProviderIds = ref<number[]>([])
+const createRestrictProviders = ref<Record<RelayProviderKind, boolean>>({ codex: false, claude: false })
+const createAllowedProviderIds = ref<Record<RelayProviderKind, number[]>>({ codex: [], claude: [] })
 const createdKey = ref<CodexRelayKeyCreateResult | null>(null)
 const quotaDrafts = ref<Record<string, QuotaDraft>>({})
 const quotaBusyId = ref('')
 const quotaRefreshBusyId = ref('')
-const providers = ref<CodexRelayProviderOption[]>([])
+const providers = ref<Record<RelayProviderKind, CodexRelayProviderOption[]>>({ codex: [], claude: [] })
 const providersLoading = ref(false)
-const accessDrafts = ref<Record<string, { restricted: boolean; allowedProviderIds: number[] }>>({})
+const accessDrafts = ref<Record<string, Record<RelayProviderKind, AccessDraft>>>({})
 const accessBusyId = ref('')
 const modelPrices = ref<CodexRelayModelPrice[]>([])
 const unpricedModels = ref<CodexRelayUnpricedModel[]>([])
@@ -126,13 +148,18 @@ const loadKeys = async () => {
 
 const loadProviders = async () => {
   providersLoading.value = true
-  try {
-    providers.value = await listCodexRelayProviders()
-  } catch (error) {
-    showToast(extractErrorMessage(error, t('auth.security.loadProvidersFailed')), 'error')
-  } finally {
-    providersLoading.value = false
+  const loaders: Record<RelayProviderKind, () => Promise<CodexRelayProviderOption[]>> = {
+    codex: listCodexRelayProviders,
+    claude: listClaudeRelayProviders,
   }
+  await Promise.all(providerKinds.map(async (kind) => {
+    try {
+      providers.value[kind] = await loaders[kind]()
+    } catch (error) {
+      showToast(extractErrorMessage(error, t(providerKindText[kind].loadFailed)), 'error')
+    }
+  }))
+  providersLoading.value = false
 }
 
 const draftForKey = (key: CodexRelayKeyListItem) => {
@@ -147,25 +174,40 @@ const draftForKey = (key: CodexRelayKeyListItem) => {
   return quotaDrafts.value[key.id]
 }
 
-const accessDraftForKey = (key: CodexRelayKeyListItem) => {
+const allowedIdsForKey = (key: CodexRelayKeyListItem, kind: RelayProviderKind): number[] =>
+  (kind === 'codex' ? key.allowedProviderIds : key.allowedClaudeProviderIds) ?? []
+
+const accessDraftFromIds = (ids: number[]): AccessDraft => ({
+  restricted: ids.length > 0,
+  allowedProviderIds: [...ids],
+})
+
+const accessDraftForKey = (key: CodexRelayKeyListItem, kind: RelayProviderKind) => {
   if (!accessDrafts.value[key.id]) {
-    const allowedProviderIds = [...(key.allowedProviderIds ?? [])]
     accessDrafts.value[key.id] = {
-      restricted: allowedProviderIds.length > 0,
-      allowedProviderIds,
+      codex: accessDraftFromIds(allowedIdsForKey(key, 'codex')),
+      claude: accessDraftFromIds(allowedIdsForKey(key, 'claude')),
     }
   }
-  return accessDrafts.value[key.id]
+  return accessDrafts.value[key.id][kind]
 }
 
 type ProviderOptionView = CodexRelayProviderOption & { unavailable?: boolean }
 
-const providerOptionsForKey = (key: CodexRelayKeyListItem): ProviderOptionView[] => {
-  const knownIDs = new Set(providers.value.map((provider) => provider.id))
-  const unavailable = (key.allowedProviderIds ?? [])
+const providerOptionsForKey = (key: CodexRelayKeyListItem, kind: RelayProviderKind): ProviderOptionView[] => {
+  const knownIDs = new Set(providers.value[kind].map((provider) => provider.id))
+  const unavailable = allowedIdsForKey(key, kind)
     .filter((providerID) => !knownIDs.has(providerID))
     .map((providerID) => ({ id: providerID, name: `#${providerID}`, enabled: false, unavailable: true }))
-  return [...providers.value, ...unavailable]
+  return [...providers.value[kind], ...unavailable]
+}
+
+const providerScopeText = (key: CodexRelayKeyListItem, kind: RelayProviderKind) => {
+  const count = allowedIdsForKey(key, kind).length
+  const scope = count > 0
+    ? t('auth.security.selectedProvidersCount', { count })
+    : t('auth.security.allProviders')
+  return t(providerKindText[kind].scope, { scope })
 }
 
 const loadPrices = async () => {
@@ -244,22 +286,25 @@ const handleCreateKey = async () => {
         throw new Error(t('auth.security.invalidUsdLimit'))
       }
     }
-    if (createRestrictProviders.value && createAllowedProviderIds.value.length === 0) {
+    if (providerKinds.some((kind) => createRestrictProviders.value[kind] && createAllowedProviderIds.value[kind].length === 0)) {
       throw new Error(t('auth.security.selectProviderRequired'))
     }
+    const createAllowed = (kind: RelayProviderKind) =>
+      createRestrictProviders.value[kind] ? [...createAllowedProviderIds.value[kind]] : []
     createdKey.value = await createCodexRelayKey(createName.value.trim(), {
       tokenLimit,
       usdLimit,
       period: createPeriod.value,
-      allowedProviderIds: createRestrictProviders.value ? [...createAllowedProviderIds.value] : [],
+      allowedProviderIds: createAllowed('codex'),
+      allowedClaudeProviderIds: createAllowed('claude'),
     })
     createName.value = ''
     createQuotaMode.value = 'usd'
     createTokenLimit.value = '0'
     createUsdLimit.value = '0'
     createPeriod.value = 'once'
-    createRestrictProviders.value = false
-    createAllowedProviderIds.value = []
+    createRestrictProviders.value = { codex: false, claude: false }
+    createAllowedProviderIds.value = { codex: [], claude: [] }
     await loadKeys()
     showToast(t('auth.security.createSuccess'), 'success')
   } catch (error) {
@@ -270,20 +315,30 @@ const handleCreateKey = async () => {
 }
 
 const handleUpdateProviderAccess = async (key: CodexRelayKeyListItem) => {
-  const draft = accessDraftForKey(key)
-  if (draft.restricted && draft.allowedProviderIds.length === 0) {
+  const drafts = providerKinds.map((kind) => ({ kind, draft: accessDraftForKey(key, kind) }))
+  if (drafts.some(({ draft }) => draft.restricted && draft.allowedProviderIds.length === 0)) {
     showToast(t('auth.security.selectProviderRequired'), 'error')
     return
   }
+  const updaters: Record<RelayProviderKind, (id: string, ids: number[]) => Promise<number[]>> = {
+    codex: updateCodexRelayKeyProviders,
+    claude: updateCodexRelayKeyClaudeProviders,
+  }
+  const sortedKey = (ids: number[]) => [...ids].sort((a, b) => a - b).join(',')
   accessBusyId.value = key.id
   try {
-    await updateCodexRelayKeyProviders(key.id, draft.restricted ? [...draft.allowedProviderIds] : [])
+    // 只提交有变化的白名单
+    for (const { kind, draft } of drafts) {
+      const next = draft.restricted ? [...draft.allowedProviderIds] : []
+      if (sortedKey(next) !== sortedKey(allowedIdsForKey(key, kind))) {
+        await updaters[kind](key.id, next)
+      }
+    }
     await loadKeys()
     const refreshed = keys.value.find((item) => item.id === key.id)
-    const allowedProviderIds = [...(refreshed?.allowedProviderIds ?? [])]
     accessDrafts.value[key.id] = {
-      restricted: allowedProviderIds.length > 0,
-      allowedProviderIds,
+      codex: accessDraftFromIds(refreshed ? allowedIdsForKey(refreshed, 'codex') : []),
+      claude: accessDraftFromIds(refreshed ? allowedIdsForKey(refreshed, 'claude') : []),
     }
     showToast(t('auth.security.providerAccessUpdated'), 'success')
   } catch (error) {
@@ -654,29 +709,34 @@ onMounted(async () => {
         </button>
       </div>
 
-      <fieldset class="provider-access-control" :aria-label="t('auth.security.providerAccess')">
+      <fieldset
+        v-for="kind in providerKinds"
+        :key="kind"
+        class="provider-access-control"
+        :aria-label="t(providerKindText[kind].restrict)"
+      >
         <div class="provider-access-header">
           <label class="provider-access-toggle">
             <input
-              v-model="createRestrictProviders"
+              v-model="createRestrictProviders[kind]"
               type="checkbox"
-              :disabled="createBusy || providersLoading || providers.length === 0"
+              :disabled="createBusy || providersLoading || providers[kind].length === 0"
             />
-            <span>{{ t('auth.security.restrictProviders') }}</span>
+            <span>{{ t(providerKindText[kind].restrict) }}</span>
           </label>
           <span class="provider-access-state">
-            {{ createRestrictProviders ? t('auth.security.selectedProviders') : t('auth.security.allProviders') }}
+            {{ createRestrictProviders[kind] ? t('auth.security.selectedProviders') : t('auth.security.allProviders') }}
           </span>
         </div>
-        <div v-if="createRestrictProviders" class="provider-options">
-          <label v-for="provider in providers" :key="provider.id" class="provider-option">
-            <input v-model="createAllowedProviderIds" type="checkbox" :value="provider.id" :disabled="createBusy" />
+        <div v-if="createRestrictProviders[kind]" class="provider-options">
+          <label v-for="provider in providers[kind]" :key="provider.id" class="provider-option">
+            <input v-model="createAllowedProviderIds[kind]" type="checkbox" :value="provider.id" :disabled="createBusy" />
             <span>{{ provider.name }}</span>
             <small v-if="!provider.enabled">{{ t('auth.security.providerDisabled') }}</small>
           </label>
         </div>
         <span v-else-if="providersLoading" class="provider-access-empty">{{ t('auth.security.loadingProviders') }}</span>
-        <span v-else-if="providers.length === 0" class="provider-access-empty">{{ t('auth.security.noProviders') }}</span>
+        <span v-else-if="providers[kind].length === 0" class="provider-access-empty">{{ t(providerKindText[kind].empty) }}</span>
       </fieldset>
 
       <div v-if="createdKey" class="security-created">
@@ -728,10 +788,8 @@ onMounted(async () => {
               <span v-else>
                 {{ t('auth.security.usdUsage') }}: ${{ key.quota?.usdUsed ?? '0' }} / {{ key.usdLimit === '0' ? t('auth.security.unlimited') : `$${key.usdLimit}` }}
               </span>
-              <span class="key-collapsed-scope">
-                {{ (key.allowedProviderIds?.length ?? 0) > 0
-                  ? t('auth.security.selectedProvidersCount', { count: key.allowedProviderIds.length })
-                  : t('auth.security.allProviders') }}
+              <span v-for="kind in providerKinds" :key="kind" class="key-collapsed-scope">
+                {{ providerScopeText(key, kind) }}
               </span>
               <strong v-if="key.quota?.blocked" class="quota-blocked">{{ t('auth.security.quotaBlocked') }}</strong>
             </div>
@@ -828,32 +886,34 @@ onMounted(async () => {
               </div>
             </div>
             <fieldset class="provider-access-editor" :aria-label="t('auth.security.providerAccess')">
-              <div class="provider-access-header">
-                <label class="provider-access-toggle">
-                  <input
-                    v-model="accessDraftForKey(key).restricted"
-                    type="checkbox"
-                    :disabled="accessBusyId === key.id"
-                  />
-                  <span>{{ t('auth.security.restrictProviders') }}</span>
-                </label>
-                <span class="provider-access-state">
-                  {{ accessDraftForKey(key).restricted ? t('auth.security.selectedProviders') : t('auth.security.allProviders') }}
-                </span>
-              </div>
-              <div v-if="accessDraftForKey(key).restricted" class="provider-options">
-                <label v-for="provider in providerOptionsForKey(key)" :key="provider.id" class="provider-option">
-                  <input
-                    v-model="accessDraftForKey(key).allowedProviderIds"
-                    type="checkbox"
-                    :value="provider.id"
-                    :disabled="accessBusyId === key.id"
-                  />
-                  <span>{{ provider.name }}</span>
-                  <small v-if="provider.unavailable">{{ t('auth.security.providerUnavailable') }}</small>
-                  <small v-else-if="!provider.enabled">{{ t('auth.security.providerDisabled') }}</small>
-                </label>
-                <span v-if="providerOptionsForKey(key).length === 0" class="provider-access-empty">{{ t('auth.security.noProviders') }}</span>
+              <div v-for="kind in providerKinds" :key="kind" class="provider-access-kind">
+                <div class="provider-access-header">
+                  <label class="provider-access-toggle">
+                    <input
+                      v-model="accessDraftForKey(key, kind).restricted"
+                      type="checkbox"
+                      :disabled="accessBusyId === key.id"
+                    />
+                    <span>{{ t(providerKindText[kind].restrict) }}</span>
+                  </label>
+                  <span class="provider-access-state">
+                    {{ accessDraftForKey(key, kind).restricted ? t('auth.security.selectedProviders') : t('auth.security.allProviders') }}
+                  </span>
+                </div>
+                <div v-if="accessDraftForKey(key, kind).restricted" class="provider-options">
+                  <label v-for="provider in providerOptionsForKey(key, kind)" :key="provider.id" class="provider-option">
+                    <input
+                      v-model="accessDraftForKey(key, kind).allowedProviderIds"
+                      type="checkbox"
+                      :value="provider.id"
+                      :disabled="accessBusyId === key.id"
+                    />
+                    <span>{{ provider.name }}</span>
+                    <small v-if="provider.unavailable">{{ t('auth.security.providerUnavailable') }}</small>
+                    <small v-else-if="!provider.enabled">{{ t('auth.security.providerDisabled') }}</small>
+                  </label>
+                  <span v-if="providerOptionsForKey(key, kind).length === 0" class="provider-access-empty">{{ t(providerKindText[kind].empty) }}</span>
+                </div>
               </div>
               <div class="provider-access-actions">
                 <button
@@ -1286,6 +1346,11 @@ onMounted(async () => {
   gap: 10px;
   padding: 10px 0 0;
   border-top: 1px solid color-mix(in srgb, var(--mac-border) 70%, transparent);
+}
+
+.provider-access-kind {
+  display: grid;
+  gap: 10px;
 }
 
 .provider-access-header,

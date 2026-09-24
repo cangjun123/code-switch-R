@@ -230,12 +230,27 @@ func (prs *ProviderRelayService) codexQuotaStatusHandler() gin.HandlerFunc {
 	}
 }
 
-func filterCodexProvidersForRelayKey(key *CodexRelayKey, providers []Provider) ([]Provider, int) {
-	if key == nil || len(key.AllowedProviderIDs) == 0 {
+// relayKeyProviderAllowlist returns the provider allowlist that applies to
+// the given kind. Nil means unrestricted.
+func relayKeyProviderAllowlist(key *CodexRelayKey, kind string) []int64 {
+	if key == nil {
+		return nil
+	}
+	switch kind {
+	case ProviderKindCodex:
+		return key.AllowedProviderIDs
+	case ProviderKindClaude:
+		return key.AllowedClaudeProviderIDs
+	}
+	return nil
+}
+
+func filterProvidersByAllowlist(allowlist []int64, providers []Provider) ([]Provider, int) {
+	if len(allowlist) == 0 {
 		return providers, 0
 	}
-	allowed := make(map[int64]struct{}, len(key.AllowedProviderIDs))
-	for _, providerID := range key.AllowedProviderIDs {
+	allowed := make(map[int64]struct{}, len(allowlist))
+	for _, providerID := range allowlist {
 		allowed[providerID] = struct{}{}
 	}
 	filtered := make([]Provider, 0, len(providers))
@@ -255,6 +270,13 @@ func writeOpenAIProviderAccessDenied(c *gin.Context) {
 			"param":   nil,
 			"code":    "provider_access_denied",
 		},
+	})
+}
+
+func writeClaudeRelayKeyError(c *gin.Context, status int, errorType, message string) {
+	c.JSON(status, gin.H{
+		"type":  "error",
+		"error": gin.H{"type": errorType, "message": message},
 	})
 }
 

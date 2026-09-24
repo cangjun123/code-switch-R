@@ -45,6 +45,8 @@ type codexRelayKeyCreateRequest struct {
 	PeriodSnake             string          `json:"quota_period"`
 	AllowedProviderIDs      []int64         `json:"allowedProviderIds"`
 	AllowedProviderIDsSnake []int64         `json:"allowed_provider_ids"`
+	AllowedClaudeIDs        []int64         `json:"allowedClaudeProviderIds"`
+	AllowedClaudeIDsSnake   []int64         `json:"allowed_claude_provider_ids"`
 }
 
 // UnmarshalJSON keeps the admin endpoint tolerant of clients that encode an
@@ -62,6 +64,8 @@ func (r *codexRelayKeyCreateRequest) UnmarshalJSON(data []byte) error {
 		PeriodSnake             string          `json:"quota_period"`
 		AllowedProviderIDs      []int64         `json:"allowedProviderIds"`
 		AllowedProviderIDsSnake []int64         `json:"allowed_provider_ids"`
+		AllowedClaudeIDs        []int64         `json:"allowedClaudeProviderIds"`
+		AllowedClaudeIDsSnake   []int64         `json:"allowed_claude_provider_ids"`
 	}
 	var raw rawRequest
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -71,6 +75,7 @@ func (r *codexRelayKeyCreateRequest) UnmarshalJSON(data []byte) error {
 		Name: raw.Name, USDLimit: raw.USDLimit, USDLimitSnake: raw.USDLimitSnake,
 		Period: raw.Period, QuotaPeriod: raw.QuotaPeriod, PeriodSnake: raw.PeriodSnake,
 		AllowedProviderIDs: raw.AllowedProviderIDs, AllowedProviderIDsSnake: raw.AllowedProviderIDsSnake,
+		AllowedClaudeIDs: raw.AllowedClaudeIDs, AllowedClaudeIDsSnake: raw.AllowedClaudeIDsSnake,
 	}
 	tokenRaw := raw.TokenLimit
 	if len(tokenRaw) == 0 {
@@ -89,6 +94,11 @@ func (r *codexRelayKeyCreateRequest) UnmarshalJSON(data []byte) error {
 type codexRelayKeyProviderAccessRequest struct {
 	AllowedProviderIDs      []int64 `json:"allowedProviderIds"`
 	AllowedProviderIDsSnake []int64 `json:"allowed_provider_ids"`
+}
+
+type codexRelayKeyClaudeProviderAccessRequest struct {
+	AllowedClaudeIDs      []int64 `json:"allowedClaudeProviderIds"`
+	AllowedClaudeIDsSnake []int64 `json:"allowed_claude_provider_ids"`
 }
 
 type codexRelayKeyNameRequest struct {
@@ -321,17 +331,21 @@ func requestAllowedProviderIDs(primary, snake []int64) []int64 {
 	return snake
 }
 
-func validateCodexAllowedProviderIDs(rt *appRuntime, requested []int64) ([]int64, error) {
+func validateAllowedProviderIDs(rt *appRuntime, kind string, requested []int64) ([]int64, error) {
+	label := "Codex"
+	if kind == services.ProviderKindClaude {
+		label = "Claude"
+	}
 	normalized, err := services.NormalizeCodexAllowedProviderIDs(requested)
 	if err != nil || len(normalized) == 0 {
 		return normalized, err
 	}
 	if rt == nil || rt.providerService == nil {
-		return nil, errors.New("Codex provider service is unavailable")
+		return nil, fmt.Errorf("%s provider service is unavailable", label)
 	}
-	providers, err := rt.providerService.LoadProviders(services.ProviderKindCodex)
+	providers, err := rt.providerService.LoadProviders(kind)
 	if err != nil {
-		return nil, fmt.Errorf("读取 Codex provider 失败: %w", err)
+		return nil, fmt.Errorf("读取 %s provider 失败: %w", label, err)
 	}
 	configured := make(map[int64]struct{}, len(providers))
 	for _, provider := range providers {
@@ -344,7 +358,7 @@ func validateCodexAllowedProviderIDs(rt *appRuntime, requested []int64) ([]int64
 		}
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("Codex provider 不存在: %v", missing)
+		return nil, fmt.Errorf("%s provider 不存在: %v", label, missing)
 	}
 	return normalized, nil
 }
@@ -476,23 +490,27 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 		c.JSON(http.StatusOK, status)
 	})
 
-	router.GET("/api/admin/codex-providers", authRequired, func(c *gin.Context) {
-		c.Header("Cache-Control", "no-store")
-		if rt.providerService == nil {
-			c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Error: apiError{Code: "provider_service_unavailable", Message: "Codex provider service is unavailable"}})
-			return
+	listProviderOptions := func(kind, label string) gin.HandlerFunc {
+		return func(c *gin.Context) {
+			c.Header("Cache-Control", "no-store")
+			if rt.providerService == nil {
+				c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Error: apiError{Code: "provider_service_unavailable", Message: label + " provider service is unavailable"}})
+				return
+			}
+			providers, err := rt.providerService.LoadProviders(kind)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, apiErrorResponse{Error: apiError{Code: "list_providers_failed", Message: err.Error()}})
+				return
+			}
+			options := make([]codexRelayProviderOption, 0, len(providers))
+			for _, provider := range providers {
+				options = append(options, codexRelayProviderOption{ID: provider.ID, Name: provider.Name, Enabled: provider.Enabled})
+			}
+			c.JSON(http.StatusOK, gin.H{"providers": options})
 		}
-		providers, err := rt.providerService.LoadProviders(services.ProviderKindCodex)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, apiErrorResponse{Error: apiError{Code: "list_providers_failed", Message: err.Error()}})
-			return
-		}
-		options := make([]codexRelayProviderOption, 0, len(providers))
-		for _, provider := range providers {
-			options = append(options, codexRelayProviderOption{ID: provider.ID, Name: provider.Name, Enabled: provider.Enabled})
-		}
-		c.JSON(http.StatusOK, gin.H{"providers": options})
-	})
+	}
+	router.GET("/api/admin/codex-providers", authRequired, listProviderOptions(services.ProviderKindCodex, "Codex"))
+	router.GET("/api/admin/claude-providers", authRequired, listProviderOptions(services.ProviderKindClaude, "Claude"))
 
 	router.GET("/api/admin/codex-keys", authRequired, func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
@@ -548,7 +566,12 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 				return
 			}
 		}
-		allowedProviderIDs, accessErr := validateCodexAllowedProviderIDs(rt, requestAllowedProviderIDs(request.AllowedProviderIDs, request.AllowedProviderIDsSnake))
+		allowedProviderIDs, accessErr := validateAllowedProviderIDs(rt, services.ProviderKindCodex, requestAllowedProviderIDs(request.AllowedProviderIDs, request.AllowedProviderIDsSnake))
+		if accessErr != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: accessErr.Error()}})
+			return
+		}
+		allowedClaudeIDs, accessErr := validateAllowedProviderIDs(rt, services.ProviderKindClaude, requestAllowedProviderIDs(request.AllowedClaudeIDs, request.AllowedClaudeIDsSnake))
 		if accessErr != nil {
 			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: accessErr.Error()}})
 			return
@@ -577,6 +600,11 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 			return
 		}
 		result.AllowedProviderIDs = append([]int64{}, allowedProviderIDs...)
+		if err := rt.codexRelayKeys.UpdateAllowedClaudeProviderIDs(result.ID, allowedClaudeIDs); err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: err.Error()}})
+			return
+		}
+		result.AllowedClaudeProviderIDs = append([]int64{}, allowedClaudeIDs...)
 		c.JSON(http.StatusOK, result)
 	})
 
@@ -720,7 +748,7 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_request", Message: "allowedProviderIds is required"}})
 			return
 		}
-		providerIDs, err := validateCodexAllowedProviderIDs(rt, requestAllowedProviderIDs(request.AllowedProviderIDs, request.AllowedProviderIDsSnake))
+		providerIDs, err := validateAllowedProviderIDs(rt, services.ProviderKindCodex, requestAllowedProviderIDs(request.AllowedProviderIDs, request.AllowedProviderIDsSnake))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: err.Error()}})
 			return
@@ -737,6 +765,35 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 	}
 	router.PATCH("/api/admin/codex-keys/:id/providers", originRequired, authRequired, updateProviderAccess)
 	router.PUT("/api/admin/codex-keys/:id/providers", originRequired, authRequired, updateProviderAccess)
+
+	updateClaudeProviderAccess := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		var request codexRelayKeyClaudeProviderAccessRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_request", Message: err.Error()}})
+			return
+		}
+		if request.AllowedClaudeIDs == nil && request.AllowedClaudeIDsSnake == nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_request", Message: "allowedClaudeProviderIds is required"}})
+			return
+		}
+		providerIDs, err := validateAllowedProviderIDs(rt, services.ProviderKindClaude, requestAllowedProviderIDs(request.AllowedClaudeIDs, request.AllowedClaudeIDsSnake))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: err.Error()}})
+			return
+		}
+		if err := rt.codexRelayKeys.UpdateAllowedClaudeProviderIDs(c.Param("id"), providerIDs); err != nil {
+			status := http.StatusBadRequest
+			if strings.Contains(err.Error(), "未找到") {
+				status = http.StatusNotFound
+			}
+			c.JSON(status, apiErrorResponse{Error: apiError{Code: "update_provider_access_failed", Message: err.Error()}})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"allowedClaudeProviderIds": append([]int64{}, providerIDs...)})
+	}
+	router.PATCH("/api/admin/codex-keys/:id/claude-providers", originRequired, authRequired, updateClaudeProviderAccess)
+	router.PUT("/api/admin/codex-keys/:id/claude-providers", originRequired, authRequired, updateClaudeProviderAccess)
 
 	resetQuota := func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")

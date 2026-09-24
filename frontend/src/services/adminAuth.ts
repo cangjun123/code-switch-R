@@ -38,6 +38,7 @@ export type CodexRelayKeyListItem = {
   usdLimit: string
   quotaPeriod: 'once' | 'daily' | 'weekly' | 'monthly'
   allowedProviderIds: number[]
+  allowedClaudeProviderIds: number[]
   quota?: CodexRelayQuotaStatus
 }
 
@@ -51,7 +52,10 @@ export type CodexRelayKeyCreateResult = {
   usdLimit: string
   quotaPeriod: 'once' | 'daily' | 'weekly' | 'monthly'
   allowedProviderIds: number[]
+  allowedClaudeProviderIds: number[]
 }
+
+export type RelayProviderKind = 'codex' | 'claude'
 
 export type CodexRelayProviderOption = {
   id: number
@@ -255,9 +259,20 @@ export async function listCodexRelayProviders(): Promise<CodexRelayProviderOptio
   return response.providers ?? []
 }
 
+export async function listClaudeRelayProviders(): Promise<CodexRelayProviderOption[]> {
+  const response = await adminRequest<{ providers?: CodexRelayProviderOption[] }>('/api/admin/claude-providers')
+  return response.providers ?? []
+}
+
 export async function createCodexRelayKey(
   name: string,
-  config?: { tokenLimit?: number; usdLimit?: string; period?: string; allowedProviderIds?: number[] },
+  config?: {
+    tokenLimit?: number
+    usdLimit?: string
+    period?: string
+    allowedProviderIds?: number[]
+    allowedClaudeProviderIds?: number[]
+  },
 ): Promise<CodexRelayKeyCreateResult> {
   return adminRequest<CodexRelayKeyCreateResult>('/api/admin/codex-keys', {
     method: 'POST',
@@ -310,6 +325,14 @@ export async function updateCodexRelayKeyProviders(id: string, allowedProviderId
     body: JSON.stringify({ allowedProviderIds }),
   })
   return response.allowedProviderIds ?? []
+}
+
+export async function updateCodexRelayKeyClaudeProviders(id: string, allowedClaudeProviderIds: number[]): Promise<number[]> {
+  const response = await adminRequest<{ allowedClaudeProviderIds?: number[] }>(`/api/admin/codex-keys/${encodeURIComponent(id)}/claude-providers`, {
+    method: 'PATCH',
+    body: JSON.stringify({ allowedClaudeProviderIds }),
+  })
+  return response.allowedClaudeProviderIds ?? []
 }
 
 export async function listCodexRelayModelPrices(): Promise<CodexRelayModelPrice[]> {
