@@ -344,6 +344,100 @@ func TestAdminServerManagesCodexKeyProviderAccess(t *testing.T) {
 	}
 }
 
+func TestAdminServerManagesClaudeKeyProviderAccess(t *testing.T) {
+	rt := newTestWebRuntime(t)
+	if err := rt.providerService.SaveProviders(services.ProviderKindCodex, []services.Provider{
+		{ID: 1, Name: "codex-only", APIURL: "https://codex.example", APIKey: "codex-key", Enabled: true},
+	}); err != nil {
+		t.Fatalf("save Codex providers: %v", err)
+	}
+	if err := rt.providerService.SaveProviders(services.ProviderKindClaude, []services.Provider{
+		{ID: 31, Name: "claude-main", APIURL: "https://claude-main.example", APIKey: "main-key", Enabled: true},
+		{ID: 32, Name: "claude-backup", APIURL: "https://claude-backup.example", APIKey: "backup-key", Enabled: true},
+	}); err != nil {
+		t.Fatalf("save Claude providers: %v", err)
+	}
+	server := newAdminServer(rt)
+	initialize := performRequest(t, server.Handler, http.MethodPost, "/api/admin/initialize", map[string]string{
+		"username": "admin",
+		"password": "password123",
+	})
+	if initialize.Code != http.StatusOK {
+		t.Fatalf("initialize status=%d body=%s", initialize.Code, initialize.Body.String())
+	}
+	adminCookie := initialize.Result().Cookies()[0]
+
+	providers := performRequest(t, server.Handler, http.MethodGet, "/api/admin/claude-providers", nil, adminCookie)
+	if providers.Code != http.StatusOK {
+		t.Fatalf("list Claude providers status=%d body=%s", providers.Code, providers.Body.String())
+	}
+	providerPayload := decodeJSON[struct {
+		Providers []codexRelayProviderOption `json:"providers"`
+	}](t, providers)
+	if len(providerPayload.Providers) != 2 || providerPayload.Providers[0].ID != 31 {
+		t.Fatalf("unexpected Claude provider options: %+v", providerPayload.Providers)
+	}
+
+	// Codex provider IDs are not valid Claude IDs.
+	rejected := performRequest(t, server.Handler, http.MethodPost, "/api/admin/codex-keys", map[string]any{
+		"name":                     "bad",
+		"allowedClaudeProviderIds": []int64{1},
+	}, adminCookie)
+	if rejected.Code != http.StatusBadRequest || !strings.Contains(rejected.Body.String(), "invalid_provider_access") {
+		t.Fatalf("cross-kind provider status=%d body=%s", rejected.Code, rejected.Body.String())
+	}
+
+	create := performRequest(t, server.Handler, http.MethodPost, "/api/admin/codex-keys", map[string]any{
+		"name":                     "claude-restricted",
+		"allowedProviderIds":       []int64{1},
+		"allowedClaudeProviderIds": []int64{32},
+	}, adminCookie)
+	if create.Code != http.StatusOK {
+		t.Fatalf("create key status=%d body=%s", create.Code, create.Body.String())
+	}
+	created := decodeJSON[services.CodexRelayKeyCreateResult](t, create)
+	if len(created.AllowedProviderIDs) != 1 || created.AllowedProviderIDs[0] != 1 ||
+		len(created.AllowedClaudeProviderIDs) != 1 || created.AllowedClaudeProviderIDs[0] != 32 {
+		t.Fatalf("unexpected created access: %+v", created)
+	}
+
+	update := performRequest(t, server.Handler, http.MethodPatch, "/api/admin/codex-keys/"+created.ID+"/claude-providers", map[string]any{
+		"allowedClaudeProviderIds": []int64{31},
+	}, adminCookie)
+	if update.Code != http.StatusOK {
+		t.Fatalf("update Claude access status=%d body=%s", update.Code, update.Body.String())
+	}
+	updated := decodeJSON[struct {
+		AllowedClaudeProviderIDs []int64 `json:"allowedClaudeProviderIds"`
+	}](t, update)
+	if len(updated.AllowedClaudeProviderIDs) != 1 || updated.AllowedClaudeProviderIDs[0] != 31 {
+		t.Fatalf("unexpected updated Claude access: %+v", updated)
+	}
+
+	missing := performRequest(t, server.Handler, http.MethodPatch, "/api/admin/codex-keys/"+created.ID+"/claude-providers", map[string]any{}, adminCookie)
+	if missing.Code != http.StatusBadRequest {
+		t.Fatalf("missing body status=%d body=%s", missing.Code, missing.Body.String())
+	}
+	invalid := performRequest(t, server.Handler, http.MethodPatch, "/api/admin/codex-keys/"+created.ID+"/claude-providers", map[string]any{
+		"allowedClaudeProviderIds": []int64{999},
+	}, adminCookie)
+	if invalid.Code != http.StatusBadRequest || !strings.Contains(invalid.Body.String(), "invalid_provider_access") {
+		t.Fatalf("invalid Claude provider status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+
+	list := performRequest(t, server.Handler, http.MethodGet, "/api/admin/codex-keys", nil, adminCookie)
+	if list.Code != http.StatusOK {
+		t.Fatalf("list keys status=%d body=%s", list.Code, list.Body.String())
+	}
+	listed := decodeJSON[struct {
+		Keys []services.CodexRelayKeyListItem `json:"keys"`
+	}](t, list)
+	if len(listed.Keys) != 1 || len(listed.Keys[0].AllowedClaudeProviderIDs) != 1 || listed.Keys[0].AllowedClaudeProviderIDs[0] != 31 ||
+		len(listed.Keys[0].AllowedProviderIDs) != 1 || listed.Keys[0].AllowedProviderIDs[0] != 1 {
+		t.Fatalf("unexpected listed access: %+v", listed.Keys)
+	}
+}
+
 func TestAdminSessionCookiesAreIsolatedPerHost(t *testing.T) {
 	rt := newTestWebRuntime(t)
 	server := newAdminServer(rt)

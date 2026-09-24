@@ -96,6 +96,143 @@ func TestCodexRelayKeyProviderAllowlistWithNoConfiguredMatchReturns403(t *testin
 	}
 }
 
+const claudeAccessTestResponse = `{"id":"msg-access","type":"message","role":"assistant","model":"access-model","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+const claudeAccessTestRequest = `{"model":"access-model","max_tokens":8,"messages":[{"role":"user","content":"hello"}]}`
+
+func TestClaudeRelayKeyProviderAllowlistFiltersBeforeRouting(t *testing.T) {
+	providerService, relay := newTestRelayService(t)
+	setNamespaceRoutingDBSetting(t, "enable_blacklist", "false")
+
+	var deniedCalls atomic.Int64
+	deniedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		deniedCalls.Add(1)
+		http.Error(w, "must not be called", http.StatusInternalServerError)
+	}))
+	defer deniedUpstream.Close()
+
+	var allowedCalls atomic.Int64
+	allowedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		allowedCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(claudeAccessTestResponse))
+	}))
+	defer allowedUpstream.Close()
+
+	if err := providerService.SaveProviders(ProviderKindClaude, []Provider{
+		{ID: 101, Name: "denied-claude", APIURL: deniedUpstream.URL, APIKey: "denied-key", Enabled: true, Level: 1},
+		{ID: 202, Name: "allowed-claude", APIURL: allowedUpstream.URL, APIKey: "allowed-key", Enabled: true, Level: 2},
+	}); err != nil {
+		t.Fatalf("SaveProviders() failed: %v", err)
+	}
+	key, err := relay.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("EnsureDefaultKey() failed: %v", err)
+	}
+	// The Codex allowlist must not leak into Claude routing even when the
+	// numeric IDs collide across kinds.
+	if err := relay.codexRelayKeys.UpdateAllowedProviderIDs(key.ID, []int64{101}); err != nil {
+		t.Fatalf("UpdateAllowedProviderIDs() failed: %v", err)
+	}
+	if err := relay.codexRelayKeys.UpdateAllowedClaudeProviderIDs(key.ID, []int64{202}); err != nil {
+		t.Fatalf("UpdateAllowedClaudeProviderIDs() failed: %v", err)
+	}
+	key, err = relay.codexRelayKeys.GetKeyByID(key.ID)
+	if err != nil {
+		t.Fatalf("GetKeyByID() failed: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	relay.registerRoutes(router)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(claudeAccessTestRequest))
+	request.Header.Set("x-api-key", key.Key)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if deniedCalls.Load() != 0 || allowedCalls.Load() != 1 {
+		t.Fatalf("provider calls: denied=%d allowed=%d", deniedCalls.Load(), allowedCalls.Load())
+	}
+}
+
+func TestClaudeRelayKeyUnaffectedByCodexAllowlist(t *testing.T) {
+	providerService, relay := newTestRelayService(t)
+	setNamespaceRoutingDBSetting(t, "enable_blacklist", "false")
+
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(claudeAccessTestResponse))
+	}))
+	defer upstream.Close()
+
+	if err := providerService.SaveProviders(ProviderKindClaude, []Provider{
+		{ID: 5, Name: "claude-open", APIURL: upstream.URL, APIKey: "key", Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveProviders() failed: %v", err)
+	}
+	key, err := relay.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("EnsureDefaultKey() failed: %v", err)
+	}
+	if err := relay.codexRelayKeys.UpdateAllowedProviderIDs(key.ID, []int64{999}); err != nil {
+		t.Fatalf("UpdateAllowedProviderIDs() failed: %v", err)
+	}
+	key, err = relay.codexRelayKeys.GetKeyByID(key.ID)
+	if err != nil {
+		t.Fatalf("GetKeyByID() failed: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	relay.registerRoutes(router)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(claudeAccessTestRequest))
+	request.Header.Set("x-api-key", key.Key)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || calls.Load() != 1 {
+		t.Fatalf("status=%d calls=%d body=%s", recorder.Code, calls.Load(), recorder.Body.String())
+	}
+}
+
+func TestClaudeRelayKeyProviderAllowlistWithNoConfiguredMatchReturns403(t *testing.T) {
+	providerService, relay := newTestRelayService(t)
+	if err := providerService.SaveProviders(ProviderKindClaude, []Provider{
+		{ID: 1, Name: "other-claude", APIURL: "https://example.invalid", APIKey: "key", Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveProviders() failed: %v", err)
+	}
+	key, err := relay.codexRelayKeys.EnsureDefaultKey()
+	if err != nil {
+		t.Fatalf("EnsureDefaultKey() failed: %v", err)
+	}
+	if err := relay.codexRelayKeys.UpdateAllowedClaudeProviderIDs(key.ID, []int64{999}); err != nil {
+		t.Fatalf("UpdateAllowedClaudeProviderIDs() failed: %v", err)
+	}
+	key, err = relay.codexRelayKeys.GetKeyByID(key.ID)
+	if err != nil {
+		t.Fatalf("GetKeyByID() failed: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	relay.registerRoutes(router)
+	for _, path := range []string{"/v1/messages", "/v1/messages/count_tokens"} {
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(claudeAccessTestRequest))
+		request.Header.Set("x-api-key", key.Key)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), "permission_error") {
+			t.Fatalf("%s status=%d body=%s", path, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 func TestCodexRelayKeyCanQueryExhaustedQuota(t *testing.T) {
 	_, relay := newTestRelayService(t)
 	key, err := relay.codexRelayKeys.EnsureDefaultKey()

@@ -389,9 +389,9 @@ curl http://127.0.0.1:18100/responses \
 
 美元价格在安全设置中统一按模型配置，单位为美元 / 100 万 Token，分别填写普通输入、缓存输入、普通输出和推理输出价格。程序随包内置 LiteLLM 与 EasyCLIProxyAPI 已知的 OpenAI/Codex 模型价格；管理员自定义价格优先，删除自定义覆盖后恢复内置默认。仍未识别的模型按免费处理并在管理页提示，不会阻断请求。额度耗尽时，Codex Responses 和 Chat Completions 入口返回 OpenAI 兼容的 `429` / `insufficient_quota` 响应；周期额度同时返回 `Retry-After` 和 `X-Quota-Reset`。
 
-### Codex Key Provider 访问范围
+### Key Provider 访问范围
 
-安全设置可以把每个 `csk_...` key 限制到一个或多个 Codex Provider。未启用限制时可访问全部 Codex Provider，兼容升级前创建的 key；启用后，模型筛选、粘性会话、轮询、重试和故障切换都只会在已选择的 Provider 内进行。已选择的 Provider 被停用或删除时不会自动放宽权限。
+安全设置可以把每个 `csk_...` key 分别限制到一个或多个 Codex Provider 和 Claude Provider，两份白名单互相独立。未启用限制时可访问该类别下全部 Provider，兼容升级前创建的 key；启用后，模型筛选、粘性会话、轮询、重试和故障切换都只会在已选择的 Provider 内进行。已选择的 Provider 被停用或删除时不会自动放宽权限。白名单内没有任何已配置 Provider 时，Codex 入口返回 `403` / `provider_access_denied`，Claude 入口（`/v1/messages`、`/v1/messages/count_tokens`）返回 Anthropic 格式的 `403` / `permission_error`。
 
 ### 查询当前 Key 剩余额度
 

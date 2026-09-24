@@ -34,26 +34,31 @@ type CodexRelayKey struct {
 	USDLimit           string    `json:"usdLimit"`
 	QuotaPeriod        string    `json:"quotaPeriod"`
 	AllowedProviderIDs []int64   `json:"allowedProviderIds,omitempty"`
+	// AllowedClaudeProviderIDs is independent from AllowedProviderIDs (Codex)
+	// because provider IDs are allocated per kind and may overlap.
+	AllowedClaudeProviderIDs []int64 `json:"allowedClaudeProviderIds,omitempty"`
 }
 
 // UnmarshalJSON accepts both the current camelCase representation and the
 // snake_case names used by early quota prototypes.
 func (key *CodexRelayKey) UnmarshalJSON(data []byte) error {
 	var value struct {
-		ID               string          `json:"id"`
-		Name             string          `json:"name"`
-		Key              string          `json:"key"`
-		Enabled          bool            `json:"enabled"`
-		CreatedAt        time.Time       `json:"createdAt"`
-		TokenLimit       json.RawMessage `json:"tokenLimit"`
-		TokenLimitSnake  json.RawMessage `json:"token_limit"`
-		USDLimit         json.RawMessage `json:"usdLimit"`
-		USDLimitSnake    json.RawMessage `json:"usd_limit"`
-		QuotaPeriod      string          `json:"quotaPeriod"`
-		Period           string          `json:"period"`
-		QuotaPeriodSnake string          `json:"quota_period"`
-		AllowedProviders []int64         `json:"allowedProviderIds"`
-		AllowedSnake     []int64         `json:"allowed_provider_ids"`
+		ID                 string          `json:"id"`
+		Name               string          `json:"name"`
+		Key                string          `json:"key"`
+		Enabled            bool            `json:"enabled"`
+		CreatedAt          time.Time       `json:"createdAt"`
+		TokenLimit         json.RawMessage `json:"tokenLimit"`
+		TokenLimitSnake    json.RawMessage `json:"token_limit"`
+		USDLimit           json.RawMessage `json:"usdLimit"`
+		USDLimitSnake      json.RawMessage `json:"usd_limit"`
+		QuotaPeriod        string          `json:"quotaPeriod"`
+		Period             string          `json:"period"`
+		QuotaPeriodSnake   string          `json:"quota_period"`
+		AllowedProviders   []int64         `json:"allowedProviderIds"`
+		AllowedSnake       []int64         `json:"allowed_provider_ids"`
+		AllowedClaude      []int64         `json:"allowedClaudeProviderIds"`
+		AllowedClaudeSnake []int64         `json:"allowed_claude_provider_ids"`
 	}
 	if err := json.Unmarshal(data, &value); err != nil {
 		return err
@@ -117,32 +122,42 @@ func (key *CodexRelayKey) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
+	key.AllowedClaudeProviderIDs = value.AllowedClaude
+	if key.AllowedClaudeProviderIDs == nil {
+		key.AllowedClaudeProviderIDs = value.AllowedClaudeSnake
+	}
+	key.AllowedClaudeProviderIDs, err = NormalizeCodexAllowedProviderIDs(key.AllowedClaudeProviderIDs)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
 type CodexRelayKeyListItem struct {
-	ID                 string            `json:"id"`
-	Name               string            `json:"name"`
-	MaskedKey          string            `json:"maskedKey"`
-	Enabled            bool              `json:"enabled"`
-	CreatedAt          time.Time         `json:"createdAt"`
-	TokenLimit         int64             `json:"tokenLimit"`
-	USDLimit           string            `json:"usdLimit"`
-	QuotaPeriod        string            `json:"quotaPeriod"`
-	AllowedProviderIDs []int64           `json:"allowedProviderIds"`
-	Quota              *RelayQuotaStatus `json:"quota,omitempty"`
+	ID                       string            `json:"id"`
+	Name                     string            `json:"name"`
+	MaskedKey                string            `json:"maskedKey"`
+	Enabled                  bool              `json:"enabled"`
+	CreatedAt                time.Time         `json:"createdAt"`
+	TokenLimit               int64             `json:"tokenLimit"`
+	USDLimit                 string            `json:"usdLimit"`
+	QuotaPeriod              string            `json:"quotaPeriod"`
+	AllowedProviderIDs       []int64           `json:"allowedProviderIds"`
+	AllowedClaudeProviderIDs []int64           `json:"allowedClaudeProviderIds"`
+	Quota                    *RelayQuotaStatus `json:"quota,omitempty"`
 }
 
 type CodexRelayKeyCreateResult struct {
-	ID                 string    `json:"id"`
-	Name               string    `json:"name"`
-	Key                string    `json:"key"`
-	Enabled            bool      `json:"enabled"`
-	CreatedAt          time.Time `json:"createdAt"`
-	TokenLimit         int64     `json:"tokenLimit"`
-	USDLimit           string    `json:"usdLimit"`
-	QuotaPeriod        string    `json:"quotaPeriod"`
-	AllowedProviderIDs []int64   `json:"allowedProviderIds"`
+	ID                       string    `json:"id"`
+	Name                     string    `json:"name"`
+	Key                      string    `json:"key"`
+	Enabled                  bool      `json:"enabled"`
+	CreatedAt                time.Time `json:"createdAt"`
+	TokenLimit               int64     `json:"tokenLimit"`
+	USDLimit                 string    `json:"usdLimit"`
+	QuotaPeriod              string    `json:"quotaPeriod"`
+	AllowedProviderIDs       []int64   `json:"allowedProviderIds"`
+	AllowedClaudeProviderIDs []int64   `json:"allowedClaudeProviderIds"`
 }
 
 // CodexRelayKeyMatch is the minimal authentication result retained for
@@ -184,15 +199,16 @@ func (s *CodexRelayKeyService) ListKeys() ([]CodexRelayKeyListItem, error) {
 	keys := make([]CodexRelayKeyListItem, 0, len(store.Keys))
 	for _, key := range store.Keys {
 		keys = append(keys, CodexRelayKeyListItem{
-			ID:                 key.ID,
-			Name:               key.Name,
-			MaskedKey:          maskCodexRelayKey(key.Key),
-			Enabled:            key.Enabled,
-			CreatedAt:          key.CreatedAt,
-			TokenLimit:         key.TokenLimit,
-			USDLimit:           normalizedKeyUSD(key.USDLimit),
-			QuotaPeriod:        normalizeRelayQuotaPeriod(key.QuotaPeriod),
-			AllowedProviderIDs: append([]int64{}, key.AllowedProviderIDs...),
+			ID:                       key.ID,
+			Name:                     key.Name,
+			MaskedKey:                maskCodexRelayKey(key.Key),
+			Enabled:                  key.Enabled,
+			CreatedAt:                key.CreatedAt,
+			TokenLimit:               key.TokenLimit,
+			USDLimit:                 normalizedKeyUSD(key.USDLimit),
+			QuotaPeriod:              normalizeRelayQuotaPeriod(key.QuotaPeriod),
+			AllowedProviderIDs:       append([]int64{}, key.AllowedProviderIDs...),
+			AllowedClaudeProviderIDs: append([]int64{}, key.AllowedClaudeProviderIDs...),
 		})
 	}
 
@@ -239,15 +255,16 @@ func (s *CodexRelayKeyService) CreateKey(name string) (*CodexRelayKeyCreateResul
 	}
 
 	return &CodexRelayKeyCreateResult{
-		ID:                 key.ID,
-		Name:               key.Name,
-		Key:                key.Key,
-		Enabled:            key.Enabled,
-		CreatedAt:          key.CreatedAt,
-		TokenLimit:         key.TokenLimit,
-		USDLimit:           normalizedKeyUSD(key.USDLimit),
-		QuotaPeriod:        normalizeRelayQuotaPeriod(key.QuotaPeriod),
-		AllowedProviderIDs: append([]int64{}, key.AllowedProviderIDs...),
+		ID:                       key.ID,
+		Name:                     key.Name,
+		Key:                      key.Key,
+		Enabled:                  key.Enabled,
+		CreatedAt:                key.CreatedAt,
+		TokenLimit:               key.TokenLimit,
+		USDLimit:                 normalizedKeyUSD(key.USDLimit),
+		QuotaPeriod:              normalizeRelayQuotaPeriod(key.QuotaPeriod),
+		AllowedProviderIDs:       append([]int64{}, key.AllowedProviderIDs...),
+		AllowedClaudeProviderIDs: append([]int64{}, key.AllowedClaudeProviderIDs...),
 	}, nil
 }
 
@@ -370,6 +387,20 @@ func (s *CodexRelayKeyService) UpdateName(id, name string) (string, error) {
 // An empty list means unrestricted access, preserving the behavior of keys
 // created before provider access controls were introduced.
 func (s *CodexRelayKeyService) UpdateAllowedProviderIDs(id string, providerIDs []int64) error {
+	return s.updateAllowlist(id, providerIDs, func(key *CodexRelayKey, ids []int64) {
+		key.AllowedProviderIDs = ids
+	})
+}
+
+// UpdateAllowedClaudeProviderIDs replaces the Claude provider allowlist for
+// one key. An empty list means unrestricted access.
+func (s *CodexRelayKeyService) UpdateAllowedClaudeProviderIDs(id string, providerIDs []int64) error {
+	return s.updateAllowlist(id, providerIDs, func(key *CodexRelayKey, ids []int64) {
+		key.AllowedClaudeProviderIDs = ids
+	})
+}
+
+func (s *CodexRelayKeyService) updateAllowlist(id string, providerIDs []int64, apply func(*CodexRelayKey, []int64)) error {
 	normalized, err := NormalizeCodexAllowedProviderIDs(providerIDs)
 	if err != nil {
 		return err
@@ -383,7 +414,7 @@ func (s *CodexRelayKeyService) UpdateAllowedProviderIDs(id string, providerIDs [
 	}
 	for index := range store.Keys {
 		if store.Keys[index].ID == id {
-			store.Keys[index].AllowedProviderIDs = normalized
+			apply(&store.Keys[index], normalized)
 			return s.saveLocked(store)
 		}
 	}
@@ -571,6 +602,14 @@ func (s *CodexRelayKeyService) loadLocked() (*codexRelayKeyStore, error) {
 			key.AllowedProviderIDs = normalizedProviders
 			changed = true
 		}
+		normalizedClaude, err := NormalizeCodexAllowedProviderIDs(key.AllowedClaudeProviderIDs)
+		if err != nil {
+			return nil, fmt.Errorf("Codex relay key %q Claude provider access is invalid: %w", key.ID, err)
+		}
+		if !equalInt64Slices(key.AllowedClaudeProviderIDs, normalizedClaude) {
+			key.AllowedClaudeProviderIDs = normalizedClaude
+			changed = true
+		}
 	}
 	if changed {
 		if err := s.saveLocked(store); err != nil {
@@ -605,6 +644,7 @@ func NormalizeCodexAllowedProviderIDs(providerIDs []int64) ([]int64, error) {
 
 func cloneCodexRelayKey(key CodexRelayKey) CodexRelayKey {
 	key.AllowedProviderIDs = append([]int64(nil), key.AllowedProviderIDs...)
+	key.AllowedClaudeProviderIDs = append([]int64(nil), key.AllowedClaudeProviderIDs...)
 	return key
 }
 
