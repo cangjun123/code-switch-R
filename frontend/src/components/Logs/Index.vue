@@ -121,16 +121,10 @@
         <thead>
           <tr>
             <th class="col-time">{{ t('components.logs.table.time') }}</th>
-            <th class="col-platform">{{ t('components.logs.table.platform') }}</th>
-            <th class="col-provider">{{ t('components.logs.table.provider') }}</th>
-            <th class="col-relay-key">{{ t('components.logs.table.relayKey') }}</th>
-            <th class="col-model">{{ t('components.logs.table.requestedModel') }}</th>
-            <th class="col-response-model">{{ t('components.logs.table.responseModel') }}</th>
-            <th class="col-client-ip">{{ t('components.logs.table.clientIp') }}</th>
+            <th class="col-provider">{{ t('components.logs.table.providerPlatform') }}</th>
+            <th class="col-model">{{ t('components.logs.table.model') }}</th>
             <th class="col-http">{{ t('components.logs.table.httpCode') }}</th>
-            <th class="col-stream">{{ t('components.logs.table.stream') }}</th>
-            <th class="col-first-token">{{ t('components.logs.table.firstToken') }}</th>
-            <th class="col-duration">{{ t('components.logs.table.duration') }}</th>
+            <th class="col-timing">{{ t('components.logs.table.timing') }}</th>
             <th class="col-tokens">{{ t('components.logs.table.tokens') }}</th>
           </tr>
         </thead>
@@ -142,51 +136,54 @@
             :title="t('components.logs.detail.hint')"
             @click="openDetailModal(item)"
           >
-            <td>{{ formatTime(item.created_at) }}</td>
-            <td>{{ item.platform || '—' }}</td>
-            <td>{{ item.provider || '—' }}</td>
-            <td class="relay-key-cell">
-              <div>{{ item.relay_key_name || '—' }}</div>
+            <td class="time-cell" :title="formatTime(item.created_at)">{{ formatShortTime(item.created_at) }}</td>
+            <td class="stacked-cell">
+              <div class="cell-primary">{{ item.provider || '—' }}</div>
+              <small class="cell-secondary">{{ item.platform || '—' }}</small>
             </td>
-            <td>{{ item.requested_model || item.model || '—' }}</td>
-            <td class="response-model-cell">
-              <div>{{ item.response_model || t('components.logs.modelComparison.unknown') }}</div>
-              <small :class="['model-comparison', modelComparison(item)]">{{ t(`components.logs.modelComparison.${modelComparison(item)}`) }}</small>
+            <td class="stacked-cell model-cell" :title="modelTooltip(item)">
+              <div class="cell-primary">{{ item.requested_model || item.model || '—' }}</div>
+              <small v-if="modelComparison(item) === 'different'" class="model-comparison different">→ {{ item.response_model }}</small>
+              <small v-else-if="modelComparison(item) === 'same'" class="model-comparison same">✓ {{ t('components.logs.modelComparison.same') }}</small>
+              <small v-else class="model-comparison unavailable">{{ t(`components.logs.modelComparison.${item.response_model ? 'unavailable' : 'unknown'}`) }}</small>
             </td>
-            <td class="client-ip-cell">{{ item.client_ip || '—' }}</td>
-            <td :class="['code', httpCodeClassForLog(item)]">
-              <span v-if="isProcessingLog(item)" class="processing-tag">{{ t('components.logs.status.processing') }}</span>
-              <span v-else>{{ item.http_code || '—' }}</span>
-              <span v-if="item.error_message" class="error-flag" :title="t('components.logs.detail.hasError')">⚠</span>
+            <td :class="['code', 'stacked-cell', httpCodeClassForLog(item)]">
+              <div class="cell-primary">
+                <span v-if="isProcessingLog(item)" class="processing-tag">{{ t('components.logs.status.processing') }}</span>
+                <span v-else>{{ item.http_code || '—' }}</span>
+                <span v-if="item.error_message" class="error-flag" :title="t('components.logs.detail.hasError')">⚠</span>
+              </div>
+              <span :class="['stream-tag', 'compact', item.is_stream ? 'on' : 'off']">{{ formatStream(item.is_stream) }}</span>
             </td>
-            <td><span :class="['stream-tag', item.is_stream ? 'on' : 'off']">{{ formatStream(item.is_stream) }}</span></td>
-            <td><span :class="['duration-tag', durationColorForLog(item, item.first_token_duration_sec)]">{{ formatFirstTokenDuration(item) }}</span></td>
-            <td><span :class="['duration-tag', durationColor(item.duration_sec)]">{{ formatDuration(item.duration_sec) }}</span></td>
-            <td class="token-cell">
+            <td class="timing-cell">
+              <span
+                :class="['duration-tag', durationColorForLog(item, item.first_token_duration_sec)]"
+                :title="t('components.logs.table.firstToken')"
+              >{{ formatFirstTokenDuration(item) }}</span>
+              <span class="timing-split">/</span>
+              <span
+                :class="['duration-tag', durationColor(item.duration_sec)]"
+                :title="t('components.logs.table.duration')"
+              >{{ formatDuration(item.duration_sec) }}</span>
+            </td>
+            <td class="token-cell" :title="tokenTooltip(item)">
               <div>
                 <span class="token-label">{{ t('components.logs.tokenLabels.input') }}</span>
                 <span class="token-value">{{ formatLogTokenNumber(item, item.input_tokens) }}</span>
-              </div>
-              <div>
+                <span class="token-split">·</span>
                 <span class="token-label">{{ t('components.logs.tokenLabels.output') }}</span>
                 <span class="token-value">{{ formatLogTokenNumber(item, item.output_tokens) }}</span>
               </div>
-              <div>
-                <span class="token-label">{{ t('components.logs.tokenLabels.reasoning') }}</span>
-                <span class="token-value">{{ formatLogTokenNumber(item, item.reasoning_tokens) }}</span>
-              </div>
-              <div>
-                <span class="token-label">{{ t('components.logs.tokenLabels.cacheWrite') }}</span>
-                <span class="token-value">{{ formatLogTokenNumber(item, item.cache_create_tokens) }}</span>
-              </div>
-              <div>
-                <span class="token-label">{{ t('components.logs.tokenLabels.cacheRead') }}</span>
-                <span class="token-value">{{ formatLogTokenNumber(item, item.cache_read_tokens) }}</span>
+              <div v-if="tokenExtras(item).length" class="token-extras">
+                <span v-for="extra in tokenExtras(item)" :key="extra.key" class="token-extra">
+                  <span class="token-label">{{ extra.label }}</span>
+                  <span class="token-value">{{ extra.value }}</span>
+                </span>
               </div>
             </td>
           </tr>
           <tr v-if="!pagedLogs.length && !loading">
-            <td colspan="12" class="empty">{{ t('components.logs.empty') }}</td>
+            <td colspan="6" class="empty">{{ t('components.logs.empty') }}</td>
           </tr>
         </tbody>
       </table>
@@ -915,6 +912,12 @@ const formatTime = (value?: string) => {
   return `${date.getFullYear()}-${padHour(date.getMonth() + 1)}-${padHour(date.getDate())} ${padHour(date.getHours())}:${padHour(date.getMinutes())}:${padHour(date.getSeconds())}`
 }
 
+const formatShortTime = (value?: string) => {
+  const date = parseLogDate(value)
+  if (!date) return value || '—'
+  return `${padHour(date.getMonth() + 1)}-${padHour(date.getDate())} ${padHour(date.getHours())}:${padHour(date.getMinutes())}:${padHour(date.getSeconds())}`
+}
+
 const formatStream = (value?: boolean | number) => {
   const isOn = value === true || value === 1
   return isOn ? t('components.logs.streamOn') : t('components.logs.streamOff')
@@ -1008,6 +1011,39 @@ const formatLogTokenNumber = (item: RequestLog, value?: number) => {
   if (isProcessingLog(item)) return '—'
   return formatTokenNumber(value)
 }
+
+const tokenExtras = (item: RequestLog) => {
+  if (isProcessingLog(item)) return []
+  return [
+    { key: 'reasoning', value: item.reasoning_tokens },
+    { key: 'cacheWrite', value: item.cache_create_tokens },
+    { key: 'cacheRead', value: item.cache_read_tokens },
+  ]
+    .filter((extra) => (extra.value ?? 0) > 0)
+    .map((extra) => ({
+      key: extra.key,
+      label: t(`components.logs.tokenLabels.${extra.key}`),
+      value: formatTokenNumber(extra.value),
+    }))
+}
+
+const tokenTooltip = (item: RequestLog) => {
+  const rows: Array<[string, number | undefined]> = [
+    ['input', item.input_tokens],
+    ['output', item.output_tokens],
+    ['reasoning', item.reasoning_tokens],
+    ['cacheWrite', item.cache_create_tokens],
+    ['cacheRead', item.cache_read_tokens],
+  ]
+  return rows
+    .map(([key, value]) => `${t(`components.logs.tokenLabels.${key}`)}: ${formatLogTokenNumber(item, value)}`)
+    .join('\n')
+}
+
+const modelTooltip = (item: RequestLog) => [
+  `${t('components.logs.table.requestedModel')}: ${item.requested_model || item.model || '—'}`,
+  `${t('components.logs.table.responseModel')}: ${item.response_model || t('components.logs.modelComparison.unknown')}`,
+].join('\n')
 
 /**
  * 计算缓存命中率
@@ -1577,22 +1613,6 @@ html.dark .token-detail-item__name {
 }
 
 /* 金额列 */
-.col-client-ip {
-  width: 130px;
-}
-.client-ip-cell {
-  color: #475569;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
-  white-space: nowrap;
-}
-html.dark .client-ip-cell {
-  color: #cbd5e1;
-}
-.col-first-token {
-  width: 90px;
-}
-
 .metadata-secondary, .model-comparison.unavailable {
   color: var(--mac-text-secondary);
   font-size: 0.78rem;
@@ -1600,9 +1620,50 @@ html.dark .client-ip-cell {
 .model-comparison.same { color: #16a34a; }
 .model-comparison.different { color: #d97706; }
 .model-comparison { font-size: 0.78rem; }
-.relay-key-cell, .response-model-cell { min-width: 150px; max-width: 320px; }
-.relay-key-cell div, .relay-key-cell small, .response-model-cell div {
+
+.stacked-cell {
+  line-height: 1.35;
+}
+.stacked-cell .cell-primary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.stacked-cell .cell-secondary {
+  display: block;
+  color: var(--mac-text-secondary);
+  font-size: 0.78rem;
+}
+.model-cell {
+  max-width: 280px;
+}
+.model-cell .cell-primary,
+.model-cell small {
+  display: block;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+.time-cell {
+  font-variant-numeric: tabular-nums;
+}
+.stream-tag.compact {
+  margin-top: 3px;
+  padding: 0 7px;
+  font-size: 0.66rem;
+  letter-spacing: 0.02em;
+}
+.timing-split {
+  margin: 0 4px;
+  color: var(--mac-text-secondary);
+}
+.token-extras {
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.76rem;
+}
+.token-extra {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 </style>
