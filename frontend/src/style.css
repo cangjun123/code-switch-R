@@ -918,20 +918,19 @@ html.dark .form-field select option {
 
 .logs-table th,
 .logs-table td {
-  padding: 14px 16px;
+  padding: 8px 10px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   text-align: left;
   white-space: nowrap;
+  vertical-align: middle;
 }
 
-.logs-table .col-time { width: 180px; }
-.logs-table .col-platform { width: 120px; }
-.logs-table .col-provider { width: 170px; }
-.logs-table .col-model { width: 150px; }
+.logs-table .col-time { width: 130px; }
+.logs-table .col-provider { width: 160px; }
+.logs-table .col-model { width: 240px; }
 .logs-table .col-http { width: 90px; }
-.logs-table .col-stream { width: 120px; }
-.logs-table .col-duration { width: 120px; }
-.logs-table .col-tokens { width: 340px; white-space: normal; }
+.logs-table .col-timing { width: 170px; }
+.logs-table .col-tokens { width: 260px; white-space: normal; }
 
 .logs-table td.http-success {
   color: #4ade80;
