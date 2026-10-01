@@ -5,7 +5,7 @@
 // 从上游仓库下载并覆盖该文件，然后重新生成 testdata/golden.json 对拍基准。
 // 校验指纹库来源可用上游 codex-plugin/modeltrace-guard/assets/provenance.json
 // 中的 bankSha256 比对 sha256sum unified_bank.json。
-// 当前库：built_at 2026-09-23T06:17:08Z，16 个模型（gpt 8 / claude 8）。
+// 当前库：built_at 2026-09-30T22:05:57Z，17 个模型（gpt 8 / claude 9）。
 package modeltrace
 
 import (
