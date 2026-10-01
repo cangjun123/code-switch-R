@@ -142,7 +142,7 @@ func TestBankContains(t *testing.T) {
 		t.Fatalf("加载指纹库失败: %v", err)
 	}
 	for _, id := range []string{"gpt-5.4", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
-		"claude-opus-4-8", "claude-haiku-4-5-20251001", "claude-opus-5-5"} {
+		"claude-opus-4-8", "claude-haiku-4-5-20251001", "claude-opus-5-5", "claude-sonnet-5-5"} {
 		if !bank.ContainsModel(id) {
 			t.Errorf("指纹库应包含 %s", id)
 		}
