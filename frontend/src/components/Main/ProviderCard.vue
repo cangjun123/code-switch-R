@@ -49,6 +49,7 @@ const emit = defineEmits<{
   (e: 'toggle-enabled', card: AutomationCard): void
   (e: 'direct-apply', card: AutomationCard): void
   (e: 'open-model-trace', card: AutomationCard): void
+  (e: 'open-pelican-test', card: AutomationCard): void
   (e: 'configure', card: AutomationCard): void
   (e: 'duplicate', card: AutomationCard): void
   (e: 'remove', card: AutomationCard): void
@@ -312,6 +313,20 @@ const showBlBadge = computed(() => {
       </button>
 
       <!-- 模型真伪检测按钮 -->
+      <button
+        v-if="showModelTraceButton"
+        class="ghost-icon"
+        type="button"
+        :aria-label="t('components.main.pelicanTest.title')"
+        :data-tooltip="t('components.main.pelicanTest.title')"
+        @click.stop="emit('open-pelican-test', card)"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="5" cy="17" r="3" />
+          <circle cx="19" cy="17" r="3" />
+          <path d="m5 17 5-8 4 8H5l10-6 4 6M8 9h4m2-4h3l-2 6" />
+        </svg>
+      </button>
       <button
         v-if="showModelTraceButton"
         class="ghost-icon"

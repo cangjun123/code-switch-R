@@ -51,6 +51,7 @@ type appRuntime struct {
 	connectivityTest    *services.ConnectivityTestService
 	healthCheckService  *services.HealthCheckService
 	modelTraceService   *services.ModelTraceService
+	pelicanTestService  *services.PelicanTestService
 	versionService      *VersionService
 	updateService       *services.UpdateService
 	geminiService       *services.GeminiService
@@ -112,6 +113,8 @@ func newAppRuntime() (*appRuntime, error) {
 	healthCheckService := services.NewHealthCheckService(providerService, blacklistService, settingsService)
 	modelTraceService := services.NewModelTraceService(providerService)
 	modelTraceService.SetEventEmitter(eventHub)
+	pelicanTestService := services.NewPelicanTestService(providerService)
+	pelicanTestService.SetEventEmitter(eventHub)
 	if err := healthCheckService.Start(); err != nil {
 		return nil, fmt.Errorf("初始化健康检查服务失败: %w", err)
 	}
@@ -203,6 +206,7 @@ func newAppRuntime() (*appRuntime, error) {
 		connectivityTest:            connectivityTestService,
 		healthCheckService:          healthCheckService,
 		modelTraceService:           modelTraceService,
+		pelicanTestService:          pelicanTestService,
 		versionService:              versionService,
 		updateService:               updateService,
 		geminiService:               geminiService,
@@ -229,6 +233,9 @@ func (rt *appRuntime) shutdown() {
 
 	if rt.healthCheckService != nil {
 		rt.healthCheckService.Stop()
+	}
+	if rt.pelicanTestService != nil {
+		rt.pelicanTestService.Stop()
 	}
 
 	if rt.providerRelay != nil {
@@ -296,6 +303,7 @@ func (rt *appRuntime) registerServices(registry *rpcRegistry) {
 	registry.Register("codeswitch/services.ConnectivityTestService", rt.connectivityTest)
 	registry.Register("codeswitch/services.HealthCheckService", rt.healthCheckService)
 	registry.Register("codeswitch/services.ModelTraceService", rt.modelTraceService)
+	registry.Register("codeswitch/services.PelicanTestService", rt.pelicanTestService)
 	registry.Register("codeswitch/services.UpdateService", rt.updateService)
 	registry.Register("codeswitch/services.GeminiService", rt.geminiService)
 	registry.Register("codeswitch/services.NotificationService", rt.notificationService)
