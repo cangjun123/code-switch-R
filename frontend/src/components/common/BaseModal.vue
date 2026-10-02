@@ -31,7 +31,7 @@
 import { computed } from 'vue'
 import { Dialog, DialogPanel, DialogTitle, TransitionChild, TransitionRoot } from '@headlessui/vue'
 
-type Variant = 'default' | 'confirm'
+type Variant = 'default' | 'confirm' | 'wide'
 
 const props = withDefaults(
   defineProps<{
@@ -44,5 +44,12 @@ const props = withDefaults(
 
 defineEmits<{ (e: 'close'): void }>()
 
-const variantClass = computed(() => (props.variant === 'confirm' ? 'confirm-modal' : ''))
+const variantClass = computed(() => props.variant === 'confirm' ? 'confirm-modal' : props.variant === 'wide' ? 'wide-modal' : '')
 </script>
+
+<style scoped>
+.wide-modal {
+  width: min(1120px, calc(100vw - 32px));
+  max-width: 1120px;
+}
+</style>

@@ -402,10 +402,14 @@ type challengeMessages struct {
 }
 
 func buildAnthropicChallengeBody(model, prompt string, stream bool) ([]byte, error) {
+	return buildAnthropicCompletionBody(model, prompt, stream, 4096)
+}
+
+func buildAnthropicCompletionBody(model, prompt string, stream bool, maxTokens int) ([]byte, error) {
 	content, _ := json.Marshal(prompt)
 	body := map[string]interface{}{
 		"model":      model,
-		"max_tokens": 4096,
+		"max_tokens": maxTokens,
 		"messages": []challengeMessages{
 			{Role: "user", Content: content},
 		},
@@ -647,6 +651,10 @@ done:
 // OpenAI Chat（choices[0].delta.content / reasoning_content）与
 // OpenAI Responses（response.output_text.delta / response.reasoning_summary_text.delta / response.completed / response.incomplete）等形态。
 func extractStreamDelta(payload string) (text, stopReason string, err error) {
+	return extractCompletionDelta(payload, true)
+}
+
+func extractCompletionDelta(payload string, includeReasoning bool) (text, stopReason string, err error) {
 	var raw struct {
 		Type    string          `json:"type"`
 		Delta   json.RawMessage `json:"delta"`
@@ -681,7 +689,7 @@ func extractStreamDelta(payload string) (text, stopReason string, err error) {
 			if anthropicDelta.Text != "" {
 				return anthropicDelta.Text, "", nil
 			}
-			if anthropicDelta.Thinking != "" {
+			if includeReasoning && anthropicDelta.Thinking != "" {
 				return anthropicDelta.Thinking, "", nil
 			}
 		}
@@ -710,7 +718,7 @@ func extractStreamDelta(payload string) (text, stopReason string, err error) {
 				return text, "", nil
 			}
 		}
-		if reasoning := choice.Delta.ReasoningContent; len(reasoning) > 0 {
+		if reasoning := choice.Delta.ReasoningContent; includeReasoning && len(reasoning) > 0 {
 			if text := rawContentText(reasoning); text != "" {
 				return text, "", nil
 			}
@@ -722,9 +730,8 @@ func extractStreamDelta(payload string) (text, stopReason string, err error) {
 
 	// 4. OpenAI Responses: output_text.delta / reasoning_summary_text.delta / reasoning_text.delta
 	// 官方与中转网关均为纯字符串 delta
-	if raw.Type == "response.output_text.delta" ||
-		raw.Type == "response.reasoning_summary_text.delta" ||
-		raw.Type == "response.reasoning_text.delta" {
+	if raw.Type == "response.output_text.delta" || (includeReasoning &&
+		(raw.Type == "response.reasoning_summary_text.delta" || raw.Type == "response.reasoning_text.delta")) {
 		if len(raw.Delta) > 0 {
 			var s string
 			if json.Unmarshal(raw.Delta, &s) == nil && s != "" {

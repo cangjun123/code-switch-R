@@ -205,6 +205,7 @@ func newAdminServer(rt *appRuntime) *http.Server {
 	router.GET("/api/wails/events", authRequired, func(c *gin.Context) {
 		streamEvents(c, rt.eventHub)
 	})
+	registerPelicanPreviewRoutes(router, rt, authRequired)
 
 	registerStaticRoutes(router, rt.staticDir)
 

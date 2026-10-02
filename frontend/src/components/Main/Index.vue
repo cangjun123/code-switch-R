@@ -280,6 +280,7 @@
             @toggle-enabled="persistProviders(activeTab)"
             @direct-apply="handleDirectApply"
             @open-model-trace="openModelTrace"
+            @open-pelican-test="openPelicanTest"
             @configure="configure"
             @duplicate="handleDuplicate"
             @remove="requestRemove"
@@ -503,6 +504,12 @@
         :provider-name="modelTraceState.providerName"
         @close="closeModelTrace"
       />
+      <PelicanTestModal
+        :open="pelicanTestState.open"
+        :platform="pelicanTestState.platform"
+        :provider="pelicanTestState.provider"
+        @close="pelicanTestState.open = false"
+      />
     </div>
   </div>
 </template>
@@ -523,6 +530,7 @@ import type { UpstreamInfoConfig, ProviderInfoRef } from '../../services/provide
 import ProviderEditModal from './ProviderEditModal.vue'
 import CustomCliConfigEditor from '../common/CustomCliConfigEditor.vue'
 import ModelTraceModal from './ModelTraceModal.vue'
+import PelicanTestModal from './PelicanTestModal.vue'
 import { LoadProviders, SaveProviders, DuplicateProvider } from '../../../bindings/codeswitch/services/providerservice'
 import { GetProviders as GetGeminiProviders, UpdateProvider as UpdateGeminiProvider, AddProvider as AddGeminiProvider, DeleteProvider as DeleteGeminiProvider, ReorderProviders as ReorderGeminiProviders } from '../../../bindings/codeswitch/services/geminiservice'
 import { fetchProxyStatus, enableProxy, disableProxy } from '../../services/claudeSettings'
@@ -2187,6 +2195,20 @@ const openModelTrace = (card: AutomationCard) => {
 
 const closeModelTrace = () => {
   modelTraceState.open = false
+}
+
+const pelicanTestState = reactive({
+  open: false,
+  platform: 'claude',
+  provider: null as AutomationCard | null,
+})
+
+const openPelicanTest = (card: AutomationCard) => {
+  pelicanTestState.platform = activeTab.value === 'others' && selectedToolId.value
+    ? getCustomProviderKind(selectedToolId.value)
+    : activeTab.value
+  pelicanTestState.provider = card
+  pelicanTestState.open = true
 }
 
 const submitModal = async (): Promise<boolean> => {
