@@ -500,7 +500,7 @@
         "download": "下载 HTML",
         "copied": "HTML 已复制",
         "copyFailed": "复制失败",
-        "usageNotice": "每次测试或重新测试都会请求此供应商并消耗 Token，不自动重试。",
+        "usageNotice": "每次测试或重新测试都会请求此供应商并消耗 Token，不自动重试。不设生成时长上限，可手动取消。",
         "securityNotice": "预览在隔离环境中运行 JavaScript，禁止外部资源和后台访问，效果可能与本地打开不同。下载的 HTML 是不可信代码，请谨慎运行。隔离预览不限制脚本的 CPU 或内存消耗。",
         "status": {
           "idle": "尚未开始",
@@ -516,7 +516,6 @@
           "incomplete": "上游未正常结束回答，未自动加载预览",
           "truncated": "回答被截断，未自动加载预览",
           "refused": "模型拒绝生成或内容被过滤",
-          "timeout": "测试超过时间限制",
           "cancelled": "测试已取消",
           "output_limit": "生成内容超过 1 MiB 限制，已停止测试",
           "response_limit": "上游响应超过读取限制",

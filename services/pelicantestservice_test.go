@@ -14,6 +14,12 @@ import (
 
 const pelicanTestHTML = `<!DOCTYPE html><html><body><svg><circle cx="10" cy="10" r="5"/></svg><script>document.body.dataset.ready='yes'</script></body></html>`
 
+type pelicanTestTransport func(*http.Request) (*http.Response, error)
+
+func (transport pelicanTestTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return transport(request)
+}
+
 func newPelicanTestService(t *testing.T, platform, endpoint, auth string, handler http.HandlerFunc) *PelicanTestService {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -248,51 +254,55 @@ func TestPelicanJSONPartialAndRefusal(t *testing.T) {
 	}
 }
 
-func TestPelicanCancellationAndTimeout(t *testing.T) {
-	for _, timeout := range []bool{false, true} {
-		t.Run(fmt.Sprintf("timeout-%v", timeout), func(t *testing.T) {
-			cancelled := make(chan struct{}, 1)
-			service := newPelicanTestService(t, "codex", "/chat/completions", "bearer", func(writer http.ResponseWriter, request *http.Request) {
-				writer.Header().Set("Content-Type", "text/event-stream")
-				io.WriteString(writer, pelicanSSE(map[string]any{"choices": []any{map[string]any{"delta": map[string]string{"content": "partial"}}}}))
-				writer.(http.Flusher).Flush()
-				<-request.Context().Done()
-				cancelled <- struct{}{}
-			})
-			if timeout {
-				service.timeout = 80 * time.Millisecond
-			}
-			started, err := service.StartTest("codex", 42, "alias")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !timeout {
-				deadline := time.Now().Add(time.Second)
-				for time.Now().Before(deadline) {
-					result, _ := service.GetTest(started.SessionID)
-					if result.RawOutput != "" {
-						break
-					}
-					time.Sleep(time.Millisecond)
-				}
-				if err := service.CancelTest(started.SessionID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			result := awaitPelicanTest(t, service, started.SessionID)
-			code := "cancelled"
-			if timeout {
-				code = "timeout"
-			}
-			if result.ErrorCode != code || result.RawOutput != "partial" {
-				t.Fatalf("result = %+v", result)
-			}
-			select {
-			case <-cancelled:
-			case <-time.After(time.Second):
-				t.Fatal("upstream request not cancelled")
-			}
-		})
+func TestPelicanWithoutDeadlineAndCancellation(t *testing.T) {
+	cancelled := make(chan struct{}, 1)
+	service := newPelicanTestService(t, "codex", "/chat/completions", "bearer", func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(writer, pelicanSSE(map[string]any{"choices": []any{map[string]any{"delta": map[string]string{"content": "partial"}}}}))
+		writer.(http.Flusher).Flush()
+		<-request.Context().Done()
+		cancelled <- struct{}{}
+	})
+	if service.client.Timeout != 0 {
+		t.Fatalf("HTTP client has a timeout: %v", service.client.Timeout)
+	}
+	deadlines := make(chan bool, 1)
+	service.client.Transport = pelicanTestTransport(func(request *http.Request) (*http.Response, error) {
+		_, hasDeadline := request.Context().Deadline()
+		deadlines <- hasDeadline
+		return http.DefaultTransport.RoundTrip(request)
+	})
+	started, err := service.StartTest("codex", 42, "alias")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case hasDeadline := <-deadlines:
+		if hasDeadline {
+			t.Fatal("upstream request has a deadline")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upstream request not started")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		result, _ := service.GetTest(started.SessionID)
+		if result.RawOutput != "" {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := service.CancelTest(started.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	result := awaitPelicanTest(t, service, started.SessionID)
+	if result.ErrorCode != "cancelled" || result.RawOutput != "partial" {
+		t.Fatalf("result = %+v", result)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("upstream request not cancelled")
 	}
 }
 

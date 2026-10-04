@@ -499,7 +499,7 @@
         "download": "Download HTML",
         "copied": "HTML copied",
         "copyFailed": "Copy failed",
-        "usageNotice": "Every test or retest requests this provider and consumes tokens. No automatic retries.",
+        "usageNotice": "Every test or retest requests this provider and consumes tokens. No automatic retries or generation time limit; cancel manually if needed.",
         "securityNotice": "JavaScript runs in an isolated preview with external resources and admin access blocked. Local rendering may differ. Downloaded HTML is untrusted code; run with caution. The sandbox does not impose CPU or memory limits.",
         "status": {
           "idle": "Not started",
@@ -515,7 +515,6 @@
           "incomplete": "The upstream did not finish normally; preview was not loaded",
           "truncated": "The response was truncated; preview was not loaded",
           "refused": "The model refused or the response was filtered",
-          "timeout": "Test timed out",
           "cancelled": "Test cancelled",
           "output_limit": "Output exceeded the 1 MiB limit; test stopped",
           "response_limit": "Upstream response exceeded the read limit",
