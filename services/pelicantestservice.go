@@ -24,7 +24,6 @@ const PelicanPrompt = "创建一个 HTML，内容是 SVG 绘制一个鹈鹕骑�
 const (
 	pelicanOutputLimit   = 1 << 20
 	pelicanResponseLimit = 8 << 20
-	pelicanTimeout       = 4 * time.Minute
 	pelicanRetention     = 30 * time.Minute
 	pelicanMaxRunning    = 4
 	pelicanMaxResults    = 20
@@ -75,16 +74,14 @@ type PelicanTestService struct {
 	mu              sync.Mutex
 	sessions        map[string]*pelicanSession
 	stopped         bool
-	timeout         time.Duration
 	workers         sync.WaitGroup
 }
 
 func NewPelicanTestService(providers *ProviderService) *PelicanTestService {
 	return &PelicanTestService{
 		providerService: providers,
-		client:          &http.Client{Timeout: pelicanTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		client:          &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		sessions:        make(map[string]*pelicanSession),
-		timeout:         pelicanTimeout,
 	}
 }
 
@@ -167,7 +164,7 @@ func (service *PelicanTestService) StartTest(platform string, providerID int64, 
 	if running >= pelicanMaxRunning {
 		return PelicanTestResult{}, errors.New("已有 4 个测试正在运行，请稍后重试")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), service.timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	session := &pelicanSession{
 		result:  PelicanTestResult{SessionID: "pelican-" + id, ProviderID: providerID, Model: model, ActualModel: actual, Status: "running", PreviewToken: previewToken},
 		started: time.Now(), cancel: cancel,
@@ -314,8 +311,6 @@ func (service *PelicanTestService) run(ctx context.Context, session *pelicanSess
 		}
 		if errors.Is(ctx.Err(), context.Canceled) {
 			session.result.Status, session.result.ErrorCode, session.result.Message = "cancelled", "cancelled", "测试已取消"
-		} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			session.result.ErrorCode, session.result.Message = "timeout", "测试超过时间限制"
 		}
 	} else {
 		session.result.HTML = extractPelicanHTML(session.result.RawOutput)
