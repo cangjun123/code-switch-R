@@ -1,6 +1,6 @@
 import { Call } from '@wailsio/runtime'
 
-export type UpstreamInfoConfig = { type: '' | 'sub2api' | 'newapi' | 'cliproxyapi'; baseUrl?: string; accountToken?: string; accountUserId?: string }
+export type UpstreamInfoConfig = { type: '' | 'sub2api' | 'newapi' | 'cliproxyapi' | 'deepseek'; baseUrl?: string; accountToken?: string; accountUserId?: string }
 export type ProviderInfoRef = { kind: string; id: string }
 export type ProviderInfoDraft = { apiUrl: string; apiKey: string; upstreamInfo?: UpstreamInfoConfig }
 export type InfoState = { status: string; updatedAt?: string; retryAt?: string; stale: boolean }
@@ -34,10 +34,12 @@ export type NewAPIKey = {
   totalUSD?: number; usedUSD?: number; remainingUSD?: number
 }
 export type NewAPIPrice = { model: string; group: string; groupRatio?: number; mode: 'tokens' | 'request' | 'complex'; input?: number; output?: number; cacheRead?: number; cacheWrite?: number; request?: number }
+export type DeepSeekBalance = { is_available: boolean; balance_infos: { currency: string; total_balance: string; granted_balance: string; topped_up_balance: string }[] }
 export type ProviderInfo = {
   account?: { quota: number; quotaUSD?: number }; accountState?: InfoState
-  platform?: 'sub2api' | 'newapi' | 'cliproxyapi'; key?: NewAPIKey; site?: { quota_per_unit: number }
+  platform?: 'sub2api' | 'newapi' | 'cliproxyapi' | 'deepseek'; key?: NewAPIKey; site?: { quota_per_unit: number }
   models?: { data: { id: string; owned_by?: string }[] }; modelsState?: InfoState
+  balance?: DeepSeekBalance; balanceState?: InfoState
   pricing?: { rows: NewAPIPrice[] }; siteState?: InfoState; pricingState?: InfoState
   usage?: UpstreamUsage; billing?: UpstreamBilling; usageState: InfoState; billingState: InfoState
   dailyTimezone: string; modelPeriod: string

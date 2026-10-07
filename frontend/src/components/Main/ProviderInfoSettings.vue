@@ -13,7 +13,7 @@ watch(() => [props.open, props.form.apiUrl, props.form.apiKey, props.form.upstre
 })
 function selectType(event: Event) {
   const selected = (event.target as HTMLSelectElement).value
-  const type = selected === 'sub2api' || selected === 'newapi' || selected === 'cliproxyapi' ? selected : ''
+  const type = selected === 'sub2api' || selected === 'newapi' || selected === 'cliproxyapi' || selected === 'deepseek' ? selected : ''
   props.form.upstreamInfo = { ...props.form.upstreamInfo, type, baseUrl: props.form.upstreamInfo?.baseUrl || '' }
 }
 async function test() {
@@ -33,7 +33,7 @@ async function test() {
     <label class="form-field">
       <span>{{ t('upstreamInfo.service') }}</span>
       <select :value="form.upstreamInfo?.type || ''" @change="selectType">
-        <option value="">{{ t('upstreamInfo.off') }}</option><option value="sub2api">sub2api</option><option value="newapi">New API</option><option value="cliproxyapi">CLIProxyAPI</option>
+        <option value="">{{ t('upstreamInfo.off') }}</option><option value="sub2api">sub2api</option><option value="newapi">New API</option><option value="cliproxyapi">CLIProxyAPI</option><option value="deepseek">DeepSeek</option>
       </select>
     </label>
     <template v-if="form.upstreamInfo?.type">
@@ -55,6 +55,7 @@ async function test() {
         </label>
       </template>
       <p v-if="form.upstreamInfo.type === 'cliproxyapi'" class="field-hint">{{ t('upstreamInfo.cliproxyScope') }}</p>
+      <p v-if="form.upstreamInfo.type === 'deepseek'" class="field-hint">{{ t('upstreamInfo.deepseekScope') }}</p>
       <button type="button" class="info-button" :disabled="busy || (!form.apiKey.trim() && !(form.upstreamInfo.type === 'newapi' && form.upstreamInfo.accountToken?.trim())) || !form.apiUrl.trim()" @click="test">{{ t(busy ? 'upstreamInfo.loading' : 'upstreamInfo.test') }}</button>
       <div aria-live="polite" class="test-result">
         <p v-if="failed">{{ t('upstreamInfo.testFailed') }}</p>
@@ -66,6 +67,14 @@ async function test() {
         </template>
         <template v-else-if="result?.platform === 'cliproxyapi'">
           <p v-if="result.modelsState">{{ t('upstreamInfo.availableModels') }}: {{ t(`upstreamInfo.status.${result.modelsState.status}`) }}<span v-if="result.modelsState.stale"> · {{ t('upstreamInfo.stale') }}</span><span v-if="result.models"> · {{ result.models.data.length }}</span></p>
+        </template>
+        <template v-else-if="result?.platform === 'deepseek'">
+          <p v-if="result.balanceState">{{ t('upstreamInfo.wallet') }}: {{ t(`upstreamInfo.status.${result.balanceState.status}`) }}<span v-if="result.balanceState.stale"> · {{ t('upstreamInfo.stale') }}</span></p>
+          <template v-if="result.balance">
+            <p>{{ t('upstreamInfo.balanceAvailability') }}: {{ t(result.balance.is_available ? 'upstreamInfo.balanceAvailable' : 'upstreamInfo.balanceInsufficient') }}</p>
+            <p v-for="row in result.balance.balance_infos" :key="row.currency">{{ t('upstreamInfo.wallet') }}: {{ row.total_balance }} {{ row.currency }}</p>
+            <p v-if="!result.balance.balance_infos.length">{{ t('upstreamInfo.noData') }}</p>
+          </template>
         </template>
         <template v-else-if="result">
           <p>{{ t('upstreamInfo.usage') }}: {{ t(`upstreamInfo.status.${result.usageState.status}`) }}<span v-if="result.usage"> · {{ t('upstreamInfo.remaining') }} {{ infoUnlimited(result.usage) ? t('upstreamInfo.unlimited') : infoAmount(infoRemaining(result.usage), result.usage.unit || result.usage.quota?.unit) }}</span></p>

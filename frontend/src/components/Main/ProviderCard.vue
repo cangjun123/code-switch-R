@@ -102,7 +102,7 @@ const showBlBadge = computed(() => {
   <article
     :class="[
       'automation-card',
-      { 'has-upstream-info': ['sub2api', 'newapi', 'cliproxyapi'].includes(card.upstreamInfo?.type || '') },
+      { 'has-upstream-info': ['sub2api', 'newapi', 'cliproxyapi', 'deepseek'].includes(card.upstreamInfo?.type || '') },
       { dragging: isDragging },
       { 'is-last-used': isLastUsed },
       { 'is-highlighted': isHighlighted }
@@ -184,7 +184,7 @@ const showBlBadge = computed(() => {
           </button>
         </div>
 
-        <ProviderInfoPanel v-if="['sub2api', 'newapi', 'cliproxyapi'].includes(card.upstreamInfo?.type || '')" :card="card" :provider-ref="infoRef" :revision="infoRevision" :theme="resolvedTheme" />
+        <ProviderInfoPanel v-if="['sub2api', 'newapi', 'cliproxyapi', 'deepseek'].includes(card.upstreamInfo?.type || '')" :card="card" :provider-ref="infoRef" :revision="infoRevision" :theme="resolvedTheme" />
 
         <!-- 卡片运行指标 -->
         <p class="card-metrics">
