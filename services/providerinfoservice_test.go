@@ -285,10 +285,17 @@ func TestProviderInfoTimeoutAndCoalescing(t *testing.T) {
 	}
 }
 func TestProviderInfoPersistenceAndReferences(t *testing.T) {
-	for _, platform := range []string{"sub2api", "newapi"} {
+	for _, platform := range []string{"sub2api", "newapi", "cliproxyapi"} {
 		t.Run(platform, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			server := infoServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if platform == "cliproxyapi" {
+					if r.URL.Path != "/v1/models" {
+						t.Errorf("unexpected CLIProxyAPI endpoint: %s", r.URL.Path)
+					}
+					fmt.Fprint(w, cliProxyModelsFixture)
+					return
+				}
 				if platform == "newapi" {
 					if r.URL.Path == "/api/user/self" {
 						if r.Header.Get("Authorization") != "Bearer account-secret" || r.Header.Get("New-Api-User") != "42" {
@@ -326,7 +333,7 @@ func TestProviderInfoPersistenceAndReferences(t *testing.T) {
 			svc := NewProviderInfoService(providers, reloaded)
 			for _, ref := range []ProviderInfoRef{{"claude", "42"}, {"codex", "42"}, {"gpt-image", "42"}, {"custom:test", "42"}, {"gemini", "native-id"}} {
 				got, err := svc.GetInfo(ref, false, "UTC")
-				if err != nil || (platform == "sub2api" && got.Usage == nil) || (platform == "newapi" && (got.Key == nil || got.Account == nil)) {
+				if err != nil || (platform == "sub2api" && got.Usage == nil) || (platform == "newapi" && (got.Key == nil || got.Account == nil)) || (platform == "cliproxyapi" && got.Models == nil) {
 					t.Fatalf("ref %+v: %v", ref, err)
 				}
 			}

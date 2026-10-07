@@ -5,6 +5,7 @@ import type { AutomationCard } from '../../data/cards'
 import { newAPIAccountReady, newAPIAccountAmount, newAPIStates, newAPIAmount, newAPIExpiry, getProviderInfo, infoAmount, infoUnlimited, infoScope, infoRemaining, infoRate, infoTime, type ProviderInfo, type ProviderInfoRef } from '../../services/providerInfo'
 import NewApiInfoDetails from './NewApiInfoDetails.vue'
 import ProviderInfoDetails from './ProviderInfoDetails.vue'
+import CLIProxyInfoDetails from './CLIProxyInfoDetails.vue'
 const props = defineProps<{ card: AutomationCard; providerRef: ProviderInfoRef; revision: number; theme: string }>()
 const { t } = useI18n()
 const data = ref<ProviderInfo | null>(null)
@@ -18,7 +19,9 @@ const identity = computed(() => JSON.stringify([props.providerRef, props.card.ap
 const remaining = computed(() => infoRemaining(data.value?.usage))
 const amount = computed(() => infoUnlimited(data.value?.usage) ? t('upstreamInfo.unlimited') : infoAmount(remaining.value, data.value?.usage?.unit || data.value?.usage?.quota?.unit))
 const isNewAPI = computed(() => props.card.upstreamInfo?.type === 'newapi')
-const states = computed(() => data.value ? (isNewAPI.value ? newAPIStates(data.value).map(p => p.state) : [data.value.usageState, data.value.billingState]) : [])
+const isCLIProxyAPI = computed(() => props.card.upstreamInfo?.type === 'cliproxyapi')
+const platformName = computed(() => isCLIProxyAPI.value ? 'CLIProxyAPI' : isNewAPI.value ? 'New API' : 'sub2api')
+const states = computed(() => data.value ? (isCLIProxyAPI.value ? (data.value.modelsState ? [data.value.modelsState] : []) : isNewAPI.value ? newAPIStates(data.value).map(p => p.state) : [data.value.usageState, data.value.billingState]) : [])
 const stale = computed(() => states.value.some(s => s.stale))
 const partial = computed(() => states.value.some(s => s.status !== 'ready'))
 const refreshedAt = computed(() => states.value.map(s => s.updatedAt).filter((s): s is string => !!s).sort()[0])
@@ -55,13 +58,17 @@ onUnmounted(() => { active = false; generation++; stop(); document.removeEventLi
 <template>
   <div class="upstream-panel" draggable="false" @click.stop @mousedown.stop @dragstart.stop.prevent>
     <div class="upstream-head">
-      <span class="upstream-label">{{ t('upstreamInfo.title') }} <small>{{ isNewAPI ? 'New API' : 'sub2api' }}</small></span>
+      <span class="upstream-label">{{ t('upstreamInfo.title') }} <small>{{ platformName }}</small></span>
       <div class="upstream-actions">
         <button type="button" :disabled="busy" :aria-label="t('upstreamInfo.refresh')" @click="refresh(true)">{{ t(busy ? 'upstreamInfo.loading' : 'upstreamInfo.refresh') }}</button>
         <button type="button" @click="open = true">{{ t('upstreamInfo.details') }} ↗</button>
       </div>
     </div>
-    <div v-if="isNewAPI && (data?.key || newAPIAccountReady(data))" class="upstream-metrics">
+    <div v-if="isCLIProxyAPI" class="upstream-metrics">
+      <span>{{ t('upstreamInfo.availableModels') }} <strong>{{ data?.models ? data.models.data.length : '—' }}</strong></span>
+      <span v-if="data?.modelsState">{{ t(`upstreamInfo.status.${data.modelsState.status}`) }}</span>
+    </div>
+    <div v-else-if="isNewAPI && (data?.key || newAPIAccountReady(data))" class="upstream-metrics">
       <span v-if="newAPIAccountReady(data)" class="account-balance">{{ t('upstreamInfo.wallet') }} <strong :class="{ exhausted: data?.account?.quota != null && data.account.quota <= 0 }">{{ newAPIAccountAmount(data, t('upstreamInfo.rawUnit')) }}</strong></span>
       <template v-if="data?.key">
       <span>{{ t('upstreamInfo.keyQuota') }} <strong :class="{ exhausted: !data.key.unlimited_quota && data.key.total_available != null && data.key.total_available <= 0 }">{{ data.key.unlimited_quota ? t('upstreamInfo.unlimited') : newAPIAmount(data, 'remaining', t('upstreamInfo.rawUnit')) }}</strong></span>
@@ -83,6 +90,7 @@ onUnmounted(() => { active = false; generation++; stop(); document.removeEventLi
       <span v-if="refreshedAt">{{ t('upstreamInfo.updated') }} {{ infoTime(refreshedAt) }}</span>
     </p>
     <NewApiInfoDetails v-if="isNewAPI" :open="open" :name="card.name" :data="data" :busy="busy" :failed="failed" @close="open = false" @refresh="refresh(true)" />
+    <CLIProxyInfoDetails v-else-if="isCLIProxyAPI" :open="open" :name="card.name" :data="data" :busy="busy" :failed="failed" @close="open = false" @refresh="refresh(true)" />
     <ProviderInfoDetails v-else :open="open" :name="card.name" :data="data" :busy="busy" :failed="failed" :theme="theme" @close="open = false" @refresh="refresh(true)" />
   </div>
 </template>

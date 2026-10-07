@@ -13,7 +13,7 @@ watch(() => [props.open, props.form.apiUrl, props.form.apiKey, props.form.upstre
 })
 function selectType(event: Event) {
   const selected = (event.target as HTMLSelectElement).value
-  const type = selected === 'sub2api' || selected === 'newapi' ? selected : ''
+  const type = selected === 'sub2api' || selected === 'newapi' || selected === 'cliproxyapi' ? selected : ''
   props.form.upstreamInfo = { ...props.form.upstreamInfo, type, baseUrl: props.form.upstreamInfo?.baseUrl || '' }
 }
 async function test() {
@@ -33,7 +33,7 @@ async function test() {
     <label class="form-field">
       <span>{{ t('upstreamInfo.service') }}</span>
       <select :value="form.upstreamInfo?.type || ''" @change="selectType">
-        <option value="">{{ t('upstreamInfo.off') }}</option><option value="sub2api">sub2api</option><option value="newapi">New API</option>
+        <option value="">{{ t('upstreamInfo.off') }}</option><option value="sub2api">sub2api</option><option value="newapi">New API</option><option value="cliproxyapi">CLIProxyAPI</option>
       </select>
     </label>
     <template v-if="form.upstreamInfo?.type">
@@ -54,6 +54,7 @@ async function test() {
           <span class="field-hint">{{ t('upstreamInfo.accountUserIdHint') }}</span>
         </label>
       </template>
+      <p v-if="form.upstreamInfo.type === 'cliproxyapi'" class="field-hint">{{ t('upstreamInfo.cliproxyScope') }}</p>
       <button type="button" class="info-button" :disabled="busy || (!form.apiKey.trim() && !(form.upstreamInfo.type === 'newapi' && form.upstreamInfo.accountToken?.trim())) || !form.apiUrl.trim()" @click="test">{{ t(busy ? 'upstreamInfo.loading' : 'upstreamInfo.test') }}</button>
       <div aria-live="polite" class="test-result">
         <p v-if="failed">{{ t('upstreamInfo.testFailed') }}</p>
@@ -62,6 +63,9 @@ async function test() {
           <p v-if="newAPIAccountReady(result)">{{ t('upstreamInfo.wallet') }}: {{ newAPIAccountAmount(result, t('upstreamInfo.rawUnit')) }}</p>
           <p v-else-if="result.accountState">{{ t('upstreamInfo.accountFallback') }}</p>
           <p v-if="result.key">{{ t('upstreamInfo.keyQuota') }}: {{ result.key.unlimited_quota ? t('upstreamInfo.unlimited') : newAPIAmount(result, 'remaining', t('upstreamInfo.rawUnit')) }}</p>
+        </template>
+        <template v-else-if="result?.platform === 'cliproxyapi'">
+          <p v-if="result.modelsState">{{ t('upstreamInfo.availableModels') }}: {{ t(`upstreamInfo.status.${result.modelsState.status}`) }}<span v-if="result.modelsState.stale"> · {{ t('upstreamInfo.stale') }}</span><span v-if="result.models"> · {{ result.models.data.length }}</span></p>
         </template>
         <template v-else-if="result">
           <p>{{ t('upstreamInfo.usage') }}: {{ t(`upstreamInfo.status.${result.usageState.status}`) }}<span v-if="result.usage"> · {{ t('upstreamInfo.remaining') }} {{ infoUnlimited(result.usage) ? t('upstreamInfo.unlimited') : infoAmount(infoRemaining(result.usage), result.usage.unit || result.usage.quota?.unit) }}</span></p>
