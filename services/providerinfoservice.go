@@ -123,6 +123,8 @@ type ProviderInfoResult struct {
 	PricingState  ProviderInfoSection  `json:"pricingState"`
 	Models        *CLIProxyModels      `json:"models,omitempty"`
 	ModelsState   *ProviderInfoSection `json:"modelsState,omitempty"`
+	Balance       *DeepSeekBalance     `json:"balance,omitempty"`
+	BalanceState  *ProviderInfoSection `json:"balanceState,omitempty"`
 	Usage         *Sub2Usage           `json:"usage,omitempty"`
 	Billing       *Sub2Billing         `json:"billing,omitempty"`
 	UsageState    ProviderInfoSection  `json:"usageState"`
@@ -185,7 +187,7 @@ func (s *ProviderInfoService) TestConnection(draft ProviderInfoDraft, timezone s
 	return s.query(draft, "preview", true, timezone)
 }
 func providerInfoBase(draft ProviderInfoDraft) (string, error) {
-	if draft.UpstreamInfo == nil || (draft.UpstreamInfo.Type != "sub2api" && draft.UpstreamInfo.Type != "newapi" && draft.UpstreamInfo.Type != "cliproxyapi") {
+	if draft.UpstreamInfo == nil || (draft.UpstreamInfo.Type != "sub2api" && draft.UpstreamInfo.Type != "newapi" && draft.UpstreamInfo.Type != "cliproxyapi" && draft.UpstreamInfo.Type != "deepseek") {
 		return "", errors.New("info_disabled")
 	}
 	raw := strings.TrimSpace(draft.UpstreamInfo.BaseURL)
@@ -228,6 +230,9 @@ func (s *ProviderInfoService) query(draft ProviderInfoDraft, ref string, force b
 	}
 	if draft.UpstreamInfo.Type == "cliproxyapi" {
 		return s.queryCLIProxyAPI(cacheKey, base, key, force), nil
+	}
+	if draft.UpstreamInfo.Type == "deepseek" {
+		return s.queryDeepSeek(cacheKey, base, key, force), nil
 	}
 	result := &ProviderInfoResult{Platform: "sub2api", DailyTimezone: tz, ModelPeriod: "upstream_last_30_days"}
 	var usage, billing providerInfoCache
@@ -371,6 +376,9 @@ func (s *ProviderInfoService) fetch(endpoint, key string, kind, userID string) p
 	return out
 }
 func decodeProviderInfo(body []byte, kind string) (json.RawMessage, string) {
+	if kind == "deepseek_balance" {
+		return decodeDeepSeekBalance(body)
+	}
 	if kind == "cliproxyapi_models" {
 		return decodeCLIProxyModels(body)
 	}

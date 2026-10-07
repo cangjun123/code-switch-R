@@ -6,6 +6,7 @@ import { newAPIAccountReady, newAPIAccountAmount, newAPIStates, newAPIAmount, ne
 import NewApiInfoDetails from './NewApiInfoDetails.vue'
 import ProviderInfoDetails from './ProviderInfoDetails.vue'
 import CLIProxyInfoDetails from './CLIProxyInfoDetails.vue'
+import DeepSeekInfoDetails from './DeepSeekInfoDetails.vue'
 const props = defineProps<{ card: AutomationCard; providerRef: ProviderInfoRef; revision: number; theme: string }>()
 const { t } = useI18n()
 const data = ref<ProviderInfo | null>(null)
@@ -20,8 +21,14 @@ const remaining = computed(() => infoRemaining(data.value?.usage))
 const amount = computed(() => infoUnlimited(data.value?.usage) ? t('upstreamInfo.unlimited') : infoAmount(remaining.value, data.value?.usage?.unit || data.value?.usage?.quota?.unit))
 const isNewAPI = computed(() => props.card.upstreamInfo?.type === 'newapi')
 const isCLIProxyAPI = computed(() => props.card.upstreamInfo?.type === 'cliproxyapi')
-const platformName = computed(() => isCLIProxyAPI.value ? 'CLIProxyAPI' : isNewAPI.value ? 'New API' : 'sub2api')
-const states = computed(() => data.value ? (isCLIProxyAPI.value ? (data.value.modelsState ? [data.value.modelsState] : []) : isNewAPI.value ? newAPIStates(data.value).map(p => p.state) : [data.value.usageState, data.value.billingState]) : [])
+const isDeepSeek = computed(() => props.card.upstreamInfo?.type === 'deepseek')
+const platformName = computed(() => isDeepSeek.value ? 'DeepSeek' : isCLIProxyAPI.value ? 'CLIProxyAPI' : isNewAPI.value ? 'New API' : 'sub2api')
+const states = computed(() => {
+  if (!data.value) return []
+  if (isDeepSeek.value) return data.value.balanceState ? [data.value.balanceState] : []
+  if (isCLIProxyAPI.value) return data.value.modelsState ? [data.value.modelsState] : []
+  return isNewAPI.value ? newAPIStates(data.value).map(part => part.state) : [data.value.usageState, data.value.billingState]
+})
 const stale = computed(() => states.value.some(s => s.stale))
 const partial = computed(() => states.value.some(s => s.status !== 'ready'))
 const refreshedAt = computed(() => states.value.map(s => s.updatedAt).filter((s): s is string => !!s).sort()[0])
@@ -68,6 +75,15 @@ onUnmounted(() => { active = false; generation++; stop(); document.removeEventLi
       <span>{{ t('upstreamInfo.availableModels') }} <strong>{{ data?.models ? data.models.data.length : '—' }}</strong></span>
       <span v-if="data?.modelsState">{{ t(`upstreamInfo.status.${data.modelsState.status}`) }}</span>
     </div>
+    <div v-else-if="isDeepSeek" class="upstream-metrics">
+      <template v-if="data?.balance">
+        <span v-for="row in data.balance.balance_infos" :key="row.currency">{{ t('upstreamInfo.wallet') }} <strong :class="{ exhausted: !data.balance.is_available }">{{ row.total_balance }} {{ row.currency }}</strong></span>
+        <span v-if="!data.balance.balance_infos.length">{{ t('upstreamInfo.wallet') }} <strong>—</strong></span>
+        <span>{{ t('upstreamInfo.balanceAvailability') }} <strong :class="{ exhausted: !data.balance.is_available }">{{ t(data.balance.is_available ? 'upstreamInfo.balanceAvailable' : 'upstreamInfo.balanceInsufficient') }}</strong></span>
+      </template>
+      <span v-else>{{ t('upstreamInfo.wallet') }} <strong>—</strong></span>
+      <span v-if="data?.balanceState && data.balanceState.status !== 'ready'">{{ t(`upstreamInfo.status.${data.balanceState.status}`) }}</span>
+    </div>
     <div v-else-if="isNewAPI && (data?.key || newAPIAccountReady(data))" class="upstream-metrics">
       <span v-if="newAPIAccountReady(data)" class="account-balance">{{ t('upstreamInfo.wallet') }} <strong :class="{ exhausted: data?.account?.quota != null && data.account.quota <= 0 }">{{ newAPIAccountAmount(data, t('upstreamInfo.rawUnit')) }}</strong></span>
       <template v-if="data?.key">
@@ -91,6 +107,7 @@ onUnmounted(() => { active = false; generation++; stop(); document.removeEventLi
     </p>
     <NewApiInfoDetails v-if="isNewAPI" :open="open" :name="card.name" :data="data" :busy="busy" :failed="failed" @close="open = false" @refresh="refresh(true)" />
     <CLIProxyInfoDetails v-else-if="isCLIProxyAPI" :open="open" :name="card.name" :data="data" :busy="busy" :failed="failed" @close="open = false" @refresh="refresh(true)" />
+    <DeepSeekInfoDetails v-else-if="isDeepSeek" :open="open" :name="card.name" :data="data" :busy="busy" :failed="failed" @close="open = false" @refresh="refresh(true)" />
     <ProviderInfoDetails v-else :open="open" :name="card.name" :data="data" :busy="busy" :failed="failed" :theme="theme" @close="open = false" @refresh="refresh(true)" />
   </div>
 </template>

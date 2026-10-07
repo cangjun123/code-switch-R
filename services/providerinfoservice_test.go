@@ -285,10 +285,17 @@ func TestProviderInfoTimeoutAndCoalescing(t *testing.T) {
 	}
 }
 func TestProviderInfoPersistenceAndReferences(t *testing.T) {
-	for _, platform := range []string{"sub2api", "newapi", "cliproxyapi"} {
+	for _, platform := range []string{"sub2api", "newapi", "cliproxyapi", "deepseek"} {
 		t.Run(platform, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			server := infoServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if platform == "deepseek" {
+					if r.URL.Path != "/user/balance" {
+						t.Errorf("unexpected DeepSeek endpoint: %s", r.URL.Path)
+					}
+					fmt.Fprint(w, deepSeekBalanceFixture)
+					return
+				}
 				if platform == "cliproxyapi" {
 					if r.URL.Path != "/v1/models" {
 						t.Errorf("unexpected CLIProxyAPI endpoint: %s", r.URL.Path)
@@ -333,7 +340,7 @@ func TestProviderInfoPersistenceAndReferences(t *testing.T) {
 			svc := NewProviderInfoService(providers, reloaded)
 			for _, ref := range []ProviderInfoRef{{"claude", "42"}, {"codex", "42"}, {"gpt-image", "42"}, {"custom:test", "42"}, {"gemini", "native-id"}} {
 				got, err := svc.GetInfo(ref, false, "UTC")
-				if err != nil || (platform == "sub2api" && got.Usage == nil) || (platform == "newapi" && (got.Key == nil || got.Account == nil)) || (platform == "cliproxyapi" && got.Models == nil) {
+				if err != nil || (platform == "sub2api" && got.Usage == nil) || (platform == "newapi" && (got.Key == nil || got.Account == nil)) || (platform == "cliproxyapi" && got.Models == nil) || (platform == "deepseek" && got.Balance == nil) {
 					t.Fatalf("ref %+v: %v", ref, err)
 				}
 			}
