@@ -121,6 +121,8 @@ type ProviderInfoResult struct {
 	Pricing       *NewAPIPricing       `json:"pricing,omitempty"`
 	SiteState     ProviderInfoSection  `json:"siteState"`
 	PricingState  ProviderInfoSection  `json:"pricingState"`
+	Models        *CLIProxyModels      `json:"models,omitempty"`
+	ModelsState   *ProviderInfoSection `json:"modelsState,omitempty"`
 	Usage         *Sub2Usage           `json:"usage,omitempty"`
 	Billing       *Sub2Billing         `json:"billing,omitempty"`
 	UsageState    ProviderInfoSection  `json:"usageState"`
@@ -183,7 +185,7 @@ func (s *ProviderInfoService) TestConnection(draft ProviderInfoDraft, timezone s
 	return s.query(draft, "preview", true, timezone)
 }
 func providerInfoBase(draft ProviderInfoDraft) (string, error) {
-	if draft.UpstreamInfo == nil || (draft.UpstreamInfo.Type != "sub2api" && draft.UpstreamInfo.Type != "newapi") {
+	if draft.UpstreamInfo == nil || (draft.UpstreamInfo.Type != "sub2api" && draft.UpstreamInfo.Type != "newapi" && draft.UpstreamInfo.Type != "cliproxyapi") {
 		return "", errors.New("info_disabled")
 	}
 	raw := strings.TrimSpace(draft.UpstreamInfo.BaseURL)
@@ -223,6 +225,9 @@ func (s *ProviderInfoService) query(draft ProviderInfoDraft, ref string, force b
 	cacheKey := hex.EncodeToString(sum[:])
 	if draft.UpstreamInfo.Type == "newapi" {
 		return s.queryNewAPI(cacheKey, base, key, force, draft.UpstreamInfo), nil
+	}
+	if draft.UpstreamInfo.Type == "cliproxyapi" {
+		return s.queryCLIProxyAPI(cacheKey, base, key, force), nil
 	}
 	result := &ProviderInfoResult{Platform: "sub2api", DailyTimezone: tz, ModelPeriod: "upstream_last_30_days"}
 	var usage, billing providerInfoCache
@@ -366,6 +371,9 @@ func (s *ProviderInfoService) fetch(endpoint, key string, kind, userID string) p
 	return out
 }
 func decodeProviderInfo(body []byte, kind string) (json.RawMessage, string) {
+	if kind == "cliproxyapi_models" {
+		return decodeCLIProxyModels(body)
+	}
 	if strings.HasPrefix(kind, "newapi_") {
 		return decodeNewAPI(body, kind)
 	}
