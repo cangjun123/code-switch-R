@@ -37,34 +37,47 @@ type CodexRelayKey struct {
 	// AllowedClaudeProviderIDs is independent from AllowedProviderIDs (Codex)
 	// because provider IDs are allocated per kind and may overlap.
 	AllowedClaudeProviderIDs []int64 `json:"allowedClaudeProviderIds,omitempty"`
+	// ProviderBinding marks a provider-dedicated key created from a provider
+	// card. A bound key may only reach that single provider; every other
+	// provider kind and relay endpoint is denied regardless of the allowlists.
+	ProviderBinding *RelayKeyProviderBinding `json:"providerBinding,omitempty"`
+}
+
+// RelayKeyProviderBinding identifies the single provider a dedicated key may
+// access. Provider IDs are allocated per kind, so both fields are required.
+type RelayKeyProviderBinding struct {
+	Kind       string `json:"kind"`
+	ProviderID int64  `json:"providerId"`
 }
 
 // UnmarshalJSON accepts both the current camelCase representation and the
 // snake_case names used by early quota prototypes.
 func (key *CodexRelayKey) UnmarshalJSON(data []byte) error {
 	var value struct {
-		ID                 string          `json:"id"`
-		Name               string          `json:"name"`
-		Key                string          `json:"key"`
-		Enabled            bool            `json:"enabled"`
-		CreatedAt          time.Time       `json:"createdAt"`
-		TokenLimit         json.RawMessage `json:"tokenLimit"`
-		TokenLimitSnake    json.RawMessage `json:"token_limit"`
-		USDLimit           json.RawMessage `json:"usdLimit"`
-		USDLimitSnake      json.RawMessage `json:"usd_limit"`
-		QuotaPeriod        string          `json:"quotaPeriod"`
-		Period             string          `json:"period"`
-		QuotaPeriodSnake   string          `json:"quota_period"`
-		AllowedProviders   []int64         `json:"allowedProviderIds"`
-		AllowedSnake       []int64         `json:"allowed_provider_ids"`
-		AllowedClaude      []int64         `json:"allowedClaudeProviderIds"`
-		AllowedClaudeSnake []int64         `json:"allowed_claude_provider_ids"`
+		ID                 string                   `json:"id"`
+		Name               string                   `json:"name"`
+		Key                string                   `json:"key"`
+		Enabled            bool                     `json:"enabled"`
+		CreatedAt          time.Time                `json:"createdAt"`
+		TokenLimit         json.RawMessage          `json:"tokenLimit"`
+		TokenLimitSnake    json.RawMessage          `json:"token_limit"`
+		USDLimit           json.RawMessage          `json:"usdLimit"`
+		USDLimitSnake      json.RawMessage          `json:"usd_limit"`
+		QuotaPeriod        string                   `json:"quotaPeriod"`
+		Period             string                   `json:"period"`
+		QuotaPeriodSnake   string                   `json:"quota_period"`
+		AllowedProviders   []int64                  `json:"allowedProviderIds"`
+		AllowedSnake       []int64                  `json:"allowed_provider_ids"`
+		AllowedClaude      []int64                  `json:"allowedClaudeProviderIds"`
+		AllowedClaudeSnake []int64                  `json:"allowed_claude_provider_ids"`
+		ProviderBinding    *RelayKeyProviderBinding `json:"providerBinding"`
 	}
 	if err := json.Unmarshal(data, &value); err != nil {
 		return err
 	}
 	*key = CodexRelayKey{
 		ID: value.ID, Name: value.Name, Key: value.Key, Enabled: value.Enabled, CreatedAt: value.CreatedAt,
+		ProviderBinding: value.ProviderBinding,
 	}
 	tokenRaw := value.TokenLimit
 	if len(tokenRaw) == 0 {
@@ -134,17 +147,18 @@ func (key *CodexRelayKey) UnmarshalJSON(data []byte) error {
 }
 
 type CodexRelayKeyListItem struct {
-	ID                       string            `json:"id"`
-	Name                     string            `json:"name"`
-	MaskedKey                string            `json:"maskedKey"`
-	Enabled                  bool              `json:"enabled"`
-	CreatedAt                time.Time         `json:"createdAt"`
-	TokenLimit               int64             `json:"tokenLimit"`
-	USDLimit                 string            `json:"usdLimit"`
-	QuotaPeriod              string            `json:"quotaPeriod"`
-	AllowedProviderIDs       []int64           `json:"allowedProviderIds"`
-	AllowedClaudeProviderIDs []int64           `json:"allowedClaudeProviderIds"`
-	Quota                    *RelayQuotaStatus `json:"quota,omitempty"`
+	ID                       string                   `json:"id"`
+	Name                     string                   `json:"name"`
+	MaskedKey                string                   `json:"maskedKey"`
+	Enabled                  bool                     `json:"enabled"`
+	CreatedAt                time.Time                `json:"createdAt"`
+	TokenLimit               int64                    `json:"tokenLimit"`
+	USDLimit                 string                   `json:"usdLimit"`
+	QuotaPeriod              string                   `json:"quotaPeriod"`
+	AllowedProviderIDs       []int64                  `json:"allowedProviderIds"`
+	AllowedClaudeProviderIDs []int64                  `json:"allowedClaudeProviderIds"`
+	ProviderBinding          *RelayKeyProviderBinding `json:"providerBinding,omitempty"`
+	Quota                    *RelayQuotaStatus        `json:"quota,omitempty"`
 }
 
 type CodexRelayKeyCreateResult struct {
@@ -209,6 +223,7 @@ func (s *CodexRelayKeyService) ListKeys() ([]CodexRelayKeyListItem, error) {
 			QuotaPeriod:              normalizeRelayQuotaPeriod(key.QuotaPeriod),
 			AllowedProviderIDs:       append([]int64{}, key.AllowedProviderIDs...),
 			AllowedClaudeProviderIDs: append([]int64{}, key.AllowedClaudeProviderIDs...),
+			ProviderBinding:          cloneRelayKeyProviderBinding(key.ProviderBinding),
 		})
 	}
 
@@ -293,9 +308,11 @@ func (s *CodexRelayKeyService) DeleteKey(id string) error {
 		return err
 	}
 
+	// Provider-dedicated keys cannot serve as the general relay key, so they
+	// neither count toward nor are blocked by the "keep one usable key" rule.
 	enabledCount := 0
 	for _, key := range store.Keys {
-		if key.Enabled {
+		if key.Enabled && key.ProviderBinding == nil {
 			enabledCount++
 		}
 	}
@@ -305,7 +322,7 @@ func (s *CodexRelayKeyService) DeleteKey(id string) error {
 	for _, key := range store.Keys {
 		if key.ID == id {
 			found = true
-			if key.Enabled && enabledCount <= 1 {
+			if key.Enabled && key.ProviderBinding == nil && enabledCount <= 1 {
 				return errors.New("至少需要保留一个可用的 Codex relay key")
 			}
 			continue
@@ -414,6 +431,9 @@ func (s *CodexRelayKeyService) updateAllowlist(id string, providerIDs []int64, a
 	}
 	for index := range store.Keys {
 		if store.Keys[index].ID == id {
+			if store.Keys[index].ProviderBinding != nil {
+				return errors.New("供应商专属 Key 的访问范围固定为所属供应商，不能修改")
+			}
 			apply(&store.Keys[index], normalized)
 			return s.saveLocked(store)
 		}
@@ -467,6 +487,115 @@ func (s *CodexRelayKeyService) GetKeySecret(id string) (string, error) {
 	return "", fmt.Errorf("未找到 Codex relay key: %s", id)
 }
 
+// ListProviderKeys returns the dedicated keys bound to providers of kind.
+func (s *CodexRelayKeyService) ListProviderKeys(kind string) ([]CodexRelayKeyListItem, error) {
+	keys, err := s.ListKeys()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]CodexRelayKeyListItem, 0)
+	for _, key := range keys {
+		if key.ProviderBinding != nil && key.ProviderBinding.Kind == kind {
+			result = append(result, key)
+		}
+	}
+	return result, nil
+}
+
+// EnsureProviderKey returns the dedicated key for one provider, creating it on
+// first use. The caller is responsible for verifying that the provider exists.
+func (s *CodexRelayKeyService) EnsureProviderKey(kind string, providerID int64, name string) (*CodexRelayKey, bool, error) {
+	if !isBindableRelayProviderKind(kind) {
+		return nil, false, fmt.Errorf("不支持为 %s 供应商创建专属 Key", kind)
+	}
+	if providerID < 0 {
+		return nil, false, fmt.Errorf("provider ID 不能为负数: %d", providerID)
+	}
+	normalizedName, err := normalizeCodexRelayKeyName(name)
+	if err != nil {
+		return nil, false, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	store, err := s.loadLocked()
+	if err != nil {
+		return nil, false, err
+	}
+	for _, key := range store.Keys {
+		if binding := key.ProviderBinding; binding != nil && binding.Kind == kind && binding.ProviderID == providerID {
+			copyKey := cloneCodexRelayKey(key)
+			return &copyKey, false, nil
+		}
+	}
+
+	value, err := generateCodexRelayKeyValue()
+	if err != nil {
+		return nil, false, err
+	}
+	key := CodexRelayKey{
+		ID:              fmt.Sprintf("codex-key-%d", time.Now().UnixNano()),
+		Name:            normalizedName,
+		Key:             value,
+		Enabled:         true,
+		CreatedAt:       time.Now().UTC(),
+		QuotaPeriod:     normalizeRelayQuotaPeriod(""),
+		ProviderBinding: &RelayKeyProviderBinding{Kind: kind, ProviderID: providerID},
+	}
+	store.Keys = append(store.Keys, key)
+	if err := s.saveLocked(store); err != nil {
+		return nil, false, err
+	}
+	copyKey := cloneCodexRelayKey(key)
+	return &copyKey, true, nil
+}
+
+// PruneProviderKeys deletes dedicated keys of kind whose provider is no longer
+// configured. It runs after every provider save so a deleted provider's key is
+// removed before its ID could ever be reused by a new provider.
+func (s *CodexRelayKeyService) PruneProviderKeys(kind string, existingProviderIDs []int64) ([]string, error) {
+	if !isBindableRelayProviderKind(kind) {
+		return nil, nil
+	}
+	existing := make(map[int64]struct{}, len(existingProviderIDs))
+	for _, providerID := range existingProviderIDs {
+		existing[providerID] = struct{}{}
+	}
+
+	s.mu.Lock()
+	store, err := s.loadLocked()
+	if err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	removed := make([]string, 0)
+	kept := make([]CodexRelayKey, 0, len(store.Keys))
+	for _, key := range store.Keys {
+		if binding := key.ProviderBinding; binding != nil && binding.Kind == kind {
+			if _, ok := existing[binding.ProviderID]; !ok {
+				removed = append(removed, key.ID)
+				continue
+			}
+		}
+		kept = append(kept, key)
+	}
+	if len(removed) > 0 {
+		store.Keys = kept
+		if err := s.saveLocked(store); err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
+	}
+	s.mu.Unlock()
+
+	for _, id := range removed {
+		if err := deleteRelayQuotaData(id); err != nil {
+			return removed, err
+		}
+	}
+	return removed, nil
+}
+
 func (s *CodexRelayKeyService) EnsureDefaultKey() (*CodexRelayKey, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -477,7 +606,9 @@ func (s *CodexRelayKeyService) EnsureDefaultKey() (*CodexRelayKey, error) {
 	}
 
 	for _, key := range store.Keys {
-		if key.Enabled {
+		// Dedicated keys are restricted to one provider and must never be
+		// injected into local CLI configs as the general relay key.
+		if key.Enabled && key.ProviderBinding == nil {
 			copyKey := cloneCodexRelayKey(key)
 			return &copyKey, nil
 		}
@@ -610,6 +741,11 @@ func (s *CodexRelayKeyService) loadLocked() (*codexRelayKeyStore, error) {
 			key.AllowedClaudeProviderIDs = normalizedClaude
 			changed = true
 		}
+		if binding := key.ProviderBinding; binding != nil {
+			if !isBindableRelayProviderKind(binding.Kind) || binding.ProviderID < 0 {
+				return nil, fmt.Errorf("Codex relay key %q provider binding is invalid", key.ID)
+			}
+		}
 	}
 	if changed {
 		if err := s.saveLocked(store); err != nil {
@@ -645,7 +781,20 @@ func NormalizeCodexAllowedProviderIDs(providerIDs []int64) ([]int64, error) {
 func cloneCodexRelayKey(key CodexRelayKey) CodexRelayKey {
 	key.AllowedProviderIDs = append([]int64(nil), key.AllowedProviderIDs...)
 	key.AllowedClaudeProviderIDs = append([]int64(nil), key.AllowedClaudeProviderIDs...)
+	key.ProviderBinding = cloneRelayKeyProviderBinding(key.ProviderBinding)
 	return key
+}
+
+func cloneRelayKeyProviderBinding(binding *RelayKeyProviderBinding) *RelayKeyProviderBinding {
+	if binding == nil {
+		return nil
+	}
+	copyBinding := *binding
+	return &copyBinding
+}
+
+func isBindableRelayProviderKind(kind string) bool {
+	return kind == ProviderKindCodex || kind == ProviderKindClaude
 }
 
 func equalInt64Slices(left, right []int64) bool {
@@ -673,6 +822,11 @@ func generateCodexRelayKeyValue() (string, error) {
 		return "", fmt.Errorf("生成 Codex relay key 失败: %w", err)
 	}
 	return "csk_" + base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// MaskCodexRelayKey returns the display form of a relay key secret.
+func MaskCodexRelayKey(value string) string {
+	return maskCodexRelayKey(value)
 }
 
 func maskCodexRelayKey(value string) string {

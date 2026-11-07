@@ -274,6 +274,8 @@
             :connectivity-indicator-class="getConnectivityIndicatorClass(card.id)"
             :connectivity-tooltip="getConnectivityTooltip(card.id)"
             :show-model-trace-button="showModelTraceButton"
+            :supports-dedicated-key="isDedicatedKeyTab(activeTab)"
+            :dedicated-key="dedicatedKeyFor(activeTab, card.id)"
             @dragstart="onDragStart"
             @dragend="onDragEnd"
             @drop="onDrop"
@@ -283,6 +285,7 @@
             @open-pelican-test="openPelicanTest"
             @configure="configure"
             @duplicate="handleDuplicate"
+            @copy-dedicated-key="handleCopyDedicatedKey"
             @remove="requestRemove"
             @unblock="handleUnblockAndReset"
             @reset-level="handleResetLevel"
@@ -330,6 +333,9 @@
       <div class="confirm-body">
         <p>
           {{ t('components.main.form.confirmDeleteMessage', { name: confirmState.card?.name ?? '' }) }}
+        </p>
+        <p v-if="confirmState.card && dedicatedKeyFor(confirmState.tabId, confirmState.card.id)">
+          {{ t('components.main.dedicatedKey.deleteNotice') }}
         </p>
       </div>
       <footer class="form-actions confirm-actions">
@@ -542,6 +548,8 @@ import { useRouter } from 'vue-router'
 import { fetchConfigImportStatus, importFromCcSwitch, isFirstRun, markFirstRunDone, type ConfigImportStatus } from '../../services/configImport'
 import { showToast } from '../../utils/toast'
 import { extractErrorMessage } from '../../utils/error'
+import { copyText } from '../../utils/clipboard'
+import { ensureProviderKey, listProviderKeys, type RelayProviderKind } from '../../services/adminAuth'
 import { getBlacklistStatus, manualUnblock, type BlacklistStatus } from '../../services/blacklist'
 import { saveCLIConfig, type CLIPlatform } from '../../services/cliConfig'
 import {
@@ -1612,6 +1620,8 @@ const stopBlacklistTimers = () => {
 
 onMounted(async () => {
   await loadProvidersFromDisk()
+  void loadDedicatedKeys('codex')
+  void loadDedicatedKeys('claude')
   await Promise.all(providerTabIds.map(refreshProxyState))
   await Promise.all(providerTabIds.map((tab) => refreshDirectAppliedStatus(tab)))
   await Promise.all(providerTabIds.map((tab) => loadProviderStats(tab)))
@@ -2431,7 +2441,49 @@ const remove = async (id: number, tabId: ProviderTab = activeTab.value) => {
   if (index > -1) {
     list.splice(index, 1)
     await persistProviders(tabId)
+    // 后端在保存时已删除该供应商的专属 Key，这里同步刷新卡片状态
+    if (isDedicatedKeyTab(tabId)) {
+      await loadDedicatedKeys(tabId)
+    }
   }
+}
+
+// 供应商专属 Key：仅 Claude/Codex 支持，按 providerId 记录脱敏后的 Key
+const dedicatedKeys = reactive<Record<RelayProviderKind, Record<number, string>>>({ codex: {}, claude: {} })
+
+const isDedicatedKeyTab = (tab: ProviderTab): tab is RelayProviderKind => tab === 'codex' || tab === 'claude'
+
+const dedicatedKeyFor = (tab: ProviderTab, providerId: number) =>
+  isDedicatedKeyTab(tab) ? dedicatedKeys[tab][providerId] ?? '' : ''
+
+const loadDedicatedKeys = async (kind: RelayProviderKind) => {
+  try {
+    const keys = await listProviderKeys(kind)
+    dedicatedKeys[kind] = Object.fromEntries(keys.map((key) => [key.providerId, key.maskedKey]))
+  } catch (error) {
+    console.error(`[DedicatedKey] Failed to load ${kind} dedicated keys:`, error)
+  }
+}
+
+const handleCopyDedicatedKey = async (card: AutomationCard) => {
+  const tab = activeTab.value
+  if (!isDedicatedKeyTab(tab)) return
+  let result
+  try {
+    result = await ensureProviderKey(tab, card.id)
+  } catch (error) {
+    showToast(`${t('components.main.dedicatedKey.failed')}: ${extractErrorMessage(error)}`, 'error')
+    return
+  }
+  dedicatedKeys[tab][card.id] = result.maskedKey
+  try {
+    await copyText(result.key)
+  } catch (error) {
+    showToast(extractErrorMessage(error, t('components.main.dedicatedKey.copyFailed')), 'error')
+    return
+  }
+  const message = result.created ? 'components.main.dedicatedKey.created' : 'components.main.dedicatedKey.copied'
+  showToast(t(message, { name: card.name }), 'success')
 }
 
 const requestRemove = (card: AutomationCard) => {

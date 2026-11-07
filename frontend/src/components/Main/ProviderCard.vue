@@ -40,6 +40,9 @@ const props = defineProps<{
   connectivityIndicatorClass: string
   connectivityTooltip: string
   showModelTraceButton: boolean
+  supportsDedicatedKey: boolean
+  // Masked dedicated key, or empty when none has been created yet.
+  dedicatedKey: string
 }>()
 
 const emit = defineEmits<{
@@ -52,6 +55,7 @@ const emit = defineEmits<{
   (e: 'open-pelican-test', card: AutomationCard): void
   (e: 'configure', card: AutomationCard): void
   (e: 'duplicate', card: AutomationCard): void
+  (e: 'copy-dedicated-key', card: AutomationCard): void
   (e: 'remove', card: AutomationCard): void
   (e: 'unblock', name: string): void
   (e: 'reset-level', name: string): void
@@ -353,6 +357,22 @@ const showBlBadge = computed(() => {
         </svg>
       </button>
 
+      <!-- 专属 Key 按钮：按需生成仅能访问此供应商的 relay key 并复制 -->
+      <button
+        v-if="supportsDedicatedKey"
+        class="ghost-icon"
+        :class="{ 'has-dedicated-key': !!dedicatedKey }"
+        type="button"
+        :aria-label="dedicatedKey ? t('components.main.dedicatedKey.copy', { masked: dedicatedKey }) : t('components.main.dedicatedKey.create')"
+        :data-tooltip="dedicatedKey ? t('components.main.dedicatedKey.copy', { masked: dedicatedKey }) : t('components.main.dedicatedKey.create')"
+        @click.stop="emit('copy-dedicated-key', card)"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="8" cy="15" r="4" />
+          <path d="M10.85 12.15 19 4m-3 3 2 2m-4-1 2 2" />
+        </svg>
+      </button>
+
       <!-- 复制按钮 -->
       <button
         class="ghost-icon"
@@ -393,6 +413,7 @@ const showBlBadge = computed(() => {
 </template>
 
 <style scoped>
+.ghost-icon.has-dedicated-key { color: var(--mac-accent, #0a84ff); }
 .has-upstream-info .card-leading { min-width: 0; }
 .has-upstream-info .card-text { flex: 1; min-width: 0; }
 .has-upstream-info .card-icon { flex-shrink: 0; }

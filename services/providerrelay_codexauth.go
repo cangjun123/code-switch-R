@@ -230,23 +230,33 @@ func (prs *ProviderRelayService) codexQuotaStatusHandler() gin.HandlerFunc {
 	}
 }
 
-// relayKeyProviderAllowlist returns the provider allowlist that applies to
-// the given kind. Nil means unrestricted.
-func relayKeyProviderAllowlist(key *CodexRelayKey, kind string) []int64 {
+// relayKeyProviderAccess returns the provider allowlist that applies to the
+// given kind and whether access is restricted at all. An unrestricted result
+// keeps every provider; a restricted result with an empty allowlist denies
+// the whole kind, which is how provider-dedicated keys are kept off every
+// provider kind other than the one they are bound to.
+func relayKeyProviderAccess(key *CodexRelayKey, kind string) ([]int64, bool) {
 	if key == nil {
-		return nil
+		return nil, false
 	}
+	if binding := key.ProviderBinding; binding != nil {
+		if binding.Kind == kind {
+			return []int64{binding.ProviderID}, true
+		}
+		return nil, true
+	}
+	var allowlist []int64
 	switch kind {
 	case ProviderKindCodex:
-		return key.AllowedProviderIDs
+		allowlist = key.AllowedProviderIDs
 	case ProviderKindClaude:
-		return key.AllowedClaudeProviderIDs
+		allowlist = key.AllowedClaudeProviderIDs
 	}
-	return nil
+	return allowlist, len(allowlist) > 0
 }
 
-func filterProvidersByAllowlist(allowlist []int64, providers []Provider) ([]Provider, int) {
-	if len(allowlist) == 0 {
+func filterProvidersByAllowlist(allowlist []int64, restricted bool, providers []Provider) ([]Provider, int) {
+	if !restricted {
 		return providers, 0
 	}
 	allowed := make(map[int64]struct{}, len(allowlist))
@@ -260,6 +270,32 @@ func filterProvidersByAllowlist(allowlist []int64, providers []Provider) ([]Prov
 		}
 	}
 	return filtered, len(providers) - len(filtered)
+}
+
+// relayKeyProviderKindGuard rejects provider-dedicated keys on endpoints that
+// serve a provider kind without per-provider allowlists (Gemini, images).
+func (prs *ProviderRelayService) relayKeyProviderKindGuard(kind string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		key, err := prs.relayKeyForRequest(c)
+		if err != nil {
+			writeOpenAIQuotaServiceError(c, http.StatusUnauthorized, "relay_key_not_found", "relay key no longer exists")
+			c.Abort()
+			return
+		}
+		if key != nil && key.ProviderBinding != nil && key.ProviderBinding.Kind != kind {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": gin.H{
+					"message": "Provider-dedicated relay key is not allowed to access this endpoint",
+					"type":    "invalid_request_error",
+					"param":   nil,
+					"code":    "provider_access_denied",
+				},
+			})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
 }
 
 func writeOpenAIProviderAccessDenied(c *gin.Context) {

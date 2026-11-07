@@ -281,3 +281,72 @@ func TestCodexRelayKeyCanQueryExhaustedQuota(t *testing.T) {
 		t.Fatalf("invalid key status=%d body=%s", invalid.Code, invalid.Body.String())
 	}
 }
+
+func TestProviderDedicatedKeyReachesOnlyItsProvider(t *testing.T) {
+	providerService, relay := newTestRelayService(t)
+	setNamespaceRoutingDBSetting(t, "enable_blacklist", "false")
+
+	var otherCalls, boundCalls atomic.Int64
+	otherUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		otherCalls.Add(1)
+		http.Error(w, "must not be called", http.StatusInternalServerError)
+	}))
+	defer otherUpstream.Close()
+	boundUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		boundCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-bound","model":"access-model","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer boundUpstream.Close()
+
+	if err := providerService.SaveProviders(ProviderKindCodex, []Provider{
+		{ID: 1, Name: "codex-other", APIURL: otherUpstream.URL, APIKey: "k1", Enabled: true, Level: 1},
+		{ID: 2, Name: "codex-bound", APIURL: boundUpstream.URL, APIKey: "k2", Enabled: true, Level: 2},
+	}); err != nil {
+		t.Fatalf("SaveProviders(codex) failed: %v", err)
+	}
+	if err := providerService.SaveProviders(ProviderKindClaude, []Provider{
+		{ID: 2, Name: "claude-same-id", APIURL: otherUpstream.URL, APIKey: "k3", Enabled: true},
+	}); err != nil {
+		t.Fatalf("SaveProviders(claude) failed: %v", err)
+	}
+	key, _, err := relay.codexRelayKeys.EnsureProviderKey(ProviderKindCodex, 2, "Codex · codex-bound")
+	if err != nil {
+		t.Fatalf("EnsureProviderKey() failed: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	relay.registerRoutes(router)
+	send := func(method, path, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", "Bearer "+key.Key)
+		request.Header.Set("x-api-key", key.Key)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		return recorder
+	}
+
+	if recorder := send(http.MethodPost, "/responses", `{"model":"access-model","input":"hello"}`); recorder.Code != http.StatusOK {
+		t.Fatalf("codex: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if boundCalls.Load() != 1 || otherCalls.Load() != 0 {
+		t.Fatalf("provider calls: bound=%d other=%d", boundCalls.Load(), otherCalls.Load())
+	}
+
+	denied := []struct{ method, path, body string }{
+		{http.MethodPost, "/v1/messages", claudeAccessTestRequest},
+		{http.MethodGet, "/v1/models", ""},
+		{http.MethodPost, "/v1/images/generations", `{"model":"gpt-image-1","prompt":"x"}`},
+		{http.MethodPost, "/gemini/v1beta/models/gemini-2.5-pro:generateContent", `{"contents":[]}`},
+	}
+	for _, request := range denied {
+		if recorder := send(request.method, request.path, request.body); recorder.Code != http.StatusForbidden {
+			t.Fatalf("%s %s: status=%d body=%s", request.method, request.path, recorder.Code, recorder.Body.String())
+		}
+	}
+	if otherCalls.Load() != 0 {
+		t.Fatalf("denied endpoints reached an upstream %d times", otherCalls.Load())
+	}
+}

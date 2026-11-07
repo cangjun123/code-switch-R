@@ -186,12 +186,23 @@ type ProviderService struct {
 	// 与 GeminiService 的既有内存缓存同等风险；进程内写路径均主动失效。
 	cacheMu       sync.Mutex
 	providerCache map[string]providerCacheEntry
+
+	// onSaved 在 provider 列表成功落盘后调用（仍持有 mu，回调内不得再调用本服务的加锁方法）。
+	// 用于清理已删除供应商的专属 relay key。
+	onSaved func(kind string, providers []Provider)
 }
 
 func NewProviderService() *ProviderService {
 	return &ProviderService{
 		providerCache: make(map[string]providerCacheEntry),
 	}
+}
+
+// SetProvidersSavedHook 注册 provider 列表保存成功后的回调。
+func (ps *ProviderService) SetProvidersSavedHook(hook func(kind string, providers []Provider)) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	ps.onSaved = hook
 }
 
 // SetBlacklistService 注入黑名单服务。可选依赖：为 nil 时改名仍允许，
@@ -371,6 +382,10 @@ func (ps *ProviderService) saveProvidersLocked(kind string, providers []Provider
 				log.Printf("[ProviderService] 清理黑名单状态失败 (%s/%s): %v", platform, name, err)
 			}
 		}
+	}
+
+	if ps.onSaved != nil {
+		ps.onSaved(kind, providers)
 	}
 
 	return nil

@@ -263,6 +263,8 @@
       "restrictClaudeProviders": "Restrict accessible Claude providers",
       "codexScope": "Codex: {scope}",
       "claudeScope": "Claude: {scope}",
+      "dedicatedScope": "{kind} dedicated: {name}",
+      "dedicatedScopeHint": "Only this provider is reachable; the scope is fixed and the key is deleted with the provider",
       "selectedProviders": "Selected only",
       "selectedProvidersCount": "{count} selected",
       "allProviders": "All providers",
@@ -565,6 +567,15 @@
         "loading": "Refreshing...",
         "noData": "No data yet today",
         "lastUsed": "In Use"
+      },
+      "dedicatedKey": {
+        "create": "Create & copy a dedicated key (this provider only)",
+        "copy": "Copy dedicated key {masked} (this provider only)",
+        "created": "Dedicated key for {name} created and copied",
+        "copied": "Dedicated key for {name} copied",
+        "failed": "Failed to get dedicated key",
+        "copyFailed": "Failed to copy to clipboard",
+        "deleteNotice": "Its dedicated key will be deleted too; machines using it will lose access."
       },
       "directApply": {
         "title": "Direct Apply",
