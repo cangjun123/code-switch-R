@@ -206,6 +206,7 @@ func newAdminServer(rt *appRuntime) *http.Server {
 		streamEvents(c, rt.eventHub)
 	})
 	registerPelicanPreviewRoutes(router, rt, authRequired)
+	registerProviderKeyRoutes(router, rt, originRequired, authRequired)
 
 	registerStaticRoutes(router, rt.staticDir)
 

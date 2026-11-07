@@ -210,6 +210,17 @@ const providerScopeText = (key: CodexRelayKeyListItem, kind: RelayProviderKind) 
   return t(providerKindText[kind].scope, { scope })
 }
 
+// 供应商专属 Key 的范围由后端固定为单个供应商，只展示不编辑
+const dedicatedScopeText = (key: CodexRelayKeyListItem) => {
+  const binding = key.providerBinding
+  if (!binding) return ''
+  const provider = providers.value[binding.kind]?.find((item) => item.id === binding.providerId)
+  return t('auth.security.dedicatedScope', {
+    kind: binding.kind === 'claude' ? 'Claude' : 'Codex',
+    name: provider?.name ?? `#${binding.providerId}`,
+  })
+}
+
 const loadPrices = async () => {
   pricesLoading.value = true
   try {
@@ -788,9 +799,14 @@ onMounted(async () => {
               <span v-else>
                 {{ t('auth.security.usdUsage') }}: ${{ key.quota?.usdUsed ?? '0' }} / {{ key.usdLimit === '0' ? t('auth.security.unlimited') : `$${key.usdLimit}` }}
               </span>
-              <span v-for="kind in providerKinds" :key="kind" class="key-collapsed-scope">
-                {{ providerScopeText(key, kind) }}
+              <span v-if="key.providerBinding" class="key-collapsed-scope">
+                {{ dedicatedScopeText(key) }}
               </span>
+              <template v-else>
+                <span v-for="kind in providerKinds" :key="kind" class="key-collapsed-scope">
+                  {{ providerScopeText(key, kind) }}
+                </span>
+              </template>
               <strong v-if="key.quota?.blocked" class="quota-blocked">{{ t('auth.security.quotaBlocked') }}</strong>
             </div>
             <span class="key-expand-chevron" aria-hidden="true">▸</span>
@@ -885,7 +901,10 @@ onMounted(async () => {
                 <button class="security-btn secondary" :disabled="quotaBusyId === key.id || quotaRefreshBusyId === key.id" @click="handleResetQuota(key)">{{ t('auth.security.resetQuota') }}</button>
               </div>
             </div>
-            <fieldset class="provider-access-editor" :aria-label="t('auth.security.providerAccess')">
+            <p v-if="key.providerBinding" class="provider-access-editor provider-access-dedicated">
+              {{ dedicatedScopeText(key) }} · {{ t('auth.security.dedicatedScopeHint') }}
+            </p>
+            <fieldset v-else class="provider-access-editor" :aria-label="t('auth.security.providerAccess')">
               <div v-for="kind in providerKinds" :key="kind" class="provider-access-kind">
                 <div class="provider-access-header">
                   <label class="provider-access-toggle">
@@ -1333,6 +1352,11 @@ onMounted(async () => {
   min-width: 0;
   margin: 0;
   border: 0;
+}
+
+.provider-access-dedicated {
+  color: var(--mac-text-secondary);
+  font-size: 0.85rem;
 }
 
 .provider-access-control {

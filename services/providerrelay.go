@@ -513,8 +513,9 @@ func (prs *ProviderRelayService) registerRoutes(router gin.IRouter) {
 	router.GET("/v1/quota", prs.codexQuotaCORSMiddleware(), codexAuth, prs.codexQuotaStatusHandler())
 	router.OPTIONS("/v1/images/generations", prs.openAIImagesOptionsHandler())
 	router.OPTIONS("/v1/images/edits", prs.openAIImagesOptionsHandler())
-	router.POST("/v1/images/generations", prs.openAIImagesCORSMiddleware(), codexAuth, prs.openAIImagesProxyHandler("/v1/images/generations"))
-	router.POST("/v1/images/edits", prs.openAIImagesCORSMiddleware(), codexAuth, prs.openAIImagesProxyHandler("/v1/images/edits"))
+	imageKeyGuard := prs.relayKeyProviderKindGuard(ProviderKindGPTImage)
+	router.POST("/v1/images/generations", prs.openAIImagesCORSMiddleware(), codexAuth, imageKeyGuard, prs.openAIImagesProxyHandler("/v1/images/generations"))
+	router.POST("/v1/images/edits", prs.openAIImagesCORSMiddleware(), codexAuth, imageKeyGuard, prs.openAIImagesProxyHandler("/v1/images/edits"))
 
 	// /v1/models 端点（OpenAI-compatible API）
 	// 支持 Claude 和 Codex 平台
@@ -523,11 +524,12 @@ func (prs *ProviderRelayService) registerRoutes(router gin.IRouter) {
 	// Gemini API 端点（使用专门的路径前缀避免与 Claude 冲突）
 	// 与 Claude/Codex 一致强制 relay key 认证（Antigravity CLI 通过 x-goog-api-key 头或 ?key= 携带）
 	geminiAuth := prs.geminiRelayAuthMiddleware()
-	router.POST("/gemini/v1beta/*any", geminiAuth, prs.geminiProxyHandler("/v1beta"))
-	router.POST("/gemini/v1/*any", geminiAuth, prs.geminiProxyHandler("/v1"))
+	geminiKeyGuard := prs.relayKeyProviderKindGuard(ProviderKindGemini)
+	router.POST("/gemini/v1beta/*any", geminiAuth, geminiKeyGuard, prs.geminiProxyHandler("/v1beta"))
+	router.POST("/gemini/v1/*any", geminiAuth, geminiKeyGuard, prs.geminiProxyHandler("/v1"))
 	// 模型列表端点（客户端启动探测 / 运维验证用）
-	router.GET("/gemini/v1beta/models", geminiAuth, prs.geminiModelsHandler("/v1beta"))
-	router.GET("/gemini/v1/models", geminiAuth, prs.geminiModelsHandler("/v1"))
+	router.GET("/gemini/v1beta/models", geminiAuth, geminiKeyGuard, prs.geminiModelsHandler("/v1beta"))
+	router.GET("/gemini/v1/models", geminiAuth, geminiKeyGuard, prs.geminiModelsHandler("/v1"))
 
 	// 自定义 CLI 工具端点（路由格式: /custom/:toolId/v1/messages）
 	// toolId 用于区分不同的 CLI 工具，对应 provider kind 为 "custom:{toolId}"
@@ -659,9 +661,9 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 				}
 				return
 			}
-			allowlist := relayKeyProviderAllowlist(relayKey, kind)
-			providers, accessSkippedCount = filterProvidersByAllowlist(allowlist, providers)
-			if len(allowlist) > 0 && len(providers) == 0 {
+			allowlist, restricted := relayKeyProviderAccess(relayKey, kind)
+			providers, accessSkippedCount = filterProvidersByAllowlist(allowlist, restricted, providers)
+			if restricted && len(providers) == 0 {
 				if kind == ProviderKindClaude {
 					writeClaudeRelayKeyError(c, http.StatusForbidden, "permission_error", "Relay key is not allowed to access any configured Claude provider")
 				} else {
@@ -4944,6 +4946,17 @@ func (prs *ProviderRelayService) forwardModelsRequest(
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load providers"})
 		return fmt.Errorf("failed to load providers: %w", err)
+	}
+	relayKey, keyErr := prs.relayKeyForRequest(c)
+	if keyErr != nil {
+		writeOpenAIQuotaServiceError(c, http.StatusUnauthorized, "relay_key_not_found", "relay key no longer exists")
+		return fmt.Errorf("relay key lookup failed: %w", keyErr)
+	}
+	allowlist, restricted := relayKeyProviderAccess(relayKey, kind)
+	providers, _ = filterProvidersByAllowlist(allowlist, restricted, providers)
+	if restricted && len(providers) == 0 {
+		writeOpenAIProviderAccessDenied(c)
+		return fmt.Errorf("relay key is not allowed to access %s providers", kind)
 	}
 
 	// 过滤可用的 providers（启用 + URL + APIKey）

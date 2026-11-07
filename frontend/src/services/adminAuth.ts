@@ -39,6 +39,7 @@ export type CodexRelayKeyListItem = {
   quotaPeriod: 'once' | 'daily' | 'weekly' | 'monthly'
   allowedProviderIds: number[]
   allowedClaudeProviderIds: number[]
+  providerBinding?: RelayKeyProviderBinding
   quota?: CodexRelayQuotaStatus
 }
 
@@ -56,6 +57,25 @@ export type CodexRelayKeyCreateResult = {
 }
 
 export type RelayProviderKind = 'codex' | 'claude'
+
+export type RelayKeyProviderBinding = {
+  kind: RelayProviderKind
+  providerId: number
+}
+
+export type ProviderKeyItem = {
+  id: string
+  name: string
+  maskedKey: string
+  enabled: boolean
+  kind: RelayProviderKind
+  providerId: number
+}
+
+export type ProviderKeyEnsureResult = ProviderKeyItem & {
+  key: string
+  created: boolean
+}
 
 export type CodexRelayProviderOption = {
   id: number
@@ -333,6 +353,19 @@ export async function updateCodexRelayKeyClaudeProviders(id: string, allowedClau
     body: JSON.stringify({ allowedClaudeProviderIds }),
   })
   return response.allowedClaudeProviderIds ?? []
+}
+
+export async function listProviderKeys(kind: RelayProviderKind): Promise<ProviderKeyItem[]> {
+  const response = await adminRequest<{ keys?: ProviderKeyItem[] }>(`/api/admin/provider-keys?kind=${encodeURIComponent(kind)}`)
+  return response.keys ?? []
+}
+
+// Returns the provider's dedicated key (with secret), creating it on first use.
+export async function ensureProviderKey(kind: RelayProviderKind, providerId: number): Promise<ProviderKeyEnsureResult> {
+  return adminRequest<ProviderKeyEnsureResult>('/api/admin/provider-keys', {
+    method: 'POST',
+    body: JSON.stringify({ kind, providerId }),
+  })
 }
 
 export async function listCodexRelayModelPrices(): Promise<CodexRelayModelPrice[]> {

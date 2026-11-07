@@ -82,6 +82,16 @@ func newAppRuntime() (*appRuntime, error) {
 		return nil, fmt.Errorf("初始化后台安全配置失败: %w", err)
 	}
 	codexRelayKeys := services.NewCodexRelayKeyService()
+	providerService.SetProvidersSavedHook(func(kind string, providers []services.Provider) {
+		pruneProviderRelayKeys(codexRelayKeys, kind, providers)
+	})
+	for _, kind := range []string{services.ProviderKindCodex, services.ProviderKindClaude} {
+		if providers, err := providerService.LoadProviders(kind); err == nil {
+			pruneProviderRelayKeys(codexRelayKeys, kind, providers)
+		} else {
+			log.Printf("读取 %s 供应商失败，跳过专属 Key 清理: %v", kind, err)
+		}
+	}
 	relayQuota := services.NewRelayQuotaService()
 	bootstrapNetworkService := services.NewNetworkService(defaultRelayAddr, nil, nil, nil, codexRelayKeys)
 	relayAddr := defaultRelayAddr

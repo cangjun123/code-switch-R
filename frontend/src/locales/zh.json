@@ -263,6 +263,8 @@
       "restrictClaudeProviders": "限制可访问的 Claude Provider",
       "codexScope": "Codex：{scope}",
       "claudeScope": "Claude：{scope}",
+      "dedicatedScope": "{kind} 专属：{name}",
+      "dedicatedScopeHint": "仅能访问该供应商，范围不可修改；删除供应商时会一并删除",
       "selectedProviders": "仅限已选择",
       "selectedProvidersCount": "仅限已选 {count} 个",
       "allProviders": "全部 Provider",
@@ -566,6 +568,15 @@
         "loading": "刷新中...",
         "noData": "今日暂无数据",
         "lastUsed": "正在使用"
+      },
+      "dedicatedKey": {
+        "create": "生成专属 Key 并复制（仅能访问此供应商）",
+        "copy": "复制专属 Key {masked}（仅能访问此供应商）",
+        "created": "已生成并复制 {name} 的专属 Key",
+        "copied": "已复制 {name} 的专属 Key",
+        "failed": "获取专属 Key 失败",
+        "copyFailed": "复制到剪贴板失败",
+        "deleteNotice": "该供应商的专属 Key 也会一并删除，使用它的机器将无法继续访问。"
       },
       "directApply": {
         "title": "直接应用",
