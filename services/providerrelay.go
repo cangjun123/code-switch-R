@@ -3599,20 +3599,24 @@ func parseClaudeTokenUsage(data string, usage *ReqeustLog) {
 	if usage == nil {
 		return
 	}
-	usage.InputTokens += int(gjson.Get(data, "message.usage.input_tokens").Int())
-	usage.OutputTokens += int(gjson.Get(data, "message.usage.output_tokens").Int())
-	usage.CacheCreateTokens += int(gjson.Get(data, "message.usage.cache_creation_input_tokens").Int())
-	usage.CacheReadTokens += int(gjson.Get(data, "message.usage.cache_read_input_tokens").Int())
-
-	usage.InputTokens += int(gjson.Get(data, "usage.input_tokens").Int())
-	usage.OutputTokens += int(gjson.Get(data, "usage.output_tokens").Int())
-	usage.CacheCreateTokens += int(gjson.Get(data, "usage.cache_creation_input_tokens").Int())
-	cacheReadTokens := gjson.Get(data, "usage.cache_read_input_tokens").Int()
-	if cacheReadTokens == 0 {
-		cacheReadTokens = gjson.Get(data, "usage.input_tokens_details.cached_tokens").Int()
+	// Anthropic streams report cumulative usage: message_start carries the
+	// initial totals and message_delta repeats them (plus final output_tokens).
+	// Keep the largest observed value so each request is counted exactly once.
+	for _, usagePath := range []string{"message.usage", "usage"} {
+		value := gjson.Get(data, usagePath)
+		if !value.Exists() || !value.IsObject() {
+			continue
+		}
+		setMaxInt(&usage.InputTokens, int(value.Get("input_tokens").Int()))
+		setMaxInt(&usage.OutputTokens, int(value.Get("output_tokens").Int()))
+		setMaxInt(&usage.CacheCreateTokens, int(value.Get("cache_creation_input_tokens").Int()))
+		cacheReadTokens := value.Get("cache_read_input_tokens").Int()
+		if cacheReadTokens == 0 {
+			cacheReadTokens = value.Get("input_tokens_details.cached_tokens").Int()
+		}
+		setMaxInt(&usage.CacheReadTokens, int(cacheReadTokens))
+		setMaxInt(&usage.ReasoningTokens, int(value.Get("output_tokens_details.reasoning_tokens").Int()))
 	}
-	usage.CacheReadTokens += int(cacheReadTokens)
-	usage.ReasoningTokens += int(gjson.Get(data, "usage.output_tokens_details.reasoning_tokens").Int())
 }
 
 // codex usage parser
