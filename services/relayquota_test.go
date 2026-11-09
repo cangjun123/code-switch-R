@@ -528,3 +528,20 @@ func TestRelayQuotaSettleQueueOverflowDrops(t *testing.T) {
 		t.Fatalf("queue length=%d, want 2", len(quota.settleQueue))
 	}
 }
+
+func TestClaudeUsageParserDoesNotDoubleCountCumulativeSSEUsage(t *testing.T) {
+	var usage ReqeustLog
+	parseEventPayload("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":120,\"cache_read_input_tokens\":805000,\"output_tokens\":1}}}\n\n"+
+		"data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":120,\"cache_read_input_tokens\":805000,\"output_tokens\":512}}\n", ClaudeCodeParseTokenUsageFromResponse, &usage)
+	if usage.InputTokens != 3 || usage.OutputTokens != 512 || usage.CacheCreateTokens != 120 || usage.CacheReadTokens != 805000 {
+		t.Fatalf("unexpected claude usage: %+v", usage)
+	}
+
+	// message_delta that only reports output_tokens must keep message_start input totals.
+	usage = ReqeustLog{}
+	parseEventPayload("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7,\"cache_read_input_tokens\":50,\"output_tokens\":1}}}\n\n"+
+		"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":40}}\n", ClaudeCodeParseTokenUsageFromResponse, &usage)
+	if usage.InputTokens != 7 || usage.OutputTokens != 40 || usage.CacheReadTokens != 50 {
+		t.Fatalf("unexpected claude usage with output-only delta: %+v", usage)
+	}
+}
