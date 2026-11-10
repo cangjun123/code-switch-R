@@ -818,6 +818,10 @@ interface GeminiProvider {
   supportedModels?: { [_ in string]?: boolean }
   modelMapping?: { [_ in string]?: string }
   neverBlacklist?: boolean
+  numericId?: number // 后端分配的稳定数字 ID（可用性监控/连通性测试按此寻址）
+  availabilityMonitorEnabled?: boolean
+  connectivityAutoBlacklist?: boolean
+  availabilityConfig?: AutomationCard['availabilityConfig']
 }
 
 const tabs = [
@@ -841,7 +845,8 @@ const draggingId = ref<number | null>(null)
 
 // Gemini Provider 到 AutomationCard 的转换
 const geminiToCard = (provider: GeminiProvider, index: number): AutomationCard => ({
-  id: 300 + index, // Gemini 使用 300+ 的 ID 范围
+  // 优先使用后端稳定的 numericId；旧数据缺失时回退到 300+index
+  id: provider.numericId || 300 + index,
   upstreamInfo: provider.upstreamInfo,
   sourceProviderId: provider.id,
   name: provider.name,
@@ -857,10 +862,9 @@ const geminiToCard = (provider: GeminiProvider, index: number): AutomationCard =
   supportedModels: (provider.supportedModels || {}) as Record<string, boolean>,
   modelMapping: (provider.modelMapping || {}) as Record<string, string>,
   neverBlacklist: !!provider.neverBlacklist,
-  // 可用性监控配置（Gemini 暂不支持，使用默认值）
-  availabilityMonitorEnabled: false,
-  connectivityAutoBlacklist: false,
-  availabilityConfig: undefined,
+  availabilityMonitorEnabled: !!provider.availabilityMonitorEnabled,
+  connectivityAutoBlacklist: !!provider.connectivityAutoBlacklist,
+  availabilityConfig: provider.availabilityConfig,
 })
 
 // AutomationCard 到 Gemini Provider 的转换
@@ -877,7 +881,9 @@ const cardToGemini = (card: AutomationCard, original: GeminiProvider): GeminiPro
   supportedModels: card.supportedModels || {},
   modelMapping: card.modelMapping || {},
   neverBlacklist: !!card.neverBlacklist,
-  // 注意：Gemini 不支持可用性监控配置，这些字段不会保存
+  availabilityMonitorEnabled: !!card.availabilityMonitorEnabled,
+  connectivityAutoBlacklist: !!card.connectivityAutoBlacklist,
+  availabilityConfig: card.availabilityConfig,
 })
 
 const upstreamInfoRevision = ref(0)
@@ -970,15 +976,22 @@ const persistProviders = async (tabId: ProviderTab): Promise<{ ok: boolean; erro
             supportedModels: card.supportedModels || {},
             modelMapping: card.modelMapping || {},
             neverBlacklist: !!card.neverBlacklist,
+            availabilityMonitorEnabled: !!card.availabilityMonitorEnabled,
+            connectivityAutoBlacklist: !!card.connectivityAutoBlacklist,
+            availabilityConfig: card.availabilityConfig,
           }
           await AddGeminiProvider(newProvider)
           card.sourceProviderId = newProvider.id
         }
       }
 
-      // 4. 刷新缓存
+      // 4. 刷新缓存，并同步后端分配的稳定数字 ID（可用性/连通性结果按此 ID 关联）
       const updatedProviders = await GetGeminiProviders()
       geminiProvidersCache.value = updatedProviders
+      for (const card of cards.gemini) {
+        const numericId = updatedProviders.find(p => p.id === card.sourceProviderId)?.numericId
+        if (numericId) card.id = numericId
+      }
 
       // 5. 保存排序：按 cards.gemini 的顺序构建 ID 列表
       const updatedIds = new Set(updatedProviders.map(p => p.id))
@@ -1762,12 +1775,14 @@ const getDefaultEndpoint = (platform: string, upstreamProtocol = 'auto', openAIE
   const defaults: Record<string, string> = {
     claude: '/v1/messages',
     'gpt-image': '/v1/images/generations',
+    // {model} 由后端替换为测试模型
+    gemini: '/v1beta/models/{model}:generateContent',
   }
   return defaults[platform] || '/v1/chat/completions'
 }
 
-// 获取平台默认认证方式（默认 Bearer，与 v2.2.x 保持一致）
-const getDefaultAuthType = (_platform: string) => 'bearer'
+// 获取平台默认认证方式（默认 Bearer，与 v2.2.x 保持一致；Gemini 原生 API 使用 x-goog-api-key）
+const getDefaultAuthType = (platform: string) => (platform === 'gemini' ? 'x-goog-api-key' : 'bearer')
 
 // 手动测试连通性
 const handleTestConnectivity = async () => {
@@ -2082,8 +2097,11 @@ const openAIEndpointModeOptions = computed(() => [
   { value: 'both', label: t('components.main.form.openAIEndpointMode.both'), desc: t('components.main.form.openAIEndpointMode.bothDesc') },
 ])
 
+// Gemini 编辑弹窗不提供认证方式选择，固定使用 x-goog-api-key
 const resolveEffectiveAuthType = () =>
-  customAuthHeader.value.trim() || selectedAuthType.value || getDefaultAuthType(modalState.tabId)
+  modalState.tabId === 'gemini'
+    ? getDefaultAuthType('gemini')
+    : customAuthHeader.value.trim() || selectedAuthType.value || getDefaultAuthType(modalState.tabId)
 
 const editingCard = ref<AutomationCard | null>(null)
 const confirmState = reactive({ open: false, card: null as AutomationCard | null, tabId: tabs[0].id as ProviderTab })

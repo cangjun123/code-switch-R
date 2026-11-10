@@ -690,8 +690,8 @@ func (hcs *HealthCheckService) getEffectiveModel(provider *Provider, platform st
 			return mapped
 		}
 		return defaultOpenAIImageModel
-	case "gemini":
-		return "gemini-1.5-flash"
+	case ProviderKindGemini:
+		return geminiDefaultProbeModel(provider)
 	default:
 		return "gpt-3.5-turbo"
 	}
@@ -699,6 +699,16 @@ func (hcs *HealthCheckService) getEffectiveModel(provider *Provider, platform st
 
 // getEffectiveEndpoint 获取有效的测试端点
 func (hcs *HealthCheckService) getEffectiveEndpoint(provider *Provider, platform string) string {
+	if strings.EqualFold(platform, ProviderKindGemini) {
+		template := ""
+		stream := false
+		if provider.AvailabilityConfig != nil {
+			template = provider.AvailabilityConfig.TestEndpoint
+			stream = provider.AvailabilityConfig.Stream
+		}
+		return resolveGeminiProbeEndpoint(template, hcs.getEffectiveModel(provider, platform), stream)
+	}
+
 	// 优先级 1：用户配置的健康检查专用端点
 	if provider.AvailabilityConfig != nil && provider.AvailabilityConfig.TestEndpoint != "" {
 		if strings.ToLower(platform) == "claude" &&
@@ -758,6 +768,10 @@ func (hcs *HealthCheckService) buildTestRequest(provider *Provider, platform, en
 	effectiveMaxTokens := 1
 	if maxTokens > 0 {
 		effectiveMaxTokens = maxTokens
+	}
+
+	if platform == ProviderKindGemini || isGeminiProbeEndpoint(endpoint) {
+		return buildGeminiProbeRequest("hi", effectiveMaxTokens)
 	}
 
 	if platform == "gpt-image" || strings.Contains(endpoint, "/images/generations") {

@@ -51,6 +51,40 @@ type GeminiProvider struct {
 	ModelMapping    map[string]string `json:"modelMapping,omitempty"`
 	// NeverBlacklist 永不拉黑：失败不计数、不触发拉黑
 	NeverBlacklist bool `json:"neverBlacklist,omitempty"`
+
+	// NumericID 稳定的数字 ID：可用性监控、连通性测试等按 int64 ID 寻址的功能使用。
+	// 首次加载/新增时自动分配（max+1），之后不变。
+	NumericID int64 `json:"numericId,omitempty"`
+
+	// 可用性监控（与 Claude/Codex 供应商语义一致）
+	AvailabilityMonitorEnabled bool                `json:"availabilityMonitorEnabled,omitempty"`
+	ConnectivityAutoBlacklist  bool                `json:"connectivityAutoBlacklist,omitempty"`
+	AvailabilityConfig         *AvailabilityConfig `json:"availabilityConfig,omitempty"`
+}
+
+// geminiProbeAuthHeader Gemini 原生 API 的认证头
+const geminiProbeAuthHeader = "x-goog-api-key"
+
+// asProvider 转换为通用 Provider 视图，供可用性监控、连通性测试等共享逻辑使用
+func (p *GeminiProvider) asProvider() Provider {
+	return Provider{
+		ID:                         p.NumericID,
+		Name:                       p.Name,
+		APIURL:                     p.BaseURL,
+		APIKey:                     p.APIKey,
+		Site:                       p.WebsiteURL,
+		Icon:                       "gemini",
+		Enabled:                    p.Enabled,
+		Level:                      p.Level,
+		SupportedModels:            p.SupportedModels,
+		ModelMapping:               p.ModelMapping,
+		NeverBlacklist:             p.NeverBlacklist,
+		AvailabilityMonitorEnabled: p.AvailabilityMonitorEnabled,
+		ConnectivityAutoBlacklist:  p.ConnectivityAutoBlacklist,
+		AvailabilityConfig:         p.AvailabilityConfig,
+		ConnectivityAuthType:       geminiProbeAuthHeader,
+		UpstreamInfo:               p.UpstreamInfo,
+	}
 }
 
 // modelRules 复用 Provider 的白名单/映射匹配逻辑（含通配符）
@@ -175,6 +209,68 @@ func (s *GeminiService) GetPresets() []GeminiPreset {
 	return s.presets
 }
 
+// ensureNumericIDsLocked 为缺少 NumericID 的供应商分配 max+1，返回是否有变化（调用方需持锁）
+func (s *GeminiService) ensureNumericIDsLocked() bool {
+	var maxID int64
+	seen := make(map[int64]bool, len(s.providers))
+	for _, p := range s.providers {
+		if p.NumericID > maxID {
+			maxID = p.NumericID
+		}
+	}
+	changed := false
+	for i := range s.providers {
+		id := s.providers[i].NumericID
+		if id <= 0 || seen[id] {
+			maxID++
+			s.providers[i].NumericID = maxID
+			id = maxID
+			changed = true
+		}
+		seen[id] = true
+	}
+	return changed
+}
+
+// ProvidersAsProviders 返回 Gemini 供应商的通用 Provider 视图（ID 为 NumericID）
+func (s *GeminiService) ProvidersAsProviders() []Provider {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]Provider, 0, len(s.providers))
+	for i := range s.providers {
+		result = append(result, s.providers[i].asProvider())
+	}
+	return result
+}
+
+// ApplyProviderUpdates 把通用 Provider 视图上的可共享字段写回 Gemini 供应商（按 NumericID 匹配）。
+// 仅更新可用性监控、永不拉黑、模型白名单/映射、Level、启用状态；
+// 新增/删除供应商仍须通过 GeminiService 自身的方法完成。
+func (s *GeminiService) ApplyProviderUpdates(providers []Provider) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byID := make(map[int64]*Provider, len(providers))
+	for i := range providers {
+		byID[providers[i].ID] = &providers[i]
+	}
+	for i := range s.providers {
+		update, ok := byID[s.providers[i].NumericID]
+		if !ok {
+			continue
+		}
+		target := &s.providers[i]
+		target.AvailabilityMonitorEnabled = update.AvailabilityMonitorEnabled
+		target.ConnectivityAutoBlacklist = update.ConnectivityAutoBlacklist
+		target.AvailabilityConfig = update.AvailabilityConfig
+		target.NeverBlacklist = update.NeverBlacklist
+		target.SupportedModels = update.SupportedModels
+		target.ModelMapping = update.ModelMapping
+		target.Level = update.Level
+		target.Enabled = update.Enabled
+	}
+	return s.saveProviders()
+}
+
 // SetProvidersSavedHook 注册供应商保存后的回调
 func (s *GeminiService) SetProvidersSavedHook(hook func([]GeminiProvider)) {
 	s.mu.Lock()
@@ -218,7 +314,9 @@ func (s *GeminiService) AddProvider(provider GeminiProvider) error {
 		provider.ID = fmt.Sprintf("gemini-%d", len(s.providers)+1)
 	}
 
+	provider.NumericID = 0 // 由服务端分配，避免与现有供应商冲突
 	s.providers = append(s.providers, provider)
+	s.ensureNumericIDsLocked()
 	return s.saveProviders()
 }
 
@@ -233,6 +331,8 @@ func (s *GeminiService) UpdateProvider(provider GeminiProvider) error {
 			if strings.TrimSpace(provider.APIKey) == "" {
 				provider.APIKey = p.APIKey
 			}
+			// NumericID 由服务端维护，客户端不可修改
+			provider.NumericID = p.NumericID
 			s.providers[i] = provider
 			return s.saveProviders()
 		}
@@ -686,7 +786,15 @@ func (s *GeminiService) loadProviders() error {
 		return err
 	}
 
-	return json.Unmarshal(data, &s.providers)
+	if err := json.Unmarshal(data, &s.providers); err != nil {
+		return err
+	}
+	if s.ensureNumericIDsLocked() {
+		if err := s.saveProviders(); err != nil {
+			fmt.Printf("[Gemini] 保存 NumericID 迁移失败: %v\n", err)
+		}
+	}
+	return nil
 }
 
 // saveProviders 保存供应商配置
@@ -1087,8 +1195,15 @@ func (s *GeminiService) DuplicateProvider(sourceID string) (*GeminiProvider, err
 		}
 	}
 
+	if source.AvailabilityConfig != nil {
+		config := *source.AvailabilityConfig
+		cloned.AvailabilityConfig = &config
+	}
+
 	// 5. 添加到列表并保存
 	s.providers = append(s.providers, cloned)
+	s.ensureNumericIDsLocked()
+	cloned = s.providers[len(s.providers)-1]
 	if err := s.saveProviders(); err != nil {
 		return nil, fmt.Errorf("保存副本失败: %w", err)
 	}

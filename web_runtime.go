@@ -108,6 +108,7 @@ func newAppRuntime() (*appRuntime, error) {
 	providerService.SetBlacklistService(blacklistService)
 	geminiService := services.NewGeminiService(relayAddr, codexRelayKeys)
 	blacklistService.SetGeminiService(geminiService)
+	providerService.SetGeminiSource(geminiService)
 	geminiService.SetProvidersSavedHook(func(providers []services.GeminiProvider) {
 		pruneGeminiProviderRelayKeys(codexRelayKeys, providers)
 	})

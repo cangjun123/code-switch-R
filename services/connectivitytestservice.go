@@ -238,6 +238,8 @@ func resolveConnectivityEndpoint(provider *Provider, platform string) string {
 		return provider.ResolveOpenAIUpstreamEndpoint("/responses")
 	case "gpt-image":
 		return "/v1/images/generations"
+	case ProviderKindGemini:
+		return geminiProbeEndpointTemplate
 	default:
 		return "/v1/chat/completions"
 	}
@@ -249,6 +251,10 @@ func (cts *ConnectivityTestService) getEffectiveAuthType(provider *Provider, pla
 	authType := strings.TrimSpace(provider.ConnectivityAuthType)
 	if authType != "" {
 		return authType
+	}
+	// Gemini 原生 API 使用 x-goog-api-key（与 relay 转发一致）
+	if strings.EqualFold(platform, ProviderKindGemini) {
+		return geminiProbeAuthHeader
 	}
 	// 平台默认认证方式：统一使用 Bearer，与实际 relay 行为一致
 	return "bearer"
@@ -263,6 +269,10 @@ func (cts *ConnectivityTestService) buildTestRequest(platform string, provider *
 
 	// 获取有效端点（含平台默认值）
 	endpoint := strings.ToLower(cts.getEffectiveEndpoint(provider, platform))
+
+	if strings.EqualFold(platform, ProviderKindGemini) || isGeminiProbeEndpoint(endpoint) {
+		return buildGeminiProbeRequest("hi", 1), "candidates"
+	}
 
 	if strings.ToLower(platform) == "gpt-image" || strings.Contains(endpoint, "/images/generations") {
 		reqBody := map[string]interface{}{
@@ -393,7 +403,11 @@ func (cts *ConnectivityTestService) truncateMessage(msg string) string {
 
 // buildTargetURL 根据用户配置的端点构建目标 URL（v1 段规整与 relay 转发一致）
 func (cts *ConnectivityTestService) buildTargetURL(provider *Provider, platform string) string {
-	return joinURL(provider.APIURL, cts.getEffectiveEndpoint(provider, platform))
+	endpoint := cts.getEffectiveEndpoint(provider, platform)
+	if strings.EqualFold(platform, ProviderKindGemini) || isGeminiProbeEndpoint(endpoint) {
+		endpoint = resolveGeminiProbeEndpoint(endpoint, cts.getEffectiveModel(provider, platform), false)
+	}
+	return joinURL(provider.APIURL, endpoint)
 }
 
 func (cts *ConnectivityTestService) getEffectiveModel(provider *Provider, platform string) string {
@@ -421,6 +435,8 @@ func (cts *ConnectivityTestService) getEffectiveModel(provider *Provider, platfo
 			return mapped
 		}
 		return defaultOpenAIImageModel
+	case ProviderKindGemini:
+		return geminiDefaultProbeModel(provider)
 	default:
 		return ""
 	}
@@ -685,8 +701,7 @@ func (cts *ConnectivityTestService) stopAutoTest() {
 
 // runAllPlatformTests 执行所有平台的测试
 func (cts *ConnectivityTestService) runAllPlatformTests() {
-	// 仅轮询 ProviderService 支持的平台，避免无意义的错误日志
-	// Gemini 使用独立的 GeminiService，暂未接入
+	// 仅轮询 ProviderService 支持的平台（含经 GeminiService 适配的 Gemini）
 	for _, platform := range providerServicePlatforms {
 		cts.TestAll(platform)
 	}
