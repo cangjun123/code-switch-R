@@ -14,6 +14,7 @@ type BlacklistService struct {
 	settingsService     *SettingsService
 	notificationService *NotificationService
 	providerService     *ProviderService // 可选：用于查询 provider 的"永不拉黑"标志
+	geminiService       *GeminiService   // 可选：Gemini provider 不在 ProviderService 中，单独查询
 }
 
 // BlacklistStatus 黑名单状态（用于前端展示）
@@ -49,9 +50,17 @@ func (bs *BlacklistService) SetProviderService(ps *ProviderService) {
 	bs.providerService = ps
 }
 
+// SetGeminiService 注入 Gemini 服务，使 Gemini provider 的"永不拉黑"生效。
+func (bs *BlacklistService) SetGeminiService(gs *GeminiService) {
+	bs.geminiService = gs
+}
+
 // isNeverBlacklist 判断 provider 是否免疫拉黑（永不拉黑标志开启）。
 // providerService 未注入或查不到 provider 时返回 false（安全兜底）。
 func (bs *BlacklistService) isNeverBlacklist(platform string, providerName string) bool {
+	if platform == ProviderKindGemini {
+		return bs.geminiService != nil && bs.geminiService.IsNeverBlacklist(providerName)
+	}
 	if bs.providerService == nil {
 		return false
 	}

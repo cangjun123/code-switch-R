@@ -45,6 +45,27 @@ type GeminiProvider struct {
 	// 「name 非空+args 空」和「name 空+args 全」两个 SSE 事件，导致 Antigravity CLI 等
 	// 严格校验参数的客户端报 missing properties。响应侧把相邻残片缝合回完整调用。
 	FixFunctionCallFragments bool `json:"fixFunctionCallFragments,omitempty"`
+	// SupportedModels / ModelMapping 与 Claude/Codex 供应商语义一致：
+	// 白名单与映射都为空时支持所有模型；映射命中时改写请求路径中的模型段。
+	SupportedModels map[string]bool   `json:"supportedModels,omitempty"`
+	ModelMapping    map[string]string `json:"modelMapping,omitempty"`
+	// NeverBlacklist 永不拉黑：失败不计数、不触发拉黑
+	NeverBlacklist bool `json:"neverBlacklist,omitempty"`
+}
+
+// modelRules 复用 Provider 的白名单/映射匹配逻辑（含通配符）
+func (p *GeminiProvider) modelRules() *Provider {
+	return &Provider{SupportedModels: p.SupportedModels, ModelMapping: p.ModelMapping}
+}
+
+// IsModelSupported 检查供应商是否支持指定模型（白名单或映射命中）
+func (p *GeminiProvider) IsModelSupported(model string) bool {
+	return p.modelRules().IsModelSupported(model)
+}
+
+// GetEffectiveModel 返回映射后的上游模型名；无映射时原样返回
+func (p *GeminiProvider) GetEffectiveModel(model string) string {
+	return p.modelRules().GetEffectiveModel(model)
 }
 
 // GeminiPreset 预设供应商
@@ -76,16 +97,24 @@ type GeminiService struct {
 	providers []GeminiProvider
 	presets   []GeminiPreset
 	relayAddr string
+	relayKeys *CodexRelayKeyService
+	// providersSavedHook 在供应商列表保存成功后调用（用于清理失效的专属 Key）
+	providersSavedHook func([]GeminiProvider)
 }
 
-// NewGeminiService 创建 Gemini 服务
-func NewGeminiService(relayAddr string) *GeminiService {
+// NewGeminiService 创建 Gemini 服务。relayKeys 用于启用代理时写入真实的中转 Key。
+func NewGeminiService(relayAddr string, relayKeys ...*CodexRelayKeyService) *GeminiService {
 	if relayAddr == "" {
 		relayAddr = ":18100"
 	}
 	svc := &GeminiService{
 		presets:   getGeminiPresets(),
 		relayAddr: relayAddr,
+	}
+	if len(relayKeys) > 0 && relayKeys[0] != nil {
+		svc.relayKeys = relayKeys[0]
+	} else {
+		svc.relayKeys = NewCodexRelayKeyService()
 	}
 	// 加载已保存的供应商配置
 	_ = svc.loadProviders()
@@ -146,11 +175,30 @@ func (s *GeminiService) GetPresets() []GeminiPreset {
 	return s.presets
 }
 
-// GetProviders 获取已配置的供应商列表
+// SetProvidersSavedHook 注册供应商保存后的回调
+func (s *GeminiService) SetProvidersSavedHook(hook func([]GeminiProvider)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.providersSavedHook = hook
+}
+
+// GetProviders 获取已配置的供应商列表（返回副本，避免调用方与并发保存共享底层数组）
 func (s *GeminiService) GetProviders() []GeminiProvider {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.providers
+	return append([]GeminiProvider(nil), s.providers...)
+}
+
+// IsNeverBlacklist 检查指定名称的 Gemini 供应商是否开启"永不拉黑"
+func (s *GeminiService) IsNeverBlacklist(providerName string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range s.providers {
+		if p.Name == providerName {
+			return p.NeverBlacklist
+		}
+	}
+	return false
 }
 
 // AddProvider 添加供应商
@@ -662,7 +710,13 @@ func (s *GeminiService) saveProviders() error {
 	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	if s.providersSavedHook != nil {
+		s.providersSavedHook(append([]GeminiProvider(nil), s.providers...))
+	}
+	return nil
 }
 
 // CreateProviderFromPreset 从预设创建供应商
@@ -740,15 +794,48 @@ func (s *GeminiService) ProxyStatus() (*GeminiProxyStatus, error) {
 	proxyURL := buildProxyURL(s.relayAddr)
 	status.Enabled = strings.EqualFold(baseURL, proxyURL)
 
+	// 旧版本启用代理时写入的是占位 Key，中转鉴权会返回 401；检测到时自动替换为真实中转 Key
+	if status.Enabled && strings.TrimSpace(envConfig[geminiAPIKeyKey]) == geminiProxyTokenVal {
+		if relayKey, keyErr := s.currentRelayKey(); keyErr == nil {
+			envConfig[geminiAPIKeyKey] = relayKey
+			if writeErr := writeGeminiEnv(envConfig); writeErr != nil {
+				fmt.Printf("[Gemini] 替换旧占位中转 Key 失败: %v\n", writeErr)
+			}
+		}
+	}
+
 	return status, nil
 }
 
 // geminiBaseURLKey 和 geminiAPIKeyKey 用于代理注入
 const (
-	geminiBaseURLKey    = "GOOGLE_GEMINI_BASE_URL"
-	geminiAPIKeyKey     = "GEMINI_API_KEY"
+	geminiBaseURLKey = "GOOGLE_GEMINI_BASE_URL"
+	geminiAPIKeyKey  = "GEMINI_API_KEY"
+	// geminiProxyTokenVal 是旧版本写入的占位 Key（中转鉴权不认），仅用于识别和清理
 	geminiProxyTokenVal = "code-switch-r"
 )
+
+// currentRelayKey 返回写入 Gemini CLI 配置的通用中转 Key
+func (s *GeminiService) currentRelayKey() (string, error) {
+	key, err := s.relayKeys.EnsureDefaultKey()
+	if err != nil {
+		return "", err
+	}
+	return key.Key, nil
+}
+
+// isManagedRelayKey 判断值是否为代理注入的 Key（当前有效的中转 Key 或旧占位值）
+func (s *GeminiService) isManagedRelayKey(candidate string) bool {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return false
+	}
+	if candidate == geminiProxyTokenVal {
+		return true
+	}
+	ok, err := s.relayKeys.ValidateKey(candidate)
+	return err == nil && ok
+}
 
 // EnableProxy 启用代理
 func (s *GeminiService) EnableProxy() error {
@@ -783,6 +870,11 @@ func (s *GeminiService) EnableProxy() error {
 		existingEnv = make(map[string]string)
 	}
 
+	relayKey, err := s.currentRelayKey()
+	if err != nil {
+		return fmt.Errorf("获取中转 Key 失败: %w", err)
+	}
+
 	// 仅首次启用时创建备份和状态文件
 	if !stateExists {
 		// 备份现有 .env（如果存在）
@@ -802,7 +894,7 @@ func (s *GeminiService) EnableProxy() error {
 			FileExisted:       fileExisted,
 			EnvExisted:        len(existingEnv) > 0,
 			InjectedBaseURL:   buildProxyURL(s.relayAddr),
-			InjectedAuthToken: geminiProxyTokenVal,
+			InjectedAuthToken: relayKey,
 		}
 
 		// 记录原始 BASE_URL（如果 key 存在，即使是空值也记录）
@@ -820,9 +912,9 @@ func (s *GeminiService) EnableProxy() error {
 		}
 	}
 
-	// 设置代理 URL 和占位 API Key（与 Claude/Codex 保持一致）
+	// 设置代理 URL 和中转 Key（与 Claude/Codex 保持一致，中转鉴权只认真实 Key）
 	existingEnv[geminiBaseURLKey] = buildProxyURL(s.relayAddr)
-	existingEnv[geminiAPIKeyKey] = geminiProxyTokenVal
+	existingEnv[geminiAPIKeyKey] = relayKey
 
 	// 写入 .env
 	if err := writeGeminiEnv(existingEnv); err != nil {
@@ -910,8 +1002,8 @@ func (s *GeminiService) fallbackCleanupEnv(envConfig map[string]string) bool {
 		}
 	}
 
-	// 检查 GEMINI_API_KEY 是否为代理占位值
-	if v, ok := envConfig[geminiAPIKeyKey]; ok && v == geminiProxyTokenVal {
+	// 检查 GEMINI_API_KEY 是否为代理注入的 Key
+	if v, ok := envConfig[geminiAPIKeyKey]; ok && s.isManagedRelayKey(v) {
 		delete(envConfig, geminiAPIKeyKey)
 		changed = true
 	}
@@ -958,6 +1050,20 @@ func (s *GeminiService) DuplicateProvider(sourceID string) (*GeminiProvider, err
 		PartnerPromotionKey:      source.PartnerPromotionKey,
 		Enabled:                  false, // 默认禁用，避免与源供应商冲突
 		FixFunctionCallFragments: source.FixFunctionCallFragments,
+		NeverBlacklist:           false, // 副本默认关闭永不拉黑（与 Claude/Codex 一致）
+	}
+
+	if source.SupportedModels != nil {
+		cloned.SupportedModels = make(map[string]bool, len(source.SupportedModels))
+		for k, v := range source.SupportedModels {
+			cloned.SupportedModels[k] = v
+		}
+	}
+	if source.ModelMapping != nil {
+		cloned.ModelMapping = make(map[string]string, len(source.ModelMapping))
+		for k, v := range source.ModelMapping {
+			cloned.ModelMapping[k] = v
+		}
 	}
 
 	if source.UpstreamInfo != nil {

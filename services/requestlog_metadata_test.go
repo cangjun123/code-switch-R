@@ -78,7 +78,7 @@ func TestGeminiAndImageStreamModelCapture(t *testing.T) {
 	geminiBody := "data: {\"modelVersion\":\"gemini-returned\"}\r\n\r\ndata: {\"usageMetadata\":{\"promptTokenCount\":3}}\n\n"
 	entry := &ReqeustLog{}
 	var forwarded bytes.Buffer
-	if err := streamGeminiResponseWithHook(strings.NewReader(geminiBody), &forwarded, entry, time.Now(), nil); err != nil {
+	if err := streamGeminiResponseWithHook(strings.NewReader(geminiBody), &forwarded, entry, time.Now(), geminiStreamOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if entry.ResponseModel != "gemini-returned" || forwarded.String() != geminiBody {

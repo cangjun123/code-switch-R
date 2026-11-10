@@ -275,7 +275,7 @@
             :connectivity-tooltip="getConnectivityTooltip(card.id)"
             :show-model-trace-button="showModelTraceButton"
             :supports-dedicated-key="isDedicatedKeyTab(activeTab)"
-            :dedicated-key="dedicatedKeyFor(activeTab, card.id)"
+            :dedicated-key="dedicatedKeyFor(activeTab, card)"
             @dragstart="onDragStart"
             @dragend="onDragEnd"
             @drop="onDrop"
@@ -334,7 +334,7 @@
         <p>
           {{ t('components.main.form.confirmDeleteMessage', { name: confirmState.card?.name ?? '' }) }}
         </p>
-        <p v-if="confirmState.card && dedicatedKeyFor(confirmState.tabId, confirmState.card.id)">
+        <p v-if="confirmState.card && dedicatedKeyFor(confirmState.tabId, confirmState.card)">
           {{ t('components.main.dedicatedKey.deleteNotice') }}
         </p>
       </div>
@@ -549,7 +549,7 @@ import { fetchConfigImportStatus, importFromCcSwitch, isFirstRun, markFirstRunDo
 import { showToast } from '../../utils/toast'
 import { extractErrorMessage } from '../../utils/error'
 import { copyText } from '../../utils/clipboard'
-import { ensureProviderKey, listProviderKeys, type RelayProviderKind } from '../../services/adminAuth'
+import { ensureProviderKey, listProviderKeys, providerKeyRef, type RelayProviderKind } from '../../services/adminAuth'
 import { getBlacklistStatus, manualUnblock, type BlacklistStatus } from '../../services/blacklist'
 import { saveCLIConfig, type CLIPlatform } from '../../services/cliConfig'
 import {
@@ -815,6 +815,9 @@ interface GeminiProvider {
   envConfig?: Record<string, string | undefined>
   settingsConfig?: Record<string, any>
   fixFunctionCallFragments?: boolean
+  supportedModels?: { [_ in string]?: boolean }
+  modelMapping?: { [_ in string]?: string }
+  neverBlacklist?: boolean
 }
 
 const tabs = [
@@ -851,6 +854,9 @@ const geminiToCard = (provider: GeminiProvider, index: number): AutomationCard =
   enabled: provider.enabled,
   fixFunctionCallFragments: !!provider.fixFunctionCallFragments,
   level: provider.level || 1,
+  supportedModels: (provider.supportedModels || {}) as Record<string, boolean>,
+  modelMapping: (provider.modelMapping || {}) as Record<string, string>,
+  neverBlacklist: !!provider.neverBlacklist,
   // 可用性监控配置（Gemini 暂不支持，使用默认值）
   availabilityMonitorEnabled: false,
   connectivityAutoBlacklist: false,
@@ -868,6 +874,9 @@ const cardToGemini = (card: AutomationCard, original: GeminiProvider): GeminiPro
   enabled: card.enabled,
   fixFunctionCallFragments: !!card.fixFunctionCallFragments,
   level: card.level || 1,
+  supportedModels: card.supportedModels || {},
+  modelMapping: card.modelMapping || {},
+  neverBlacklist: !!card.neverBlacklist,
   // 注意：Gemini 不支持可用性监控配置，这些字段不会保存
 })
 
@@ -920,27 +929,36 @@ const persistProviders = async (tabId: ProviderTab): Promise<{ ok: boolean; erro
       await SaveProviders(getCustomProviderKind(selectedToolId.value), serializeProviders(cards.others))
     } else if (tabId === 'gemini') {
       // Gemini 使用独立的保存逻辑
-      // 1. 收集当前卡片的 name 集合
-      const currentNames = new Set(cards.gemini.map(c => c.name))
+      // 优先按后端 ID（sourceProviderId）匹配，改名不会被当成删除+新增，
+      // 从而保留专属 Key 和中转 Key 白名单；没有 ID 的新卡片再按名称匹配
+      const cache = geminiProvidersCache.value
+      const findOriginal = (card: AutomationCard) =>
+        (card.sourceProviderId ? cache.find(p => p.id === card.sourceProviderId) : undefined) ??
+        cache.find(p => p.name === card.name)
+
+      // 1. 收集当前卡片对应的 provider ID
+      const originals = new Map(cards.gemini.map(card => [card, findOriginal(card)] as const))
+      const keptIds = new Set([...originals.values()].filter((p): p is GeminiProvider => !!p).map(p => p.id))
 
       // 2. 删除不在当前卡片中的 provider
-      for (const cached of geminiProvidersCache.value) {
-        if (!currentNames.has(cached.name)) {
+      for (const cached of cache) {
+        if (!keptIds.has(cached.id)) {
           await DeleteGeminiProvider(cached.id)
         }
       }
 
       // 3. 添加或更新 provider
       for (const card of cards.gemini) {
-        const original = geminiProvidersCache.value.find(p => p.name === card.name)
+        const original = originals.get(card)
 
         if (original) {
           // 已存在的 provider，更新
           await UpdateGeminiProvider(cardToGemini(card, original))
+          card.sourceProviderId = original.id
         } else {
           // 新添加的 provider，调用 AddProvider
           const newProvider: GeminiProvider = {
-            id: `gemini-${Date.now()}`,
+            id: `gemini-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             upstreamInfo: card.upstreamInfo,
             name: card.name,
             baseUrl: card.apiUrl,
@@ -948,24 +966,25 @@ const persistProviders = async (tabId: ProviderTab): Promise<{ ok: boolean; erro
             websiteUrl: card.officialSite,
             enabled: card.enabled,
             fixFunctionCallFragments: !!card.fixFunctionCallFragments,
+            level: card.level || 1,
+            supportedModels: card.supportedModels || {},
+            modelMapping: card.modelMapping || {},
+            neverBlacklist: !!card.neverBlacklist,
           }
           await AddGeminiProvider(newProvider)
+          card.sourceProviderId = newProvider.id
         }
       }
 
-      // 4. 刷新缓存以获取最新的 ID
+      // 4. 刷新缓存
       const updatedProviders = await GetGeminiProviders()
       geminiProvidersCache.value = updatedProviders
-      for (const card of cards.gemini) card.sourceProviderId = updatedProviders.find(p => p.name === card.name)?.id
 
       // 5. 保存排序：按 cards.gemini 的顺序构建 ID 列表
-      const orderedIds: string[] = []
-      for (const card of cards.gemini) {
-        const provider = updatedProviders.find(p => p.name === card.name)
-        if (provider) {
-          orderedIds.push(provider.id)
-        }
-      }
+      const updatedIds = new Set(updatedProviders.map(p => p.id))
+      const orderedIds = cards.gemini
+        .map(card => card.sourceProviderId)
+        .filter((id): id is string => !!id && updatedIds.has(id))
       if (orderedIds.length > 0) {
         await ReorderGeminiProviders(orderedIds)
         // 重新获取排序后的数据
@@ -1622,6 +1641,7 @@ onMounted(async () => {
   await loadProvidersFromDisk()
   void loadDedicatedKeys('codex')
   void loadDedicatedKeys('claude')
+  void loadDedicatedKeys('gemini')
   await Promise.all(providerTabIds.map(refreshProxyState))
   await Promise.all(providerTabIds.map((tab) => refreshDirectAppliedStatus(tab)))
   await Promise.all(providerTabIds.map((tab) => loadProviderStats(tab)))
@@ -2448,18 +2468,22 @@ const remove = async (id: number, tabId: ProviderTab = activeTab.value) => {
   }
 }
 
-// 供应商专属 Key：仅 Claude/Codex 支持，按 providerId 记录脱敏后的 Key
-const dedicatedKeys = reactive<Record<RelayProviderKind, Record<number, string>>>({ codex: {}, claude: {} })
+// 供应商专属 Key：Claude/Codex 按数字 providerId、Gemini 按字符串 ID 记录脱敏后的 Key
+const dedicatedKeys = reactive<Record<RelayProviderKind, Record<string, string>>>({ codex: {}, claude: {}, gemini: {} })
 
-const isDedicatedKeyTab = (tab: ProviderTab): tab is RelayProviderKind => tab === 'codex' || tab === 'claude'
+const isDedicatedKeyTab = (tab: ProviderTab): tab is RelayProviderKind => tab === 'codex' || tab === 'claude' || tab === 'gemini'
 
-const dedicatedKeyFor = (tab: ProviderTab, providerId: number) =>
-  isDedicatedKeyTab(tab) ? dedicatedKeys[tab][providerId] ?? '' : ''
+// Gemini 卡片 id 是前端生成的序号，真实 ID 在 sourceProviderId
+const dedicatedKeyProvider = (tab: RelayProviderKind, card: AutomationCard): string =>
+  tab === 'gemini' ? card.sourceProviderId ?? '' : String(card.id)
+
+const dedicatedKeyFor = (tab: ProviderTab, card: AutomationCard) =>
+  isDedicatedKeyTab(tab) ? dedicatedKeys[tab][dedicatedKeyProvider(tab, card)] ?? '' : ''
 
 const loadDedicatedKeys = async (kind: RelayProviderKind) => {
   try {
     const keys = await listProviderKeys(kind)
-    dedicatedKeys[kind] = Object.fromEntries(keys.map((key) => [key.providerId, key.maskedKey]))
+    dedicatedKeys[kind] = Object.fromEntries(keys.map((key) => [providerKeyRef(key), key.maskedKey]))
   } catch (error) {
     console.error(`[DedicatedKey] Failed to load ${kind} dedicated keys:`, error)
   }
@@ -2468,14 +2492,20 @@ const loadDedicatedKeys = async (kind: RelayProviderKind) => {
 const handleCopyDedicatedKey = async (card: AutomationCard) => {
   const tab = activeTab.value
   if (!isDedicatedKeyTab(tab)) return
+  const providerRef = dedicatedKeyProvider(tab, card)
+  if (!providerRef) {
+    // 新建的 Gemini 卡片尚未拿到后端 ID
+    showToast(t('components.main.dedicatedKey.failed'), 'error')
+    return
+  }
   let result
   try {
-    result = await ensureProviderKey(tab, card.id)
+    result = await ensureProviderKey(tab, tab === 'gemini' ? providerRef : card.id)
   } catch (error) {
     showToast(`${t('components.main.dedicatedKey.failed')}: ${extractErrorMessage(error)}`, 'error')
     return
   }
-  dedicatedKeys[tab][card.id] = result.maskedKey
+  dedicatedKeys[tab][providerRef] = result.maskedKey
   try {
     await copyText(result.key)
   } catch (error) {

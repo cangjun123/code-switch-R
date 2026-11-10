@@ -811,6 +811,10 @@ func (ns *NetworkService) configureWSLGemini(distro, proxyURL string) error {
 	// Gemini CLI 配置路径: ~/.gemini/.env
 	// 注意：Gemini 代理路由带 /gemini 前缀
 	geminiURL := strings.TrimRight(proxyURL, "/") + "/gemini"
+	relayKey, err := ns.currentCodexRelayKey()
+	if err != nil {
+		return err
+	}
 
 	// 字段级合并：仅更新 GOOGLE_GEMINI_BASE_URL / GEMINI_API_KEY；更新首次出现并删除后续重复项
 	script := fmt.Sprintf(`
@@ -830,7 +834,7 @@ if [ -L "$env_path" ]; then
 fi
 
 gemini_base_url=%s
-api_key='code-switch-r'
+api_key=%s
 
 ts="$(date +%%s)"
 [ -f "$env_path" ] && cp -a "$env_path" "$env_path.bak.$ts"
@@ -965,7 +969,7 @@ fi
 
 mv -f "$tmp_path" "$env_path"
 trap - EXIT
-`, bashSingleQuote(geminiURL))
+`, bashSingleQuote(geminiURL), bashSingleQuote(relayKey))
 
 	return ns.runWSLCommand(distro, script)
 }

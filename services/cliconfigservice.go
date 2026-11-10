@@ -449,7 +449,11 @@ func (s *CliConfigService) GetConfigSnapshots(platform string, apiUrl string, ap
 			}
 		} else {
 			envMap["GOOGLE_GEMINI_BASE_URL"] = s.geminiBaseURL()
-			envMap["GEMINI_API_KEY"] = "code-switch-r"
+			relayKey, err := s.currentCodexRelayKey()
+			if err != nil {
+				return nil, err
+			}
+			envMap["GEMINI_API_KEY"] = relayKey
 		}
 
 		previewFiles := []CLIConfigFile{
@@ -1274,16 +1278,21 @@ func (s *CliConfigService) saveGeminiEnvContent(envPath string, content string) 
 	// 强制写入锁定字段
 	envMap["GOOGLE_GEMINI_BASE_URL"] = s.geminiBaseURL()
 
-	// GEMINI_API_KEY 为系统锁定字段：优先保留磁盘中的现有值；不存在时写入占位值
+	// GEMINI_API_KEY 为系统锁定字段：优先保留磁盘中的现有值；
+	// 不存在或仍是旧占位值（中转鉴权不认）时写入真实中转 Key
 	existingAPIKey := ""
 	if oldContent, err := os.ReadFile(envPath); err == nil {
 		oldMap := parseEnvFile(string(oldContent))
 		existingAPIKey = oldMap["GEMINI_API_KEY"]
 	}
-	if existingAPIKey != "" {
+	if existingAPIKey != "" && existingAPIKey != geminiProxyTokenVal {
 		envMap["GEMINI_API_KEY"] = existingAPIKey
-	} else if envMap["GEMINI_API_KEY"] == "" {
-		envMap["GEMINI_API_KEY"] = "code-switch-r"
+	} else if envMap["GEMINI_API_KEY"] == "" || envMap["GEMINI_API_KEY"] == geminiProxyTokenVal {
+		relayKey, err := s.currentCodexRelayKey()
+		if err != nil {
+			return err
+		}
+		envMap["GEMINI_API_KEY"] = relayKey
 	}
 
 	if _, err := CreateBackup(envPath); err != nil {
