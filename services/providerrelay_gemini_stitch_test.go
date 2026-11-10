@@ -290,7 +290,7 @@ func TestGeminiStreamNoArgumentCapture(t *testing.T) {
 			}
 			var output strings.Builder
 			log := &ReqeustLog{}
-			if err := streamGeminiResponseWithHook(body, &output, log, time.Now(), stitcher); err != nil {
+			if err := streamGeminiResponseWithHook(body, &output, log, time.Now(), geminiStreamOptions{stitcher: stitcher}); err != nil {
 				t.Fatal(err)
 			}
 			if !enabled {

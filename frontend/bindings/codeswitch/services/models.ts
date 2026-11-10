@@ -1324,6 +1324,18 @@ export class GeminiProvider {
      */
     "fixFunctionCallFragments"?: boolean;
 
+    /**
+     * SupportedModels / ModelMapping 与 Claude/Codex 供应商语义一致：
+     * 白名单与映射都为空时支持所有模型；映射命中时改写请求路径中的模型段。
+     */
+    "supportedModels"?: { [_ in string]?: boolean };
+    "modelMapping"?: { [_ in string]?: string };
+
+    /**
+     * NeverBlacklist 永不拉黑：失败不计数、不触发拉黑
+     */
+    "neverBlacklist"?: boolean;
+
     /** Creates a new GeminiProvider instance. */
     constructor($$source: Partial<GeminiProvider> = {}) {
         if (!("id" in $$source)) {

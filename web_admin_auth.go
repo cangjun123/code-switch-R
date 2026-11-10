@@ -47,6 +47,8 @@ type codexRelayKeyCreateRequest struct {
 	AllowedProviderIDsSnake []int64         `json:"allowed_provider_ids"`
 	AllowedClaudeIDs        []int64         `json:"allowedClaudeProviderIds"`
 	AllowedClaudeIDsSnake   []int64         `json:"allowed_claude_provider_ids"`
+	AllowedGeminiIDs        []string        `json:"allowedGeminiProviderIds"`
+	AllowedGeminiIDsSnake   []string        `json:"allowed_gemini_provider_ids"`
 }
 
 // UnmarshalJSON keeps the admin endpoint tolerant of clients that encode an
@@ -66,6 +68,8 @@ func (r *codexRelayKeyCreateRequest) UnmarshalJSON(data []byte) error {
 		AllowedProviderIDsSnake []int64         `json:"allowed_provider_ids"`
 		AllowedClaudeIDs        []int64         `json:"allowedClaudeProviderIds"`
 		AllowedClaudeIDsSnake   []int64         `json:"allowed_claude_provider_ids"`
+		AllowedGeminiIDs        []string        `json:"allowedGeminiProviderIds"`
+		AllowedGeminiIDsSnake   []string        `json:"allowed_gemini_provider_ids"`
 	}
 	var raw rawRequest
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -76,6 +80,7 @@ func (r *codexRelayKeyCreateRequest) UnmarshalJSON(data []byte) error {
 		Period: raw.Period, QuotaPeriod: raw.QuotaPeriod, PeriodSnake: raw.PeriodSnake,
 		AllowedProviderIDs: raw.AllowedProviderIDs, AllowedProviderIDsSnake: raw.AllowedProviderIDsSnake,
 		AllowedClaudeIDs: raw.AllowedClaudeIDs, AllowedClaudeIDsSnake: raw.AllowedClaudeIDsSnake,
+		AllowedGeminiIDs: raw.AllowedGeminiIDs, AllowedGeminiIDsSnake: raw.AllowedGeminiIDsSnake,
 	}
 	tokenRaw := raw.TokenLimit
 	if len(tokenRaw) == 0 {
@@ -99,6 +104,17 @@ type codexRelayKeyProviderAccessRequest struct {
 type codexRelayKeyClaudeProviderAccessRequest struct {
 	AllowedClaudeIDs      []int64 `json:"allowedClaudeProviderIds"`
 	AllowedClaudeIDsSnake []int64 `json:"allowed_claude_provider_ids"`
+}
+
+type codexRelayKeyGeminiProviderAccessRequest struct {
+	AllowedGeminiIDs      []string `json:"allowedGeminiProviderIds"`
+	AllowedGeminiIDsSnake []string `json:"allowed_gemini_provider_ids"`
+}
+
+type geminiRelayProviderOption struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
 }
 
 type codexRelayKeyNameRequest struct {
@@ -331,6 +347,35 @@ func requestAllowedProviderIDs(primary, snake []int64) []int64 {
 	return snake
 }
 
+func requestAllowedGeminiProviderIDs(primary, snake []string) []string {
+	if primary != nil {
+		return primary
+	}
+	return snake
+}
+
+// validateAllowedGeminiProviderIDs normalizes a Gemini allowlist and rejects
+// IDs that do not belong to a configured Gemini provider.
+func validateAllowedGeminiProviderIDs(rt *appRuntime, requested []string) ([]string, error) {
+	normalized := services.NormalizeGeminiAllowedProviderIDs(requested)
+	if len(normalized) == 0 {
+		return normalized, nil
+	}
+	if rt == nil || rt.geminiService == nil {
+		return nil, fmt.Errorf("Gemini provider service is unavailable")
+	}
+	configured := make(map[string]struct{})
+	for _, provider := range rt.geminiService.GetProviders() {
+		configured[provider.ID] = struct{}{}
+	}
+	for _, providerID := range normalized {
+		if _, ok := configured[providerID]; !ok {
+			return nil, fmt.Errorf("Gemini provider 不存在: %s", providerID)
+		}
+	}
+	return normalized, nil
+}
+
 func validateAllowedProviderIDs(rt *appRuntime, kind string, requested []int64) ([]int64, error) {
 	label := "Codex"
 	if kind == services.ProviderKindClaude {
@@ -511,6 +556,19 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 	}
 	router.GET("/api/admin/codex-providers", authRequired, listProviderOptions(services.ProviderKindCodex, "Codex"))
 	router.GET("/api/admin/claude-providers", authRequired, listProviderOptions(services.ProviderKindClaude, "Claude"))
+	router.GET("/api/admin/gemini-providers", authRequired, func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		if rt.geminiService == nil {
+			c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Error: apiError{Code: "provider_service_unavailable", Message: "Gemini provider service is unavailable"}})
+			return
+		}
+		providers := rt.geminiService.GetProviders()
+		options := make([]geminiRelayProviderOption, 0, len(providers))
+		for _, provider := range providers {
+			options = append(options, geminiRelayProviderOption{ID: provider.ID, Name: provider.Name, Enabled: provider.Enabled})
+		}
+		c.JSON(http.StatusOK, gin.H{"providers": options})
+	})
 
 	router.GET("/api/admin/codex-keys", authRequired, func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
@@ -576,6 +634,11 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: accessErr.Error()}})
 			return
 		}
+		allowedGeminiIDs, accessErr := validateAllowedGeminiProviderIDs(rt, requestAllowedGeminiProviderIDs(request.AllowedGeminiIDs, request.AllowedGeminiIDsSnake))
+		if accessErr != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: accessErr.Error()}})
+			return
+		}
 
 		result, err := rt.codexRelayKeys.CreateKey(request.Name)
 		if err != nil {
@@ -605,6 +668,11 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 			return
 		}
 		result.AllowedClaudeProviderIDs = append([]int64{}, allowedClaudeIDs...)
+		if err := rt.codexRelayKeys.UpdateAllowedGeminiProviderIDs(result.ID, allowedGeminiIDs); err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: err.Error()}})
+			return
+		}
+		result.AllowedGeminiProviderIDs = append([]string{}, allowedGeminiIDs...)
 		c.JSON(http.StatusOK, result)
 	})
 
@@ -794,6 +862,35 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 	}
 	router.PATCH("/api/admin/codex-keys/:id/claude-providers", originRequired, authRequired, updateClaudeProviderAccess)
 	router.PUT("/api/admin/codex-keys/:id/claude-providers", originRequired, authRequired, updateClaudeProviderAccess)
+
+	updateGeminiProviderAccess := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		var request codexRelayKeyGeminiProviderAccessRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_request", Message: err.Error()}})
+			return
+		}
+		if request.AllowedGeminiIDs == nil && request.AllowedGeminiIDsSnake == nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_request", Message: "allowedGeminiProviderIds is required"}})
+			return
+		}
+		providerIDs, err := validateAllowedGeminiProviderIDs(rt, requestAllowedGeminiProviderIDs(request.AllowedGeminiIDs, request.AllowedGeminiIDsSnake))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: err.Error()}})
+			return
+		}
+		if err := rt.codexRelayKeys.UpdateAllowedGeminiProviderIDs(c.Param("id"), providerIDs); err != nil {
+			status := http.StatusBadRequest
+			if strings.Contains(err.Error(), "未找到") {
+				status = http.StatusNotFound
+			}
+			c.JSON(status, apiErrorResponse{Error: apiError{Code: "update_provider_access_failed", Message: err.Error()}})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"allowedGeminiProviderIds": append([]string{}, providerIDs...)})
+	}
+	router.PATCH("/api/admin/codex-keys/:id/gemini-providers", originRequired, authRequired, updateGeminiProviderAccess)
+	router.PUT("/api/admin/codex-keys/:id/gemini-providers", originRequired, authRequired, updateGeminiProviderAccess)
 
 	resetQuota := func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")

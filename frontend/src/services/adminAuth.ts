@@ -39,6 +39,7 @@ export type CodexRelayKeyListItem = {
   quotaPeriod: 'once' | 'daily' | 'weekly' | 'monthly'
   allowedProviderIds: number[]
   allowedClaudeProviderIds: number[]
+  allowedGeminiProviderIds: string[]
   providerBinding?: RelayKeyProviderBinding
   quota?: CodexRelayQuotaStatus
 }
@@ -54,13 +55,16 @@ export type CodexRelayKeyCreateResult = {
   quotaPeriod: 'once' | 'daily' | 'weekly' | 'monthly'
   allowedProviderIds: number[]
   allowedClaudeProviderIds: number[]
+  allowedGeminiProviderIds: string[]
 }
 
-export type RelayProviderKind = 'codex' | 'claude'
+export type RelayProviderKind = 'codex' | 'claude' | 'gemini'
 
+// Gemini providers use string IDs and are identified by providerRef.
 export type RelayKeyProviderBinding = {
   kind: RelayProviderKind
   providerId: number
+  providerRef?: string
 }
 
 export type ProviderKeyItem = {
@@ -70,6 +74,7 @@ export type ProviderKeyItem = {
   enabled: boolean
   kind: RelayProviderKind
   providerId: number
+  providerRef?: string
 }
 
 export type ProviderKeyEnsureResult = ProviderKeyItem & {
@@ -284,6 +289,17 @@ export async function listClaudeRelayProviders(): Promise<CodexRelayProviderOpti
   return response.providers ?? []
 }
 
+export type GeminiRelayProviderOption = {
+  id: string
+  name: string
+  enabled: boolean
+}
+
+export async function listGeminiRelayProviders(): Promise<GeminiRelayProviderOption[]> {
+  const response = await adminRequest<{ providers?: GeminiRelayProviderOption[] }>('/api/admin/gemini-providers')
+  return response.providers ?? []
+}
+
 export async function createCodexRelayKey(
   name: string,
   config?: {
@@ -292,6 +308,7 @@ export async function createCodexRelayKey(
     period?: string
     allowedProviderIds?: number[]
     allowedClaudeProviderIds?: number[]
+    allowedGeminiProviderIds?: string[]
   },
 ): Promise<CodexRelayKeyCreateResult> {
   return adminRequest<CodexRelayKeyCreateResult>('/api/admin/codex-keys', {
@@ -355,18 +372,32 @@ export async function updateCodexRelayKeyClaudeProviders(id: string, allowedClau
   return response.allowedClaudeProviderIds ?? []
 }
 
+export async function updateCodexRelayKeyGeminiProviders(id: string, allowedGeminiProviderIds: string[]): Promise<string[]> {
+  const response = await adminRequest<{ allowedGeminiProviderIds?: string[] }>(`/api/admin/codex-keys/${encodeURIComponent(id)}/gemini-providers`, {
+    method: 'PATCH',
+    body: JSON.stringify({ allowedGeminiProviderIds }),
+  })
+  return response.allowedGeminiProviderIds ?? []
+}
+
 export async function listProviderKeys(kind: RelayProviderKind): Promise<ProviderKeyItem[]> {
   const response = await adminRequest<{ keys?: ProviderKeyItem[] }>(`/api/admin/provider-keys?kind=${encodeURIComponent(kind)}`)
   return response.keys ?? []
 }
 
 // Returns the provider's dedicated key (with secret), creating it on first use.
-export async function ensureProviderKey(kind: RelayProviderKind, providerId: number): Promise<ProviderKeyEnsureResult> {
+// Gemini providers are addressed by their string ID.
+export async function ensureProviderKey(kind: RelayProviderKind, provider: number | string): Promise<ProviderKeyEnsureResult> {
+  const target = kind === 'gemini' ? { providerRef: String(provider) } : { providerId: provider }
   return adminRequest<ProviderKeyEnsureResult>('/api/admin/provider-keys', {
     method: 'POST',
-    body: JSON.stringify({ kind, providerId }),
+    body: JSON.stringify({ kind, ...target }),
   })
 }
+
+// Key used to index dedicated keys per provider: Gemini string ID, otherwise numeric ID.
+export const providerKeyRef = (item: { kind: RelayProviderKind; providerId: number; providerRef?: string }): string =>
+  item.kind === 'gemini' ? item.providerRef ?? '' : String(item.providerId)
 
 export async function listCodexRelayModelPrices(): Promise<CodexRelayModelPrice[]> {
   const response = await adminRequest<{ prices?: CodexRelayModelPrice[] }>('/api/admin/relay-model-prices')

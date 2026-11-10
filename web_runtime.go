@@ -106,7 +106,12 @@ func newAppRuntime() (*appRuntime, error) {
 	blacklistService := services.NewBlacklistService(settingsService, notificationService)
 	blacklistService.SetProviderService(providerService)
 	providerService.SetBlacklistService(blacklistService)
-	geminiService := services.NewGeminiService(relayAddr)
+	geminiService := services.NewGeminiService(relayAddr, codexRelayKeys)
+	blacklistService.SetGeminiService(geminiService)
+	geminiService.SetProvidersSavedHook(func(providers []services.GeminiProvider) {
+		pruneGeminiProviderRelayKeys(codexRelayKeys, providers)
+	})
+	pruneGeminiProviderRelayKeys(codexRelayKeys, geminiService.GetProviders())
 	providerRelay := services.NewProviderRelayService(providerService, geminiService, codexRelayKeys, blacklistService, notificationService, appSettings, relayAddr, relayQuota)
 	claudeSettings := services.NewClaudeSettingsService(providerRelay.Addr(), codexRelayKeys)
 	codexSettings := services.NewCodexSettingsService(providerRelay.Addr(), codexRelayKeys)

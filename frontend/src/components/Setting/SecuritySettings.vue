@@ -11,12 +11,14 @@ import {
   listCodexRelayModelPrices,
   listCodexRelayProviders,
   listClaudeRelayProviders,
+  listGeminiRelayProviders,
   listCodexRelayUnpricedModels,
   logoutAdmin,
   resetCodexRelayKeyQuota,
   updateCodexRelayKeyName,
   updateCodexRelayKeyProviders,
   updateCodexRelayKeyClaudeProviders,
+  updateCodexRelayKeyGeminiProviders,
   updateCodexRelayKeyQuota,
   upsertCodexRelayModelPrice,
   updateAdminCredentials,
@@ -24,7 +26,6 @@ import {
   type CodexRelayKeyCreateResult,
   type CodexRelayKeyListItem,
   type CodexRelayModelPrice,
-  type CodexRelayProviderOption,
   type CodexRelayUnpricedModel,
   type RelayProviderKind,
 } from '../../services/adminAuth'
@@ -52,10 +53,14 @@ const createName = ref('')
 type QuotaMode = 'usd' | 'token'
 type QuotaPeriod = 'once' | 'daily' | 'weekly' | 'monthly'
 type QuotaDraft = { mode: QuotaMode; tokenLimit: string; usdLimit: string; period: QuotaPeriod }
-type AccessDraft = { restricted: boolean; allowedProviderIds: number[] }
+// Codex/Claude 使用数字 provider ID，Gemini 使用字符串 ID
+type ProviderID = number | string
+type ProviderOption = { id: ProviderID; name: string; enabled: boolean }
+type AccessDraft = { restricted: boolean; allowedProviderIds: ProviderID[] }
 
-// Codex 与 Claude 的 provider ID 各自独立分配，白名单也分开保存
-const providerKinds: RelayProviderKind[] = ['codex', 'claude']
+// 各平台的 provider ID 各自独立分配，白名单也分开保存
+const providerKinds: RelayProviderKind[] = ['codex', 'claude', 'gemini']
+const providerKindLabel: Record<RelayProviderKind, string> = { codex: 'Codex', claude: 'Claude', gemini: 'Gemini' }
 // 各 kind 对应的 i18n key（Codex 沿用原有 key）
 const providerKindText: Record<RelayProviderKind, { restrict: string; empty: string; loadFailed: string; scope: string }> = {
   codex: {
@@ -70,19 +75,27 @@ const providerKindText: Record<RelayProviderKind, { restrict: string; empty: str
     loadFailed: 'auth.security.loadClaudeProvidersFailed',
     scope: 'auth.security.claudeScope',
   },
+  gemini: {
+    restrict: 'auth.security.restrictGeminiProviders',
+    empty: 'auth.security.noGeminiProviders',
+    loadFailed: 'auth.security.loadGeminiProvidersFailed',
+    scope: 'auth.security.geminiScope',
+  },
 }
+
+const emptyKindRecord = <T,>(make: () => T): Record<RelayProviderKind, T> => ({ codex: make(), claude: make(), gemini: make() })
 
 const createQuotaMode = ref<QuotaMode>('usd')
 const createTokenLimit = ref('0')
 const createUsdLimit = ref('0')
 const createPeriod = ref<QuotaPeriod>('once')
-const createRestrictProviders = ref<Record<RelayProviderKind, boolean>>({ codex: false, claude: false })
-const createAllowedProviderIds = ref<Record<RelayProviderKind, number[]>>({ codex: [], claude: [] })
+const createRestrictProviders = ref<Record<RelayProviderKind, boolean>>(emptyKindRecord(() => false))
+const createAllowedProviderIds = ref<Record<RelayProviderKind, ProviderID[]>>(emptyKindRecord(() => []))
 const createdKey = ref<CodexRelayKeyCreateResult | null>(null)
 const quotaDrafts = ref<Record<string, QuotaDraft>>({})
 const quotaBusyId = ref('')
 const quotaRefreshBusyId = ref('')
-const providers = ref<Record<RelayProviderKind, CodexRelayProviderOption[]>>({ codex: [], claude: [] })
+const providers = ref<Record<RelayProviderKind, ProviderOption[]>>(emptyKindRecord(() => []))
 const providersLoading = ref(false)
 const accessDrafts = ref<Record<string, Record<RelayProviderKind, AccessDraft>>>({})
 const accessBusyId = ref('')
@@ -148,9 +161,10 @@ const loadKeys = async () => {
 
 const loadProviders = async () => {
   providersLoading.value = true
-  const loaders: Record<RelayProviderKind, () => Promise<CodexRelayProviderOption[]>> = {
+  const loaders: Record<RelayProviderKind, () => Promise<ProviderOption[]>> = {
     codex: listCodexRelayProviders,
     claude: listClaudeRelayProviders,
+    gemini: listGeminiRelayProviders,
   }
   await Promise.all(providerKinds.map(async (kind) => {
     try {
@@ -174,25 +188,36 @@ const draftForKey = (key: CodexRelayKeyListItem) => {
   return quotaDrafts.value[key.id]
 }
 
-const allowedIdsForKey = (key: CodexRelayKeyListItem, kind: RelayProviderKind): number[] =>
-  (kind === 'codex' ? key.allowedProviderIds : key.allowedClaudeProviderIds) ?? []
+const allowedIdsForKey = (key: CodexRelayKeyListItem, kind: RelayProviderKind): ProviderID[] => {
+  switch (kind) {
+    case 'codex':
+      return key.allowedProviderIds ?? []
+    case 'claude':
+      return key.allowedClaudeProviderIds ?? []
+    case 'gemini':
+      return key.allowedGeminiProviderIds ?? []
+  }
+}
 
-const accessDraftFromIds = (ids: number[]): AccessDraft => ({
+const accessDraftsFromKey = (key: CodexRelayKeyListItem | undefined): Record<RelayProviderKind, AccessDraft> => ({
+  codex: accessDraftFromIds(key ? allowedIdsForKey(key, 'codex') : []),
+  claude: accessDraftFromIds(key ? allowedIdsForKey(key, 'claude') : []),
+  gemini: accessDraftFromIds(key ? allowedIdsForKey(key, 'gemini') : []),
+})
+
+const accessDraftFromIds = (ids: ProviderID[]): AccessDraft => ({
   restricted: ids.length > 0,
   allowedProviderIds: [...ids],
 })
 
 const accessDraftForKey = (key: CodexRelayKeyListItem, kind: RelayProviderKind) => {
   if (!accessDrafts.value[key.id]) {
-    accessDrafts.value[key.id] = {
-      codex: accessDraftFromIds(allowedIdsForKey(key, 'codex')),
-      claude: accessDraftFromIds(allowedIdsForKey(key, 'claude')),
-    }
+    accessDrafts.value[key.id] = accessDraftsFromKey(key)
   }
   return accessDrafts.value[key.id][kind]
 }
 
-type ProviderOptionView = CodexRelayProviderOption & { unavailable?: boolean }
+type ProviderOptionView = ProviderOption & { unavailable?: boolean }
 
 const providerOptionsForKey = (key: CodexRelayKeyListItem, kind: RelayProviderKind): ProviderOptionView[] => {
   const knownIDs = new Set(providers.value[kind].map((provider) => provider.id))
@@ -214,10 +239,11 @@ const providerScopeText = (key: CodexRelayKeyListItem, kind: RelayProviderKind) 
 const dedicatedScopeText = (key: CodexRelayKeyListItem) => {
   const binding = key.providerBinding
   if (!binding) return ''
-  const provider = providers.value[binding.kind]?.find((item) => item.id === binding.providerId)
+  const providerID: ProviderID = binding.kind === 'gemini' ? binding.providerRef ?? '' : binding.providerId
+  const provider = providers.value[binding.kind]?.find((item) => item.id === providerID)
   return t('auth.security.dedicatedScope', {
-    kind: binding.kind === 'claude' ? 'Claude' : 'Codex',
-    name: provider?.name ?? `#${binding.providerId}`,
+    kind: providerKindLabel[binding.kind] ?? binding.kind,
+    name: provider?.name ?? `#${providerID}`,
   })
 }
 
@@ -306,16 +332,17 @@ const handleCreateKey = async () => {
       tokenLimit,
       usdLimit,
       period: createPeriod.value,
-      allowedProviderIds: createAllowed('codex'),
-      allowedClaudeProviderIds: createAllowed('claude'),
+      allowedProviderIds: createAllowed('codex') as number[],
+      allowedClaudeProviderIds: createAllowed('claude') as number[],
+      allowedGeminiProviderIds: createAllowed('gemini').map(String),
     })
     createName.value = ''
     createQuotaMode.value = 'usd'
     createTokenLimit.value = '0'
     createUsdLimit.value = '0'
     createPeriod.value = 'once'
-    createRestrictProviders.value = { codex: false, claude: false }
-    createAllowedProviderIds.value = { codex: [], claude: [] }
+    createRestrictProviders.value = emptyKindRecord(() => false)
+    createAllowedProviderIds.value = emptyKindRecord(() => [])
     await loadKeys()
     showToast(t('auth.security.createSuccess'), 'success')
   } catch (error) {
@@ -331,11 +358,12 @@ const handleUpdateProviderAccess = async (key: CodexRelayKeyListItem) => {
     showToast(t('auth.security.selectProviderRequired'), 'error')
     return
   }
-  const updaters: Record<RelayProviderKind, (id: string, ids: number[]) => Promise<number[]>> = {
-    codex: updateCodexRelayKeyProviders,
-    claude: updateCodexRelayKeyClaudeProviders,
+  const updaters: Record<RelayProviderKind, (id: string, ids: ProviderID[]) => Promise<unknown>> = {
+    codex: (id, ids) => updateCodexRelayKeyProviders(id, ids as number[]),
+    claude: (id, ids) => updateCodexRelayKeyClaudeProviders(id, ids as number[]),
+    gemini: (id, ids) => updateCodexRelayKeyGeminiProviders(id, ids.map(String)),
   }
-  const sortedKey = (ids: number[]) => [...ids].sort((a, b) => a - b).join(',')
+  const sortedKey = (ids: ProviderID[]) => ids.map(String).sort().join(',')
   accessBusyId.value = key.id
   try {
     // 只提交有变化的白名单
@@ -347,10 +375,7 @@ const handleUpdateProviderAccess = async (key: CodexRelayKeyListItem) => {
     }
     await loadKeys()
     const refreshed = keys.value.find((item) => item.id === key.id)
-    accessDrafts.value[key.id] = {
-      codex: accessDraftFromIds(refreshed ? allowedIdsForKey(refreshed, 'codex') : []),
-      claude: accessDraftFromIds(refreshed ? allowedIdsForKey(refreshed, 'claude') : []),
-    }
+    accessDrafts.value[key.id] = accessDraftsFromKey(refreshed)
     showToast(t('auth.security.providerAccessUpdated'), 'success')
   } catch (error) {
     showToast(extractErrorMessage(error, t('auth.security.providerAccessUpdateFailed')), 'error')

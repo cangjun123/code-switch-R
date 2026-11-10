@@ -184,8 +184,8 @@ const modalTitle = computed(() =>
           />
         </label>
 
-        <!-- API 端点（可选）-->
-        <label class="form-field">
+        <!-- API 端点（可选，Gemini 使用原生路径，不支持自定义端点）-->
+        <label v-if="tabId !== 'gemini'" class="form-field">
           <span>{{ t('components.main.form.labels.apiEndpoint') }}</span>
           <BaseInput
             v-model="form.apiEndpoint"
@@ -275,8 +275,8 @@ const modalTitle = computed(() =>
             </div>
           </div>
         </div>
-        <!-- 上游协议类型 -->
-        <div class="form-field">
+        <!-- 上游协议类型（Gemini 仅支持原生协议）-->
+        <div v-if="tabId !== 'gemini'" class="form-field">
           <span>{{ t('components.main.form.labels.upstreamProtocol') }}</span>
           <Listbox v-model="form.upstreamProtocol" v-slot="{ open: protoOpen }" class="w-full">
             <div class="level-select">
@@ -437,8 +437,8 @@ const modalTitle = computed(() =>
           </div>
         </template>
 
-        <!-- 认证方式 -->
-        <div class="form-field">
+        <!-- 认证方式（Gemini 固定使用 x-goog-api-key）-->
+        <div v-if="tabId !== 'gemini'" class="form-field">
           <span>{{ t('components.main.form.labels.connectivityAuthType') }}</span>
           <Listbox
             :model-value="selectedAuthType"
@@ -533,8 +533,8 @@ const modalTitle = computed(() =>
 
         <!-- 可用性与拉黑策略开关组（统一对齐布局） -->
         <div class="switch-card-group">
-          <!-- 可用性监控 -->
-          <div class="switch-card-row">
+          <!-- 可用性监控（Gemini 暂不支持）-->
+          <div v-if="tabId !== 'gemini'" class="switch-card-row">
             <div class="switch-label-col">
               <span class="switch-title">{{ t('components.main.form.labels.availabilityMonitor') }}</span>
               <span class="field-hint">{{ t('components.main.form.hints.availabilityMonitor') }}</span>
@@ -551,7 +551,7 @@ const modalTitle = computed(() =>
           </div>
 
           <!-- 连通性自动拉黑 -->
-          <div v-if="form.availabilityMonitorEnabled" class="switch-card-row">
+          <div v-if="form.availabilityMonitorEnabled && tabId !== 'gemini'" class="switch-card-row">
             <div class="switch-label-col">
               <span class="switch-title">{{ t('components.main.form.labels.connectivityAutoBlacklist') }}</span>
               <span class="field-hint">{{ t('components.main.form.hints.connectivityAutoBlacklist') }}</span>
@@ -568,7 +568,7 @@ const modalTitle = computed(() =>
           </div>
 
           <!-- 永不拉黑 -->
-          <div v-if="tabId !== 'others' && tabId !== 'gemini'" class="switch-card-row">
+          <div v-if="tabId !== 'others'" class="switch-card-row">
             <div class="switch-label-col">
               <span class="switch-title">{{ t('components.main.form.labels.neverBlacklist') }}</span>
               <span class="field-hint">{{ t('components.main.form.hints.neverBlacklist') }}</span>

@@ -37,6 +37,9 @@ type CodexRelayKey struct {
 	// AllowedClaudeProviderIDs is independent from AllowedProviderIDs (Codex)
 	// because provider IDs are allocated per kind and may overlap.
 	AllowedClaudeProviderIDs []int64 `json:"allowedClaudeProviderIds,omitempty"`
+	// AllowedGeminiProviderIDs uses string IDs because Gemini providers are
+	// stored by GeminiService rather than ProviderService.
+	AllowedGeminiProviderIDs []string `json:"allowedGeminiProviderIds,omitempty"`
 	// ProviderBinding marks a provider-dedicated key created from a provider
 	// card. A bound key may only reach that single provider; every other
 	// provider kind and relay endpoint is denied regardless of the allowlists.
@@ -45,9 +48,12 @@ type CodexRelayKey struct {
 
 // RelayKeyProviderBinding identifies the single provider a dedicated key may
 // access. Provider IDs are allocated per kind, so both fields are required.
+// Gemini providers have string IDs and are identified by ProviderRef instead
+// of ProviderID.
 type RelayKeyProviderBinding struct {
-	Kind       string `json:"kind"`
-	ProviderID int64  `json:"providerId"`
+	Kind        string `json:"kind"`
+	ProviderID  int64  `json:"providerId"`
+	ProviderRef string `json:"providerRef,omitempty"`
 }
 
 // UnmarshalJSON accepts both the current camelCase representation and the
@@ -70,6 +76,8 @@ func (key *CodexRelayKey) UnmarshalJSON(data []byte) error {
 		AllowedSnake       []int64                  `json:"allowed_provider_ids"`
 		AllowedClaude      []int64                  `json:"allowedClaudeProviderIds"`
 		AllowedClaudeSnake []int64                  `json:"allowed_claude_provider_ids"`
+		AllowedGemini      []string                 `json:"allowedGeminiProviderIds"`
+		AllowedGeminiSnake []string                 `json:"allowed_gemini_provider_ids"`
 		ProviderBinding    *RelayKeyProviderBinding `json:"providerBinding"`
 	}
 	if err := json.Unmarshal(data, &value); err != nil {
@@ -143,6 +151,11 @@ func (key *CodexRelayKey) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
+	key.AllowedGeminiProviderIDs = value.AllowedGemini
+	if key.AllowedGeminiProviderIDs == nil {
+		key.AllowedGeminiProviderIDs = value.AllowedGeminiSnake
+	}
+	key.AllowedGeminiProviderIDs = NormalizeGeminiAllowedProviderIDs(key.AllowedGeminiProviderIDs)
 	return nil
 }
 
@@ -157,6 +170,7 @@ type CodexRelayKeyListItem struct {
 	QuotaPeriod              string                   `json:"quotaPeriod"`
 	AllowedProviderIDs       []int64                  `json:"allowedProviderIds"`
 	AllowedClaudeProviderIDs []int64                  `json:"allowedClaudeProviderIds"`
+	AllowedGeminiProviderIDs []string                 `json:"allowedGeminiProviderIds"`
 	ProviderBinding          *RelayKeyProviderBinding `json:"providerBinding,omitempty"`
 	Quota                    *RelayQuotaStatus        `json:"quota,omitempty"`
 }
@@ -172,6 +186,7 @@ type CodexRelayKeyCreateResult struct {
 	QuotaPeriod              string    `json:"quotaPeriod"`
 	AllowedProviderIDs       []int64   `json:"allowedProviderIds"`
 	AllowedClaudeProviderIDs []int64   `json:"allowedClaudeProviderIds"`
+	AllowedGeminiProviderIDs []string  `json:"allowedGeminiProviderIds"`
 }
 
 // CodexRelayKeyMatch is the minimal authentication result retained for
@@ -223,6 +238,7 @@ func (s *CodexRelayKeyService) ListKeys() ([]CodexRelayKeyListItem, error) {
 			QuotaPeriod:              normalizeRelayQuotaPeriod(key.QuotaPeriod),
 			AllowedProviderIDs:       append([]int64{}, key.AllowedProviderIDs...),
 			AllowedClaudeProviderIDs: append([]int64{}, key.AllowedClaudeProviderIDs...),
+			AllowedGeminiProviderIDs: append([]string{}, key.AllowedGeminiProviderIDs...),
 			ProviderBinding:          cloneRelayKeyProviderBinding(key.ProviderBinding),
 		})
 	}
@@ -280,6 +296,7 @@ func (s *CodexRelayKeyService) CreateKey(name string) (*CodexRelayKeyCreateResul
 		QuotaPeriod:              normalizeRelayQuotaPeriod(key.QuotaPeriod),
 		AllowedProviderIDs:       append([]int64{}, key.AllowedProviderIDs...),
 		AllowedClaudeProviderIDs: append([]int64{}, key.AllowedClaudeProviderIDs...),
+		AllowedGeminiProviderIDs: append([]string{}, key.AllowedGeminiProviderIDs...),
 	}, nil
 }
 
@@ -417,12 +434,26 @@ func (s *CodexRelayKeyService) UpdateAllowedClaudeProviderIDs(id string, provide
 	})
 }
 
+// UpdateAllowedGeminiProviderIDs replaces the Gemini provider allowlist for
+// one key. An empty list means unrestricted access.
+func (s *CodexRelayKeyService) UpdateAllowedGeminiProviderIDs(id string, providerIDs []string) error {
+	normalized := NormalizeGeminiAllowedProviderIDs(providerIDs)
+	return s.updateKeyAccess(id, func(key *CodexRelayKey) {
+		key.AllowedGeminiProviderIDs = normalized
+	})
+}
+
 func (s *CodexRelayKeyService) updateAllowlist(id string, providerIDs []int64, apply func(*CodexRelayKey, []int64)) error {
 	normalized, err := NormalizeCodexAllowedProviderIDs(providerIDs)
 	if err != nil {
 		return err
 	}
+	return s.updateKeyAccess(id, func(key *CodexRelayKey) {
+		apply(key, normalized)
+	})
+}
 
+func (s *CodexRelayKeyService) updateKeyAccess(id string, apply func(*CodexRelayKey)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	store, err := s.loadLocked()
@@ -434,7 +465,7 @@ func (s *CodexRelayKeyService) updateAllowlist(id string, providerIDs []int64, a
 			if store.Keys[index].ProviderBinding != nil {
 				return errors.New("供应商专属 Key 的访问范围固定为所属供应商，不能修改")
 			}
-			apply(&store.Keys[index], normalized)
+			apply(&store.Keys[index])
 			return s.saveLocked(store)
 		}
 	}
@@ -505,12 +536,26 @@ func (s *CodexRelayKeyService) ListProviderKeys(kind string) ([]CodexRelayKeyLis
 // EnsureProviderKey returns the dedicated key for one provider, creating it on
 // first use. The caller is responsible for verifying that the provider exists.
 func (s *CodexRelayKeyService) EnsureProviderKey(kind string, providerID int64, name string) (*CodexRelayKey, bool, error) {
-	if !isBindableRelayProviderKind(kind) {
+	if !isBindableRelayProviderKind(kind) || kind == ProviderKindGemini {
 		return nil, false, fmt.Errorf("不支持为 %s 供应商创建专属 Key", kind)
 	}
 	if providerID < 0 {
 		return nil, false, fmt.Errorf("provider ID 不能为负数: %d", providerID)
 	}
+	return s.ensureBoundKey(RelayKeyProviderBinding{Kind: kind, ProviderID: providerID}, name)
+}
+
+// EnsureGeminiProviderKey returns the dedicated key for one Gemini provider,
+// creating it on first use. The caller verifies that the provider exists.
+func (s *CodexRelayKeyService) EnsureGeminiProviderKey(providerID string, name string) (*CodexRelayKey, bool, error) {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" {
+		return nil, false, errors.New("Gemini provider ID 不能为空")
+	}
+	return s.ensureBoundKey(RelayKeyProviderBinding{Kind: ProviderKindGemini, ProviderRef: providerID}, name)
+}
+
+func (s *CodexRelayKeyService) ensureBoundKey(binding RelayKeyProviderBinding, name string) (*CodexRelayKey, bool, error) {
 	normalizedName, err := normalizeCodexRelayKeyName(name)
 	if err != nil {
 		return nil, false, err
@@ -523,7 +568,7 @@ func (s *CodexRelayKeyService) EnsureProviderKey(kind string, providerID int64, 
 		return nil, false, err
 	}
 	for _, key := range store.Keys {
-		if binding := key.ProviderBinding; binding != nil && binding.Kind == kind && binding.ProviderID == providerID {
+		if existing := key.ProviderBinding; existing != nil && *existing == binding {
 			copyKey := cloneCodexRelayKey(key)
 			return &copyKey, false, nil
 		}
@@ -540,7 +585,7 @@ func (s *CodexRelayKeyService) EnsureProviderKey(kind string, providerID int64, 
 		Enabled:         true,
 		CreatedAt:       time.Now().UTC(),
 		QuotaPeriod:     normalizeRelayQuotaPeriod(""),
-		ProviderBinding: &RelayKeyProviderBinding{Kind: kind, ProviderID: providerID},
+		ProviderBinding: &binding,
 	}
 	store.Keys = append(store.Keys, key)
 	if err := s.saveLocked(store); err != nil {
@@ -554,14 +599,33 @@ func (s *CodexRelayKeyService) EnsureProviderKey(kind string, providerID int64, 
 // configured. It runs after every provider save so a deleted provider's key is
 // removed before its ID could ever be reused by a new provider.
 func (s *CodexRelayKeyService) PruneProviderKeys(kind string, existingProviderIDs []int64) ([]string, error) {
-	if !isBindableRelayProviderKind(kind) {
+	if !isBindableRelayProviderKind(kind) || kind == ProviderKindGemini {
 		return nil, nil
 	}
 	existing := make(map[int64]struct{}, len(existingProviderIDs))
 	for _, providerID := range existingProviderIDs {
 		existing[providerID] = struct{}{}
 	}
+	return s.pruneBoundKeys(kind, func(binding *RelayKeyProviderBinding) bool {
+		_, ok := existing[binding.ProviderID]
+		return ok
+	})
+}
 
+// PruneGeminiProviderKeys deletes Gemini dedicated keys whose provider is no
+// longer configured.
+func (s *CodexRelayKeyService) PruneGeminiProviderKeys(existingProviderIDs []string) ([]string, error) {
+	existing := make(map[string]struct{}, len(existingProviderIDs))
+	for _, providerID := range existingProviderIDs {
+		existing[providerID] = struct{}{}
+	}
+	return s.pruneBoundKeys(ProviderKindGemini, func(binding *RelayKeyProviderBinding) bool {
+		_, ok := existing[binding.ProviderRef]
+		return ok
+	})
+}
+
+func (s *CodexRelayKeyService) pruneBoundKeys(kind string, exists func(*RelayKeyProviderBinding) bool) ([]string, error) {
 	s.mu.Lock()
 	store, err := s.loadLocked()
 	if err != nil {
@@ -571,11 +635,9 @@ func (s *CodexRelayKeyService) PruneProviderKeys(kind string, existingProviderID
 	removed := make([]string, 0)
 	kept := make([]CodexRelayKey, 0, len(store.Keys))
 	for _, key := range store.Keys {
-		if binding := key.ProviderBinding; binding != nil && binding.Kind == kind {
-			if _, ok := existing[binding.ProviderID]; !ok {
-				removed = append(removed, key.ID)
-				continue
-			}
+		if binding := key.ProviderBinding; binding != nil && binding.Kind == kind && !exists(binding) {
+			removed = append(removed, key.ID)
+			continue
 		}
 		kept = append(kept, key)
 	}
@@ -741,8 +803,14 @@ func (s *CodexRelayKeyService) loadLocked() (*codexRelayKeyStore, error) {
 			key.AllowedClaudeProviderIDs = normalizedClaude
 			changed = true
 		}
+		normalizedGemini := NormalizeGeminiAllowedProviderIDs(key.AllowedGeminiProviderIDs)
+		if !equalStringSlices(key.AllowedGeminiProviderIDs, normalizedGemini) {
+			key.AllowedGeminiProviderIDs = normalizedGemini
+			changed = true
+		}
 		if binding := key.ProviderBinding; binding != nil {
-			if !isBindableRelayProviderKind(binding.Kind) || binding.ProviderID < 0 {
+			if !isBindableRelayProviderKind(binding.Kind) || binding.ProviderID < 0 ||
+				(binding.Kind == ProviderKindGemini && strings.TrimSpace(binding.ProviderRef) == "") {
 				return nil, fmt.Errorf("Codex relay key %q provider binding is invalid", key.ID)
 			}
 		}
@@ -778,9 +846,36 @@ func NormalizeCodexAllowedProviderIDs(providerIDs []int64) ([]int64, error) {
 	return result, nil
 }
 
+// NormalizeGeminiAllowedProviderIDs trims, deduplicates, and sorts Gemini
+// provider IDs. Empty means all Gemini providers are allowed.
+func NormalizeGeminiAllowedProviderIDs(providerIDs []string) []string {
+	if len(providerIDs) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(providerIDs))
+	result := make([]string, 0, len(providerIDs))
+	for _, providerID := range providerIDs {
+		providerID = strings.TrimSpace(providerID)
+		if providerID == "" {
+			continue
+		}
+		if _, exists := seen[providerID]; exists {
+			continue
+		}
+		seen[providerID] = struct{}{}
+		result = append(result, providerID)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	sort.Strings(result)
+	return result
+}
+
 func cloneCodexRelayKey(key CodexRelayKey) CodexRelayKey {
 	key.AllowedProviderIDs = append([]int64(nil), key.AllowedProviderIDs...)
 	key.AllowedClaudeProviderIDs = append([]int64(nil), key.AllowedClaudeProviderIDs...)
+	key.AllowedGeminiProviderIDs = append([]string(nil), key.AllowedGeminiProviderIDs...)
 	key.ProviderBinding = cloneRelayKeyProviderBinding(key.ProviderBinding)
 	return key
 }
@@ -794,7 +889,19 @@ func cloneRelayKeyProviderBinding(binding *RelayKeyProviderBinding) *RelayKeyPro
 }
 
 func isBindableRelayProviderKind(kind string) bool {
-	return kind == ProviderKindCodex || kind == ProviderKindClaude
+	return kind == ProviderKindCodex || kind == ProviderKindClaude || kind == ProviderKindGemini
+}
+
+func equalStringSlices(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func equalInt64Slices(left, right []int64) bool {

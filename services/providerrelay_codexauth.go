@@ -255,6 +255,39 @@ func relayKeyProviderAccess(key *CodexRelayKey, kind string) ([]int64, bool) {
 	return allowlist, len(allowlist) > 0
 }
 
+// geminiRelayKeyProviderAccess is the Gemini counterpart of
+// relayKeyProviderAccess. Gemini provider IDs are strings, so it returns the
+// allowed ID set separately.
+func geminiRelayKeyProviderAccess(key *CodexRelayKey) ([]string, bool) {
+	if key == nil {
+		return nil, false
+	}
+	if binding := key.ProviderBinding; binding != nil {
+		if binding.Kind == ProviderKindGemini {
+			return []string{binding.ProviderRef}, true
+		}
+		return nil, true
+	}
+	return key.AllowedGeminiProviderIDs, len(key.AllowedGeminiProviderIDs) > 0
+}
+
+func filterGeminiProvidersByAllowlist(allowlist []string, restricted bool, providers []GeminiProvider) ([]GeminiProvider, int) {
+	if !restricted {
+		return providers, 0
+	}
+	allowed := make(map[string]struct{}, len(allowlist))
+	for _, providerID := range allowlist {
+		allowed[providerID] = struct{}{}
+	}
+	filtered := make([]GeminiProvider, 0, len(providers))
+	for _, provider := range providers {
+		if _, ok := allowed[provider.ID]; ok {
+			filtered = append(filtered, provider)
+		}
+	}
+	return filtered, len(providers) - len(filtered)
+}
+
 func filterProvidersByAllowlist(allowlist []int64, restricted bool, providers []Provider) ([]Provider, int) {
 	if !restricted {
 		return providers, 0

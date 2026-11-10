@@ -22,11 +22,14 @@ type providerKeyItem struct {
 	Enabled    bool   `json:"enabled"`
 	Kind       string `json:"kind"`
 	ProviderID int64  `json:"providerId"`
+	// ProviderRef identifies Gemini providers, whose IDs are strings.
+	ProviderRef string `json:"providerRef,omitempty"`
 }
 
 type providerKeyEnsureRequest struct {
-	Kind       string `json:"kind"`
-	ProviderID *int64 `json:"providerId"`
+	Kind        string `json:"kind"`
+	ProviderID  *int64 `json:"providerId"`
+	ProviderRef string `json:"providerRef"`
 }
 
 type providerKeyEnsureResponse struct {
@@ -37,7 +40,7 @@ type providerKeyEnsureResponse struct {
 
 func providerKeyKind(raw string) (string, bool) {
 	kind := services.RelayPlatformForKind(raw)
-	return kind, kind == services.ProviderKindCodex || kind == services.ProviderKindClaude
+	return kind, kind == services.ProviderKindCodex || kind == services.ProviderKindClaude || kind == services.ProviderKindGemini
 }
 
 // providerKeyName builds the display name of a dedicated key from its
@@ -45,8 +48,11 @@ func providerKeyKind(raw string) (string, bool) {
 // length limit.
 func providerKeyName(kind, providerName string) string {
 	label := "Codex"
-	if kind == services.ProviderKindClaude {
+	switch kind {
+	case services.ProviderKindClaude:
 		label = "Claude"
+	case services.ProviderKindGemini:
+		label = "Gemini"
 	}
 	cleaned := strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
@@ -86,12 +92,32 @@ func pruneProviderRelayKeys(keys *services.CodexRelayKeyService, rawKind string,
 	}
 }
 
+// pruneGeminiProviderRelayKeys is the Gemini counterpart of
+// pruneProviderRelayKeys; Gemini providers are keyed by string IDs.
+func pruneGeminiProviderRelayKeys(keys *services.CodexRelayKeyService, providers []services.GeminiProvider) {
+	if keys == nil {
+		return
+	}
+	ids := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		ids = append(ids, provider.ID)
+	}
+	removed, err := keys.PruneGeminiProviderKeys(ids)
+	if err != nil {
+		log.Printf("清理 gemini 供应商专属 Key 失败: %v", err)
+		return
+	}
+	if len(removed) > 0 {
+		log.Printf("已删除 %d 个失效的 gemini 供应商专属 Key", len(removed))
+	}
+}
+
 func registerProviderKeyRoutes(router *gin.Engine, rt *appRuntime, originRequired, authRequired gin.HandlerFunc) {
 	router.GET("/api/admin/provider-keys", authRequired, func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 		kind, ok := providerKeyKind(c.Query("kind"))
 		if !ok {
-			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_kind", Message: "kind 仅支持 codex 或 claude"}})
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_kind", Message: "kind 仅支持 codex、claude 或 gemini"}})
 			return
 		}
 		keys, err := rt.codexRelayKeys.ListProviderKeys(kind)
@@ -103,7 +129,7 @@ func registerProviderKeyRoutes(router *gin.Engine, rt *appRuntime, originRequire
 		for _, key := range keys {
 			items = append(items, providerKeyItem{
 				ID: key.ID, Name: key.Name, MaskedKey: key.MaskedKey, Enabled: key.Enabled,
-				Kind: kind, ProviderID: key.ProviderBinding.ProviderID,
+				Kind: kind, ProviderID: key.ProviderBinding.ProviderID, ProviderRef: key.ProviderBinding.ProviderRef,
 			})
 		}
 		c.JSON(http.StatusOK, gin.H{"keys": items})
@@ -120,7 +146,11 @@ func registerProviderKeyRoutes(router *gin.Engine, rt *appRuntime, originRequire
 		}
 		kind, ok := providerKeyKind(request.Kind)
 		if !ok {
-			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_kind", Message: "kind 仅支持 codex 或 claude"}})
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_kind", Message: "kind 仅支持 codex、claude 或 gemini"}})
+			return
+		}
+		if kind == services.ProviderKindGemini {
+			ensureGeminiProviderKey(c, rt, strings.TrimSpace(request.ProviderRef))
 			return
 		}
 		if request.ProviderID == nil {
@@ -156,5 +186,41 @@ func registerProviderKeyRoutes(router *gin.Engine, rt *appRuntime, originRequire
 			Key:     key.Key,
 			Created: created,
 		})
+	})
+}
+
+func ensureGeminiProviderKey(c *gin.Context, rt *appRuntime, providerRef string) {
+	if providerRef == "" {
+		c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_request", Message: "providerRef is required"}})
+		return
+	}
+	if rt.geminiService == nil {
+		c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Error: apiError{Code: "provider_service_unavailable", Message: "Gemini provider service is unavailable"}})
+		return
+	}
+	var provider *services.GeminiProvider
+	providers := rt.geminiService.GetProviders()
+	for index := range providers {
+		if providers[index].ID == providerRef {
+			provider = &providers[index]
+			break
+		}
+	}
+	if provider == nil {
+		c.JSON(http.StatusNotFound, apiErrorResponse{Error: apiError{Code: "provider_not_found", Message: fmt.Sprintf("未找到 gemini 供应商: %s", providerRef)}})
+		return
+	}
+	key, created, err := rt.codexRelayKeys.EnsureGeminiProviderKey(provider.ID, providerKeyName(services.ProviderKindGemini, provider.Name))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "create_key_failed", Message: err.Error()}})
+		return
+	}
+	c.JSON(http.StatusOK, providerKeyEnsureResponse{
+		providerKeyItem: providerKeyItem{
+			ID: key.ID, Name: key.Name, MaskedKey: services.MaskCodexRelayKey(key.Key), Enabled: key.Enabled,
+			Kind: services.ProviderKindGemini, ProviderRef: provider.ID,
+		},
+		Key:     key.Key,
+		Created: created,
 	})
 }
