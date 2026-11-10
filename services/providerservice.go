@@ -190,6 +190,34 @@ type ProviderService struct {
 	// onSaved 在 provider 列表成功落盘后调用（仍持有 mu，回调内不得再调用本服务的加锁方法）。
 	// 用于清理已删除供应商的专属 relay key。
 	onSaved func(kind string, providers []Provider)
+
+	// gemini Gemini 供应商存储在 GeminiService 中；注入后 LoadProviders/SaveProviders("gemini")
+	// 通过它读写通用 Provider 视图，使可用性监控、连通性测试等共享逻辑覆盖 Gemini。
+	geminiMu sync.RWMutex
+	gemini   geminiProviderSource
+}
+
+// geminiProviderSource 由 GeminiService 实现
+type geminiProviderSource interface {
+	ProvidersAsProviders() []Provider
+	ApplyProviderUpdates(providers []Provider) error
+}
+
+// SetGeminiSource 注入 Gemini 供应商来源
+func (ps *ProviderService) SetGeminiSource(source geminiProviderSource) {
+	ps.geminiMu.Lock()
+	defer ps.geminiMu.Unlock()
+	ps.gemini = source
+}
+
+func (ps *ProviderService) geminiSource() geminiProviderSource {
+	ps.geminiMu.RLock()
+	defer ps.geminiMu.RUnlock()
+	return ps.gemini
+}
+
+func isGeminiKind(kind string) bool {
+	return strings.EqualFold(strings.TrimSpace(kind), ProviderKindGemini)
 }
 
 func NewProviderService() *ProviderService {
@@ -251,6 +279,13 @@ func providerFilePath(kind string) (string, error) {
 }
 
 func (ps *ProviderService) SaveProviders(kind string, providers []Provider) error {
+	if isGeminiKind(kind) {
+		source := ps.geminiSource()
+		if source == nil {
+			return fmt.Errorf("unknown provider type: %s", kind)
+		}
+		return source.ApplyProviderUpdates(providers)
+	}
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	return ps.saveProvidersLocked(kind, providers)
@@ -424,6 +459,13 @@ func (ps *ProviderService) invalidateProviderCache(path string) {
 }
 
 func (ps *ProviderService) LoadProviders(kind string) ([]Provider, error) {
+	if isGeminiKind(kind) {
+		source := ps.geminiSource()
+		if source == nil {
+			return nil, nil // 未注入 GeminiService（如独立测试）时视为无 Gemini 供应商
+		}
+		return source.ProvidersAsProviders(), nil
+	}
 	path, err := providerFilePath(kind)
 	if err != nil {
 		return nil, err

@@ -32,14 +32,15 @@ const (
 
 // 默认配置常量
 const (
-	DefaultOperationalThresholdMs = 6000  // 默认正常阈值（毫秒）
-	DefaultTimeoutMs              = 15000 // 默认超时（毫秒）
-	DefaultPollIntervalSeconds    = 60    // 默认检测间隔（秒）
-	DefaultFailureThreshold       = 2     // 默认拉黑阈值（连续失败次数）
-	MaxConcurrentChecks           = 5     // 最大并发检测数
-	MaxHistoryPerProvider         = 60    // 每个 Provider 最多保留历史数
-	MinPollIntervalSeconds        = 30    // 最小检测间隔（秒），防止高频探活打爆上游
-	MaxPollIntervalSeconds        = 3600  // 最大检测间隔（秒），超过则失去监控意义
+	DefaultOperationalThresholdMs = 6000   // 默认正常阈值（毫秒）
+	DefaultTimeoutMs              = 15000  // 默认超时（毫秒）
+	DefaultImageProbeTimeoutMs    = 120000 // 真实生图探测的默认超时（毫秒）
+	DefaultPollIntervalSeconds    = 60     // 默认检测间隔（秒）
+	DefaultFailureThreshold       = 2      // 默认拉黑阈值（连续失败次数）
+	MaxConcurrentChecks           = 5      // 最大并发检测数
+	MaxHistoryPerProvider         = 60     // 每个 Provider 最多保留历史数
+	MinPollIntervalSeconds        = 30     // 最小检测间隔（秒），防止高频探活打爆上游
+	MaxPollIntervalSeconds        = 3600   // 最大检测间隔（秒），超过则失去监控意义
 )
 
 // HealthCheckResult 健康检查结果
@@ -434,7 +435,7 @@ func (hcs *HealthCheckService) RunSingleCheck(platform string, providerID int64)
 	}
 
 	// 执行检测（使用 Provider 配置的有效超时）
-	timeout := hcs.getEffectiveTimeout(targetProvider)
+	timeout := hcs.getEffectiveTimeout(targetProvider, platform)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Millisecond)
 	defer cancel()
 
@@ -479,7 +480,17 @@ func (hcs *HealthCheckService) checkAllProviders(platform string) []HealthCheckR
 	var mu sync.Mutex
 	sem := make(chan struct{}, MaxConcurrentChecks)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// 批次超时至少 30s，并覆盖最长的单个探测超时（生图探测可能需要数分钟）
+	batchTimeout := 30 * time.Second
+	for i := range providers {
+		if !providers[i].AvailabilityMonitorEnabled {
+			continue
+		}
+		if probe := time.Duration(hcs.getEffectiveTimeout(&providers[i], platform))*time.Millisecond + 5*time.Second; probe > batchTimeout {
+			batchTimeout = probe
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), batchTimeout)
 	defer cancel()
 
 	for _, provider := range providers {
@@ -534,30 +545,37 @@ func (hcs *HealthCheckService) checkProvider(ctx context.Context, provider Provi
 	model := hcs.getEffectiveModel(&provider, platform)
 	endpoint := hcs.getEffectiveEndpoint(&provider, platform)
 	upstreamProtocol := provider.ResolveUpstreamProtocol(endpoint)
-	timeout := hcs.getEffectiveTimeout(&provider)
+	timeout := hcs.getEffectiveTimeout(&provider, platform)
 
 	result.Model = model
 	result.Endpoint = endpoint
 
-	// 构建请求体
-	reqBody := hcs.buildTestRequest(&provider, platform, endpoint, model)
-	if reqBody == nil {
-		result.ErrorMessage = "无法构建测试请求"
-		return result
-	}
-
 	// 构建目标 URL（v1 段规整与 relay 转发一致）
 	targetURL := joinURL(provider.APIURL, endpoint)
 
-	// 创建 HTTP 请求
-	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(reqBody))
+	// 模型列表探测（生图供应商默认）：GET，无请求体、不产生计费
+	var req *http.Request
+	var err error
+	if isModelListProbeEndpoint(endpoint) {
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	} else {
+		// 构建请求体
+		reqBody := hcs.buildTestRequest(&provider, platform, endpoint, model)
+		if reqBody == nil {
+			result.ErrorMessage = "无法构建测试请求"
+			return result
+		}
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(reqBody))
+	}
 	if err != nil {
 		result.ErrorMessage = fmt.Sprintf("创建请求失败: %v", err)
 		return result
 	}
 
 	// 设置 Headers
-	req.Header.Set("Content-Type", "application/json")
+	if req.Method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if provider.APIKey != "" {
 		// 根据认证方式设置请求头
 		authTypeRaw := strings.TrimSpace(provider.ConnectivityAuthType)
@@ -690,15 +708,41 @@ func (hcs *HealthCheckService) getEffectiveModel(provider *Provider, platform st
 			return mapped
 		}
 		return defaultOpenAIImageModel
-	case "gemini":
-		return "gemini-1.5-flash"
+	case ProviderKindGemini:
+		return geminiDefaultProbeModel(provider)
 	default:
 		return "gpt-3.5-turbo"
 	}
 }
 
 // getEffectiveEndpoint 获取有效的测试端点
+// isLegacyDefaultImageProbe 旧版前端保存生图供应商时总会自动写入
+// testEndpoint=/v1/images/generations、timeout=15000 作为默认值。这类配置视为"未自定义"，
+// 改用默认的模型列表探测，避免每次轮询都真实生图计费、并在 15s 内超时误判故障。
+// 真正需要生图探测时，把超时设为其他值即可。
+func isLegacyDefaultImageProbe(provider *Provider, platform string) bool {
+	if !strings.EqualFold(platform, ProviderKindGPTImage) || provider.AvailabilityConfig == nil {
+		return false
+	}
+	cfg := provider.AvailabilityConfig
+	return strings.EqualFold(strings.TrimSpace(cfg.TestEndpoint), "/v1/images/generations") &&
+		(cfg.Timeout == 0 || cfg.Timeout == DefaultTimeoutMs)
+}
+
 func (hcs *HealthCheckService) getEffectiveEndpoint(provider *Provider, platform string) string {
+	if isLegacyDefaultImageProbe(provider, platform) {
+		return defaultImageProbeEndpoint
+	}
+	if strings.EqualFold(platform, ProviderKindGemini) {
+		template := ""
+		stream := false
+		if provider.AvailabilityConfig != nil {
+			template = provider.AvailabilityConfig.TestEndpoint
+			stream = provider.AvailabilityConfig.Stream
+		}
+		return resolveGeminiProbeEndpoint(template, hcs.getEffectiveModel(provider, platform), stream)
+	}
+
 	// 优先级 1：用户配置的健康检查专用端点
 	if provider.AvailabilityConfig != nil && provider.AvailabilityConfig.TestEndpoint != "" {
 		if strings.ToLower(platform) == "claude" &&
@@ -728,17 +772,23 @@ func (hcs *HealthCheckService) getEffectiveEndpoint(provider *Provider, platform
 	case "codex":
 		return provider.ResolveOpenAIUpstreamEndpoint("/responses")
 	case "gpt-image":
-		return "/v1/images/generations"
+		// 默认探测模型列表：每次轮询真实生图会持续计费且耗时很长；
+		// 需要验证生图链路时可在高级配置中把测试端点设为 /v1/images/generations
+		return defaultImageProbeEndpoint
 	default:
 		return "/v1/chat/completions"
 	}
 }
 
 // getEffectiveTimeout 获取有效的超时时间（毫秒）
-func (hcs *HealthCheckService) getEffectiveTimeout(provider *Provider) int {
+func (hcs *HealthCheckService) getEffectiveTimeout(provider *Provider, platform string) int {
 	// 优先使用用户配置
-	if provider.AvailabilityConfig != nil && provider.AvailabilityConfig.Timeout > 0 {
+	if provider.AvailabilityConfig != nil && provider.AvailabilityConfig.Timeout > 0 && !isLegacyDefaultImageProbe(provider, platform) {
 		return provider.AvailabilityConfig.Timeout
+	}
+	// 真实生图探测通常需要数十秒到数分钟
+	if strings.Contains(strings.ToLower(hcs.getEffectiveEndpoint(provider, platform)), "/images/") {
+		return DefaultImageProbeTimeoutMs
 	}
 	return DefaultTimeoutMs
 }
@@ -758,6 +808,10 @@ func (hcs *HealthCheckService) buildTestRequest(provider *Provider, platform, en
 	effectiveMaxTokens := 1
 	if maxTokens > 0 {
 		effectiveMaxTokens = maxTokens
+	}
+
+	if platform == ProviderKindGemini || isGeminiProbeEndpoint(endpoint) {
+		return buildGeminiProbeRequest("hi", effectiveMaxTokens)
 	}
 
 	if platform == "gpt-image" || strings.Contains(endpoint, "/images/generations") {

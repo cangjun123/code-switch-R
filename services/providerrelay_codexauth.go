@@ -251,6 +251,8 @@ func relayKeyProviderAccess(key *CodexRelayKey, kind string) ([]int64, bool) {
 		allowlist = key.AllowedProviderIDs
 	case ProviderKindClaude:
 		allowlist = key.AllowedClaudeProviderIDs
+	case ProviderKindGPTImage:
+		allowlist = key.AllowedImageProviderIDs
 	}
 	return allowlist, len(allowlist) > 0
 }
@@ -305,8 +307,9 @@ func filterProvidersByAllowlist(allowlist []int64, restricted bool, providers []
 	return filtered, len(providers) - len(filtered)
 }
 
-// relayKeyProviderKindGuard rejects provider-dedicated keys on endpoints that
-// serve a provider kind without per-provider allowlists (Gemini, images).
+// relayKeyProviderKindGuard rejects provider-dedicated keys bound to another
+// provider kind before the request reaches the Gemini or image handlers, which
+// then apply the per-provider allowlist themselves.
 func (prs *ProviderRelayService) relayKeyProviderKindGuard(kind string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		key, err := prs.relayKeyForRequest(c)

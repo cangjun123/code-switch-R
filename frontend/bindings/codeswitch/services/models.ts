@@ -1336,6 +1336,18 @@ export class GeminiProvider {
      */
     "neverBlacklist"?: boolean;
 
+    /**
+     * NumericID 稳定的数字 ID：可用性监控、连通性测试等按 int64 ID 寻址的功能使用
+     */
+    "numericId"?: number;
+
+    /**
+     * 可用性监控（与 Claude/Codex 供应商语义一致）
+     */
+    "availabilityMonitorEnabled"?: boolean;
+    "connectivityAutoBlacklist"?: boolean;
+    "availabilityConfig"?: AvailabilityConfig;
+
     /** Creates a new GeminiProvider instance. */
     constructor($$source: Partial<GeminiProvider> = {}) {
         if (!("id" in $$source)) {
@@ -2065,7 +2077,7 @@ export class Provider {
     /**
      * 可用性高级配置 - 可选，在可用性页面的"高级配置"中设置
      */
-    "availabilityConfig"?: AvailabilityConfig | null;
+    "availabilityConfig"?: AvailabilityConfig;
 
     /**
      * 认证方式 - bearer / x-api-key / 自定义 Header 名
@@ -2280,7 +2292,7 @@ export class ProviderTimeline {
     /**
      * 高级配置
      */
-    "availabilityConfig"?: AvailabilityConfig | null;
+    "availabilityConfig"?: AvailabilityConfig;
 
     /**
      * 历史记录

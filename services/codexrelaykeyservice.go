@@ -40,6 +40,8 @@ type CodexRelayKey struct {
 	// AllowedGeminiProviderIDs uses string IDs because Gemini providers are
 	// stored by GeminiService rather than ProviderService.
 	AllowedGeminiProviderIDs []string `json:"allowedGeminiProviderIds,omitempty"`
+	// AllowedImageProviderIDs restricts GPT image (gpt-image) providers.
+	AllowedImageProviderIDs []int64 `json:"allowedImageProviderIds,omitempty"`
 	// ProviderBinding marks a provider-dedicated key created from a provider
 	// card. A bound key may only reach that single provider; every other
 	// provider kind and relay endpoint is denied regardless of the allowlists.
@@ -78,6 +80,8 @@ func (key *CodexRelayKey) UnmarshalJSON(data []byte) error {
 		AllowedClaudeSnake []int64                  `json:"allowed_claude_provider_ids"`
 		AllowedGemini      []string                 `json:"allowedGeminiProviderIds"`
 		AllowedGeminiSnake []string                 `json:"allowed_gemini_provider_ids"`
+		AllowedImage       []int64                  `json:"allowedImageProviderIds"`
+		AllowedImageSnake  []int64                  `json:"allowed_image_provider_ids"`
 		ProviderBinding    *RelayKeyProviderBinding `json:"providerBinding"`
 	}
 	if err := json.Unmarshal(data, &value); err != nil {
@@ -156,6 +160,14 @@ func (key *CodexRelayKey) UnmarshalJSON(data []byte) error {
 		key.AllowedGeminiProviderIDs = value.AllowedGeminiSnake
 	}
 	key.AllowedGeminiProviderIDs = NormalizeGeminiAllowedProviderIDs(key.AllowedGeminiProviderIDs)
+	key.AllowedImageProviderIDs = value.AllowedImage
+	if key.AllowedImageProviderIDs == nil {
+		key.AllowedImageProviderIDs = value.AllowedImageSnake
+	}
+	key.AllowedImageProviderIDs, err = NormalizeCodexAllowedProviderIDs(key.AllowedImageProviderIDs)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -171,6 +183,7 @@ type CodexRelayKeyListItem struct {
 	AllowedProviderIDs       []int64                  `json:"allowedProviderIds"`
 	AllowedClaudeProviderIDs []int64                  `json:"allowedClaudeProviderIds"`
 	AllowedGeminiProviderIDs []string                 `json:"allowedGeminiProviderIds"`
+	AllowedImageProviderIDs  []int64                  `json:"allowedImageProviderIds"`
 	ProviderBinding          *RelayKeyProviderBinding `json:"providerBinding,omitempty"`
 	Quota                    *RelayQuotaStatus        `json:"quota,omitempty"`
 }
@@ -187,6 +200,7 @@ type CodexRelayKeyCreateResult struct {
 	AllowedProviderIDs       []int64   `json:"allowedProviderIds"`
 	AllowedClaudeProviderIDs []int64   `json:"allowedClaudeProviderIds"`
 	AllowedGeminiProviderIDs []string  `json:"allowedGeminiProviderIds"`
+	AllowedImageProviderIDs  []int64   `json:"allowedImageProviderIds"`
 }
 
 // CodexRelayKeyMatch is the minimal authentication result retained for
@@ -239,6 +253,7 @@ func (s *CodexRelayKeyService) ListKeys() ([]CodexRelayKeyListItem, error) {
 			AllowedProviderIDs:       append([]int64{}, key.AllowedProviderIDs...),
 			AllowedClaudeProviderIDs: append([]int64{}, key.AllowedClaudeProviderIDs...),
 			AllowedGeminiProviderIDs: append([]string{}, key.AllowedGeminiProviderIDs...),
+			AllowedImageProviderIDs:  append([]int64{}, key.AllowedImageProviderIDs...),
 			ProviderBinding:          cloneRelayKeyProviderBinding(key.ProviderBinding),
 		})
 	}
@@ -297,6 +312,7 @@ func (s *CodexRelayKeyService) CreateKey(name string) (*CodexRelayKeyCreateResul
 		AllowedProviderIDs:       append([]int64{}, key.AllowedProviderIDs...),
 		AllowedClaudeProviderIDs: append([]int64{}, key.AllowedClaudeProviderIDs...),
 		AllowedGeminiProviderIDs: append([]string{}, key.AllowedGeminiProviderIDs...),
+		AllowedImageProviderIDs:  append([]int64{}, key.AllowedImageProviderIDs...),
 	}, nil
 }
 
@@ -431,6 +447,14 @@ func (s *CodexRelayKeyService) UpdateAllowedProviderIDs(id string, providerIDs [
 func (s *CodexRelayKeyService) UpdateAllowedClaudeProviderIDs(id string, providerIDs []int64) error {
 	return s.updateAllowlist(id, providerIDs, func(key *CodexRelayKey, ids []int64) {
 		key.AllowedClaudeProviderIDs = ids
+	})
+}
+
+// UpdateAllowedImageProviderIDs replaces the GPT image provider allowlist for
+// one key. An empty list means unrestricted access.
+func (s *CodexRelayKeyService) UpdateAllowedImageProviderIDs(id string, providerIDs []int64) error {
+	return s.updateAllowlist(id, providerIDs, func(key *CodexRelayKey, ids []int64) {
+		key.AllowedImageProviderIDs = ids
 	})
 }
 
@@ -803,6 +827,14 @@ func (s *CodexRelayKeyService) loadLocked() (*codexRelayKeyStore, error) {
 			key.AllowedClaudeProviderIDs = normalizedClaude
 			changed = true
 		}
+		normalizedImage, err := NormalizeCodexAllowedProviderIDs(key.AllowedImageProviderIDs)
+		if err != nil {
+			return nil, fmt.Errorf("Codex relay key %q image provider access is invalid: %w", key.ID, err)
+		}
+		if !equalInt64Slices(key.AllowedImageProviderIDs, normalizedImage) {
+			key.AllowedImageProviderIDs = normalizedImage
+			changed = true
+		}
 		normalizedGemini := NormalizeGeminiAllowedProviderIDs(key.AllowedGeminiProviderIDs)
 		if !equalStringSlices(key.AllowedGeminiProviderIDs, normalizedGemini) {
 			key.AllowedGeminiProviderIDs = normalizedGemini
@@ -876,6 +908,7 @@ func cloneCodexRelayKey(key CodexRelayKey) CodexRelayKey {
 	key.AllowedProviderIDs = append([]int64(nil), key.AllowedProviderIDs...)
 	key.AllowedClaudeProviderIDs = append([]int64(nil), key.AllowedClaudeProviderIDs...)
 	key.AllowedGeminiProviderIDs = append([]string(nil), key.AllowedGeminiProviderIDs...)
+	key.AllowedImageProviderIDs = append([]int64(nil), key.AllowedImageProviderIDs...)
 	key.ProviderBinding = cloneRelayKeyProviderBinding(key.ProviderBinding)
 	return key
 }
@@ -889,7 +922,8 @@ func cloneRelayKeyProviderBinding(binding *RelayKeyProviderBinding) *RelayKeyPro
 }
 
 func isBindableRelayProviderKind(kind string) bool {
-	return kind == ProviderKindCodex || kind == ProviderKindClaude || kind == ProviderKindGemini
+	return kind == ProviderKindCodex || kind == ProviderKindClaude || kind == ProviderKindGemini ||
+		kind == ProviderKindGPTImage
 }
 
 func equalStringSlices(left, right []string) bool {

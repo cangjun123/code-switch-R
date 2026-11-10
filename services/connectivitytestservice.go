@@ -105,27 +105,30 @@ func (cts *ConnectivityTestService) TestProvider(ctx context.Context, provider P
 		LastChecked:  time.Now(),
 	}
 
-	// 构建测试请求
-	reqBody, contentField := cts.buildTestRequest(platform, &provider)
-	if reqBody == nil {
-		result.Status = StatusMissing
-		result.Message = "未配置测试模型，请在供应商设置中配置 ConnectivityTestModel"
-		return result
-	}
-
 	// 根据用户配置的端点拼接目标 URL
 	targetURL := cts.buildTargetURL(&provider, platform)
-	upstreamProtocol := provider.ResolveUpstreamProtocol(cts.getEffectiveEndpoint(&provider, platform))
+	effectiveEndpoint := cts.getEffectiveEndpoint(&provider, platform)
+	upstreamProtocol := provider.ResolveUpstreamProtocol(effectiveEndpoint)
 	authType := cts.getEffectiveAuthType(&provider, platform)
 
-	// 调试日志：打印最终请求信息
-	fmt.Printf("[DEBUG] 连通性测试请求:\n")
-	fmt.Printf("  targetURL: %s\n", targetURL)
-	fmt.Printf("  authType:  %s\n", authType)
-	fmt.Printf("  reqBody:   %s\n", string(reqBody))
-
-	// 创建 HTTP 请求
-	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(reqBody))
+	// 构建测试请求：模型列表端点以 GET 探测（生图供应商默认，不产生计费）
+	var req *http.Request
+	var err error
+	contentField := ""
+	if isModelListProbeEndpoint(effectiveEndpoint) {
+		// 模型列表格式各异（OpenAI: data，Gemini: models），仅按状态码判定
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	} else {
+		var reqBody []byte
+		reqBody, contentField = cts.buildTestRequest(platform, &provider)
+		if reqBody == nil {
+			result.Status = StatusMissing
+			result.Message = "未配置测试模型，请在供应商设置中配置 ConnectivityTestModel"
+			return result
+		}
+		fmt.Printf("[DEBUG] 连通性测试请求: targetURL=%s authType=%s reqBody=%s\n", targetURL, authType, string(reqBody))
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(reqBody))
+	}
 	if err != nil {
 		result.Message = fmt.Sprintf("创建请求失败: %v", err)
 		result.SubStatus = SubStatusNetworkError
@@ -133,7 +136,9 @@ func (cts *ConnectivityTestService) TestProvider(ctx context.Context, provider P
 	}
 
 	// 设置 Headers
-	req.Header.Set("Content-Type", "application/json")
+	if req.Method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if provider.APIKey != "" {
 		// authType 已在上方获取
 		authTypeLower := strings.ToLower(authType)
@@ -237,7 +242,10 @@ func resolveConnectivityEndpoint(provider *Provider, platform string) string {
 	case "codex":
 		return provider.ResolveOpenAIUpstreamEndpoint("/responses")
 	case "gpt-image":
-		return "/v1/images/generations"
+		// 默认探测模型列表，避免每次测试都真实生图计费
+		return defaultImageProbeEndpoint
+	case ProviderKindGemini:
+		return geminiProbeEndpointTemplate
 	default:
 		return "/v1/chat/completions"
 	}
@@ -249,6 +257,10 @@ func (cts *ConnectivityTestService) getEffectiveAuthType(provider *Provider, pla
 	authType := strings.TrimSpace(provider.ConnectivityAuthType)
 	if authType != "" {
 		return authType
+	}
+	// Gemini 原生 API 使用 x-goog-api-key（与 relay 转发一致）
+	if strings.EqualFold(platform, ProviderKindGemini) {
+		return geminiProbeAuthHeader
 	}
 	// 平台默认认证方式：统一使用 Bearer，与实际 relay 行为一致
 	return "bearer"
@@ -263,6 +275,10 @@ func (cts *ConnectivityTestService) buildTestRequest(platform string, provider *
 
 	// 获取有效端点（含平台默认值）
 	endpoint := strings.ToLower(cts.getEffectiveEndpoint(provider, platform))
+
+	if strings.EqualFold(platform, ProviderKindGemini) || isGeminiProbeEndpoint(endpoint) {
+		return buildGeminiProbeRequest("hi", 1), "candidates"
+	}
 
 	if strings.ToLower(platform) == "gpt-image" || strings.Contains(endpoint, "/images/generations") {
 		reqBody := map[string]interface{}{
@@ -393,7 +409,11 @@ func (cts *ConnectivityTestService) truncateMessage(msg string) string {
 
 // buildTargetURL 根据用户配置的端点构建目标 URL（v1 段规整与 relay 转发一致）
 func (cts *ConnectivityTestService) buildTargetURL(provider *Provider, platform string) string {
-	return joinURL(provider.APIURL, cts.getEffectiveEndpoint(provider, platform))
+	endpoint := cts.getEffectiveEndpoint(provider, platform)
+	if strings.EqualFold(platform, ProviderKindGemini) || isGeminiProbeEndpoint(endpoint) {
+		endpoint = resolveGeminiProbeEndpoint(endpoint, cts.getEffectiveModel(provider, platform), false)
+	}
+	return joinURL(provider.APIURL, endpoint)
 }
 
 func (cts *ConnectivityTestService) getEffectiveModel(provider *Provider, platform string) string {
@@ -421,6 +441,8 @@ func (cts *ConnectivityTestService) getEffectiveModel(provider *Provider, platfo
 			return mapped
 		}
 		return defaultOpenAIImageModel
+	case ProviderKindGemini:
+		return geminiDefaultProbeModel(provider)
 	default:
 		return ""
 	}
@@ -685,8 +707,7 @@ func (cts *ConnectivityTestService) stopAutoTest() {
 
 // runAllPlatformTests 执行所有平台的测试
 func (cts *ConnectivityTestService) runAllPlatformTests() {
-	// 仅轮询 ProviderService 支持的平台，避免无意义的错误日志
-	// Gemini 使用独立的 GeminiService，暂未接入
+	// 仅轮询 ProviderService 支持的平台（含经 GeminiService 适配的 Gemini）
 	for _, platform := range providerServicePlatforms {
 		cts.TestAll(platform)
 	}

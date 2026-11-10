@@ -274,6 +274,7 @@
             :connectivity-indicator-class="getConnectivityIndicatorClass(card.id)"
             :connectivity-tooltip="getConnectivityTooltip(card.id)"
             :show-model-trace-button="showModelTraceButton"
+            :show-pelican-test-button="showPelicanTestButton"
             :supports-dedicated-key="isDedicatedKeyTab(activeTab)"
             :dedicated-key="dedicatedKeyFor(activeTab, card)"
             @dragstart="onDragStart"
@@ -818,6 +819,10 @@ interface GeminiProvider {
   supportedModels?: { [_ in string]?: boolean }
   modelMapping?: { [_ in string]?: string }
   neverBlacklist?: boolean
+  numericId?: number // 后端分配的稳定数字 ID（可用性监控/连通性测试按此寻址）
+  availabilityMonitorEnabled?: boolean
+  connectivityAutoBlacklist?: boolean
+  availabilityConfig?: AutomationCard['availabilityConfig']
 }
 
 const tabs = [
@@ -841,7 +846,8 @@ const draggingId = ref<number | null>(null)
 
 // Gemini Provider 到 AutomationCard 的转换
 const geminiToCard = (provider: GeminiProvider, index: number): AutomationCard => ({
-  id: 300 + index, // Gemini 使用 300+ 的 ID 范围
+  // 优先使用后端稳定的 numericId；旧数据缺失时回退到 300+index
+  id: provider.numericId || 300 + index,
   upstreamInfo: provider.upstreamInfo,
   sourceProviderId: provider.id,
   name: provider.name,
@@ -857,10 +863,9 @@ const geminiToCard = (provider: GeminiProvider, index: number): AutomationCard =
   supportedModels: (provider.supportedModels || {}) as Record<string, boolean>,
   modelMapping: (provider.modelMapping || {}) as Record<string, string>,
   neverBlacklist: !!provider.neverBlacklist,
-  // 可用性监控配置（Gemini 暂不支持，使用默认值）
-  availabilityMonitorEnabled: false,
-  connectivityAutoBlacklist: false,
-  availabilityConfig: undefined,
+  availabilityMonitorEnabled: !!provider.availabilityMonitorEnabled,
+  connectivityAutoBlacklist: !!provider.connectivityAutoBlacklist,
+  availabilityConfig: provider.availabilityConfig,
 })
 
 // AutomationCard 到 Gemini Provider 的转换
@@ -877,7 +882,9 @@ const cardToGemini = (card: AutomationCard, original: GeminiProvider): GeminiPro
   supportedModels: card.supportedModels || {},
   modelMapping: card.modelMapping || {},
   neverBlacklist: !!card.neverBlacklist,
-  // 注意：Gemini 不支持可用性监控配置，这些字段不会保存
+  availabilityMonitorEnabled: !!card.availabilityMonitorEnabled,
+  connectivityAutoBlacklist: !!card.connectivityAutoBlacklist,
+  availabilityConfig: card.availabilityConfig,
 })
 
 const upstreamInfoRevision = ref(0)
@@ -897,11 +904,13 @@ const serializeProviders = (providers: AutomationCard[]) =>
     availabilityMonitorEnabled: !!provider.availabilityMonitorEnabled,
     connectivityAutoBlacklist: !!provider.connectivityAutoBlacklist,
     neverBlacklist: !!provider.neverBlacklist,
+    // 保留可用性页面设置的全部字段（maxTokens/stream 等）；timeout 为 0 表示使用后端按端点区分的默认值
     availabilityConfig: provider.availabilityConfig
       ? {
+          ...provider.availabilityConfig,
           testModel: provider.availabilityConfig.testModel || '',
           testEndpoint: provider.availabilityConfig.testEndpoint || '',
-          timeout: provider.availabilityConfig.timeout || 15000,
+          timeout: provider.availabilityConfig.timeout || 0,
         }
       : undefined,
     // 清除旧连通性字段（避免再次写入配置文件）
@@ -970,15 +979,22 @@ const persistProviders = async (tabId: ProviderTab): Promise<{ ok: boolean; erro
             supportedModels: card.supportedModels || {},
             modelMapping: card.modelMapping || {},
             neverBlacklist: !!card.neverBlacklist,
+            availabilityMonitorEnabled: !!card.availabilityMonitorEnabled,
+            connectivityAutoBlacklist: !!card.connectivityAutoBlacklist,
+            availabilityConfig: card.availabilityConfig,
           }
           await AddGeminiProvider(newProvider)
           card.sourceProviderId = newProvider.id
         }
       }
 
-      // 4. 刷新缓存
+      // 4. 刷新缓存，并同步后端分配的稳定数字 ID（可用性/连通性结果按此 ID 关联）
       const updatedProviders = await GetGeminiProviders()
       geminiProvidersCache.value = updatedProviders
+      for (const card of cards.gemini) {
+        const numericId = updatedProviders.find(p => p.id === card.sourceProviderId)?.numericId
+        if (numericId) card.id = numericId
+      }
 
       // 5. 保存排序：按 cards.gemini 的顺序构建 ID 列表
       const updatedIds = new Set(updatedProviders.map(p => p.id))
@@ -1642,6 +1658,7 @@ onMounted(async () => {
   void loadDedicatedKeys('codex')
   void loadDedicatedKeys('claude')
   void loadDedicatedKeys('gemini')
+  void loadDedicatedKeys('gpt-image')
   await Promise.all(providerTabIds.map(refreshProxyState))
   await Promise.all(providerTabIds.map((tab) => refreshDirectAppliedStatus(tab)))
   await Promise.all(providerTabIds.map((tab) => loadProviderStats(tab)))
@@ -1761,13 +1778,16 @@ const getDefaultEndpoint = (platform: string, upstreamProtocol = 'auto', openAIE
   }
   const defaults: Record<string, string> = {
     claude: '/v1/messages',
-    'gpt-image': '/v1/images/generations',
+    // 生图供应商默认探测模型列表（GET，不计费）；需要验证真实生图时可手动改为 /v1/images/generations
+    'gpt-image': '/v1/models',
+    // {model} 由后端替换为测试模型
+    gemini: '/v1beta/models/{model}:generateContent',
   }
   return defaults[platform] || '/v1/chat/completions'
 }
 
-// 获取平台默认认证方式（默认 Bearer，与 v2.2.x 保持一致）
-const getDefaultAuthType = (_platform: string) => 'bearer'
+// 获取平台默认认证方式（默认 Bearer，与 v2.2.x 保持一致；Gemini 原生 API 使用 x-goog-api-key）
+const getDefaultAuthType = (platform: string) => (platform === 'gemini' ? 'x-goog-api-key' : 'bearer')
 
 // 手动测试连通性
 const handleTestConnectivity = async () => {
@@ -1895,6 +1915,8 @@ type VendorForm = {
     testModel?: string
     testEndpoint?: string
     timeout?: number
+    maxTokens?: number
+    stream?: boolean
   }
   // === 旧连通性字段（已废弃） ===
   /** @deprecated */
@@ -2002,7 +2024,7 @@ const defaultFormValues = (platform?: string): VendorForm => ({
   availabilityConfig: {
     testModel: '',
     testEndpoint: getDefaultEndpoint(platform || 'claude', 'auto', 'auto'),
-    timeout: 15000,
+    timeout: 0,
   },
   // 旧连通性字段（已废弃，置空）
   connectivityCheck: false,
@@ -2082,8 +2104,11 @@ const openAIEndpointModeOptions = computed(() => [
   { value: 'both', label: t('components.main.form.openAIEndpointMode.both'), desc: t('components.main.form.openAIEndpointMode.bothDesc') },
 ])
 
+// Gemini 编辑弹窗不提供认证方式选择，固定使用 x-goog-api-key
 const resolveEffectiveAuthType = () =>
-  customAuthHeader.value.trim() || selectedAuthType.value || getDefaultAuthType(modalState.tabId)
+  modalState.tabId === 'gemini'
+    ? getDefaultAuthType('gemini')
+    : customAuthHeader.value.trim() || selectedAuthType.value || getDefaultAuthType(modalState.tabId)
 
 const editingCard = ref<AutomationCard | null>(null)
 const confirmState = reactive({ open: false, card: null as AutomationCard | null, tabId: tabs[0].id as ProviderTab })
@@ -2140,7 +2165,9 @@ const openEditModal = (card: AutomationCard) => {
         card.availabilityConfig?.testEndpoint ||
         card.connectivityTestEndpoint ||
         getDefaultEndpoint(activeTab.value, card.upstreamProtocol || 'auto', card.openAIEndpointMode || 'auto'),
-      timeout: card.availabilityConfig?.timeout || 15000,
+      timeout: card.availabilityConfig?.timeout || 0,
+      maxTokens: card.availabilityConfig?.maxTokens,
+      stream: card.availabilityConfig?.stream,
     },
     // 旧连通性字段不再写入表单
     connectivityCheck: false,
@@ -2196,14 +2223,17 @@ const closeConfirm = () => {
 }
 
 // 模型真伪检测弹窗状态
-// 仅 claude / codex / others（已选自定义工具）平台支持：这些平台的 provider
-// 有配置文件与稳定 ID；Gemini 卡片 ID 是前端合成的（300+index），gpt-image 不在指纹场景
+// 仅 claude / codex / others（已选自定义工具）平台支持：指纹库只覆盖 GPT/Claude 模型，
+// Gemini 与 gpt-image 不在指纹场景
 const showModelTraceButton = computed(
   () =>
     activeTab.value === 'claude' ||
     activeTab.value === 'codex' ||
     (activeTab.value === 'others' && !!selectedToolId.value),
 )
+
+// 鹈鹕测试只依赖文本生成，额外支持 Gemini（卡片 ID 为后端稳定的 numericId）
+const showPelicanTestButton = computed(() => showModelTraceButton.value || activeTab.value === 'gemini')
 
 const modelTraceState = reactive({
   open: false,
@@ -2320,7 +2350,9 @@ const submitModal = async (): Promise<boolean> => {
         testEndpoint:
           modalState.form.availabilityConfig?.testEndpoint ||
           getDefaultEndpoint(modalState.tabId, modalState.form.upstreamProtocol || 'auto', modalState.form.openAIEndpointMode || 'auto'),
-        timeout: modalState.form.availabilityConfig?.timeout || 15000,
+        timeout: modalState.form.availabilityConfig?.timeout || 0,
+        maxTokens: modalState.form.availabilityConfig?.maxTokens,
+        stream: modalState.form.availabilityConfig?.stream,
       },
       // 旧连通性字段清空（避免再次写入）
       connectivityCheck: false,
@@ -2373,7 +2405,9 @@ const submitModal = async (): Promise<boolean> => {
         testEndpoint:
           modalState.form.availabilityConfig?.testEndpoint ||
           getDefaultEndpoint(modalState.tabId, modalState.form.upstreamProtocol || 'auto', modalState.form.openAIEndpointMode || 'auto'),
-        timeout: modalState.form.availabilityConfig?.timeout || 15000,
+        timeout: modalState.form.availabilityConfig?.timeout || 0,
+        maxTokens: modalState.form.availabilityConfig?.maxTokens,
+        stream: modalState.form.availabilityConfig?.stream,
       },
       // 旧连通性字段清空
       connectivityCheck: false,
@@ -2468,10 +2502,11 @@ const remove = async (id: number, tabId: ProviderTab = activeTab.value) => {
   }
 }
 
-// 供应商专属 Key：Claude/Codex 按数字 providerId、Gemini 按字符串 ID 记录脱敏后的 Key
-const dedicatedKeys = reactive<Record<RelayProviderKind, Record<string, string>>>({ codex: {}, claude: {}, gemini: {} })
+// 供应商专属 Key：Claude/Codex/GPT 生图按数字 providerId、Gemini 按字符串 ID 记录脱敏后的 Key
+const dedicatedKeys = reactive<Record<RelayProviderKind, Record<string, string>>>({ codex: {}, claude: {}, gemini: {}, 'gpt-image': {} })
 
-const isDedicatedKeyTab = (tab: ProviderTab): tab is RelayProviderKind => tab === 'codex' || tab === 'claude' || tab === 'gemini'
+const isDedicatedKeyTab = (tab: ProviderTab): tab is RelayProviderKind =>
+  tab === 'codex' || tab === 'claude' || tab === 'gemini' || tab === 'gpt-image'
 
 // Gemini 卡片 id 是前端生成的序号，真实 ID 在 sourceProviderId
 const dedicatedKeyProvider = (tab: RelayProviderKind, card: AutomationCard): string =>

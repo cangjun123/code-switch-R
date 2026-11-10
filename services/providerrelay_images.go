@@ -70,7 +70,16 @@ func (prs *ProviderRelayService) openAIImagesProxyHandler(endpoint string) gin.H
 		model := extractOpenAIImagesModel(c.Request, body)
 		c.Set(requestedModelContextKey, model)
 		streamRequested := openAIImagesStreamRequested(c.Request, body)
-		candidates, skipped, err := prs.openAIImageProviderCandidates(model)
+		relayKey, err := prs.relayKeyForRequest(c)
+		if err != nil {
+			writeOpenAIQuotaServiceError(c, http.StatusUnauthorized, "relay_key_not_found", "relay key no longer exists")
+			return
+		}
+		candidates, skipped, err := prs.openAIImageProviderCandidates(model, relayKey)
+		if errors.Is(err, errImageProviderAccessDenied) {
+			writeOpenAIImageProviderAccessDenied(c)
+			return
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load providers"})
 			return
@@ -94,7 +103,7 @@ func (prs *ProviderRelayService) openAIImagesProxyHandler(endpoint string) gin.H
 		var lastKind string
 		totalAttempts := 0
 
-		for _, candidate := range candidates {
+		for candidateIndex, candidate := range candidates {
 			totalAttempts++
 			lastProvider = candidate.provider.Name
 			lastKind = candidate.kind
@@ -159,18 +168,42 @@ func (prs *ProviderRelayService) openAIImagesProxyHandler(endpoint string) gin.H
 				fmt.Printf("[Images] 客户端中断，停止重试: %s/%s\n", candidate.kind, candidate.provider.Name)
 				return
 			}
-			if prs.blacklistService != nil {
+			// 内容审核/参数错误等请求问题（400/413）换供应商可能通过，但不计入拉黑
+			var statusErr *upstreamStatusError
+			if errors.As(err, &statusErr) && statusErr.isClientRequestError() {
+				fmt.Printf("[Images] 请求被 %s 拒绝（HTTP %d），不计入失败\n", candidate.provider.Name, statusErr.StatusCode)
+			} else if prs.blacklistService != nil {
 				if err := prs.blacklistService.RecordFailure(candidate.kind, candidate.provider.Name); err != nil {
 					fmt.Printf("[Images] 记录失败到黑名单失败: %v\n", err)
 				}
 			}
 			fmt.Printf("[Images] ✗ %s/%s 失败 | endpoint=%s | 错误: %v | 耗时: %.2fs\n",
 				candidate.kind, candidate.provider.Name, effectiveEndpoint, err, duration.Seconds())
+
+			// 发送切换通知（与 Claude/Codex 降级一致）
+			if prs.notificationService != nil && candidateIndex+1 < len(candidates) {
+				reason := "unknown upstream error"
+				if err != nil {
+					reason = truncateErrorMessage(err.Error())
+				}
+				prs.notificationService.NotifyProviderSwitch(SwitchNotification{
+					FromProvider: candidate.provider.Name,
+					ToProvider:   candidates[candidateIndex+1].provider.Name,
+					Reason:       reason,
+					Platform:     candidate.kind,
+				})
+			}
 		}
 
+		// 最后一个错误是请求本身的问题时原样返回上游状态码和错误体，客户端能看到真实原因（如内容审核）
+		var statusErr *upstreamStatusError
+		if errors.As(lastErr, &statusErr) && statusErr.isClientRequestError() && statusErr.Body != "" {
+			c.Data(statusErr.StatusCode, firstNonEmpty(statusErr.ContentType, "application/json"), []byte(statusErr.Body))
+			return
+		}
 		errorMsg := "unknown upstream error"
 		if lastErr != nil {
-			errorMsg = lastErr.Error()
+			errorMsg = truncateErrorMessage(lastErr.Error())
 		}
 		c.JSON(http.StatusBadGateway, gin.H{
 			"error":          fmt.Sprintf("all image providers failed, last error: %s", errorMsg),
@@ -181,7 +214,22 @@ func (prs *ProviderRelayService) openAIImagesProxyHandler(endpoint string) gin.H
 	}
 }
 
-func (prs *ProviderRelayService) openAIImageProviderCandidates(model string) ([]imageProviderCandidate, int, error) {
+// errImageProviderAccessDenied relay key 的图片供应商白名单/专属绑定不允许访问任何已配置的供应商
+var errImageProviderAccessDenied = errors.New("relay key is not allowed to access any configured image provider")
+
+func writeOpenAIImageProviderAccessDenied(c *gin.Context) {
+	c.JSON(http.StatusForbidden, gin.H{
+		"error": gin.H{
+			"message": "Relay key is not allowed to access any configured image provider",
+			"type":    "invalid_request_error",
+			"param":   nil,
+			"code":    "provider_access_denied",
+		},
+	})
+}
+
+// openAIImageProviderCandidates 返回可处理该模型的图片供应商（已按 relay key 白名单过滤、按 Level 排序）
+func (prs *ProviderRelayService) openAIImageProviderCandidates(model string, relayKey *CodexRelayKey) ([]imageProviderCandidate, int, error) {
 	candidates := make([]imageProviderCandidate, 0)
 	skipped := 0
 
@@ -189,6 +237,12 @@ func (prs *ProviderRelayService) openAIImageProviderCandidates(model string) ([]
 	if err != nil {
 		return nil, skipped, err
 	}
+	allowlist, restricted := relayKeyProviderAccess(relayKey, ProviderKindGPTImage)
+	providers, accessSkipped := filterProvidersByAllowlist(allowlist, restricted, providers)
+	if restricted && len(providers) == 0 {
+		return nil, skipped, errImageProviderAccessDenied
+	}
+	skipped += accessSkipped
 
 	active := make([]Provider, 0, len(providers))
 	for _, provider := range providers {
@@ -246,7 +300,9 @@ func orderProvidersForRelay(kind string, providers []Provider, prs *ProviderRela
 	sort.Ints(levels)
 
 	ordered := make([]Provider, 0, len(providers))
-	roundRobin := prs != nil && prs.isRoundRobinEnabled()
+	// 图片请求每个供应商只尝试一次（重试会重复计费且耗时长），
+	// 因此拉黑模式下也按轮询设置分摊负载
+	roundRobin := prs != nil && prs.isRoundRobinSettingEnabled()
 	for _, level := range levels {
 		group := levelGroups[level]
 		if roundRobin {
@@ -727,20 +783,22 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 		if err != nil {
 			return false, err
 		}
-		captureResponseModel(string(body), requestLog)
+		CodexParseTokenUsageFromResponse(string(body), requestLog)
 		copyOpenAIImageResponseHeaders(c.Writer.Header(), resp.Header)
 		c.Data(resp.StatusCode, firstNonEmpty(resp.Header.Get("Content-Type"), "application/json"), body)
 		return true, nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, codexErrorBodyMaxBytes))
 	if err != nil {
 		return false, err
 	}
-	if len(body) > 512 {
-		body = append(body[:512], []byte("...")...)
+	setRequestLogError(requestLog, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
+	return false, &upstreamStatusError{
+		StatusCode:  resp.StatusCode,
+		Body:        strings.TrimSpace(string(body)),
+		ContentType: resp.Header.Get("Content-Type"),
 	}
-	return false, fmt.Errorf("upstream status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
 const asyncImagePollTimeout = 30 * time.Minute // 异步生图任务最长等待时间（官方示例约 5 分钟，复杂任务/图编辑可能更久，留足余量）
@@ -763,7 +821,7 @@ func (prs *ProviderRelayService) handleAsyncImageResponse(
 		return false, err
 	}
 
-	captureResponseModel(string(createBody), requestLog)
+	CodexParseTokenUsageFromResponse(string(createBody), requestLog)
 	taskID := strings.TrimSpace(gjson.GetBytes(createBody, "id").String())
 	if taskID == "" {
 		// 兜底：上游已直接返回完整 OpenAI 响应（含 data 数组），原样透传
@@ -794,7 +852,7 @@ func (prs *ProviderRelayService) handleAsyncImageResponse(
 		return false, fmt.Errorf("异步生图任务未成功 (task=%s, state=%s)", taskID, state)
 	}
 
-	captureResponseModel(string(taskBody), requestLog)
+	CodexParseTokenUsageFromResponse(string(taskBody), requestLog)
 	openAIBody, err := buildOpenAIImageResponseFromTask(taskBody)
 	if err != nil {
 		return false, fmt.Errorf("异步生图结果转换失败 (task=%s): %w", taskID, err)
@@ -965,7 +1023,7 @@ func streamOpenAIImageResponse(w http.ResponseWriter, resp *http.Response, force
 		flusher.Flush()
 	}
 
-	observer := newResponseModelObserver(requestLog)
+	observer := newResponseUsageObserver(requestLog)
 	defer observer.Finish()
 	buf := make([]byte, 32*1024)
 	for {
@@ -1026,7 +1084,7 @@ func (prs *ProviderRelayService) writeRelayRequestLog(requestLog *ReqeustLog, st
 	writeAttemptLog(requestLog, start)
 }
 
-func (prs *ProviderRelayService) appendConfiguredImageModelsToModelList(body []byte, kind string) []byte {
+func (prs *ProviderRelayService) appendConfiguredImageModelsToModelList(body []byte, kind string, relayKey *CodexRelayKey) []byte {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return body
@@ -1053,7 +1111,7 @@ func (prs *ProviderRelayService) appendConfiguredImageModelsToModelList(body []b
 		}
 	}
 
-	for _, model := range prs.configuredImageModels(kind) {
+	for _, model := range prs.configuredImageModels(kind, relayKey) {
 		if seen[model] {
 			continue
 		}
@@ -1066,7 +1124,7 @@ func (prs *ProviderRelayService) appendConfiguredImageModelsToModelList(body []b
 		seen[model] = true
 	}
 
-	if len(payload.Data) == 0 || seen[defaultOpenAIImageModel] || !prs.hasOpenAIImageProvider(defaultOpenAIImageModel) {
+	if len(payload.Data) == 0 || seen[defaultOpenAIImageModel] || !prs.hasOpenAIImageProvider(defaultOpenAIImageModel, relayKey) {
 		encoded, err := json.Marshal(payload)
 		if err != nil {
 			return body
@@ -1097,7 +1155,8 @@ func (prs *ProviderRelayService) writeConfiguredImageModelsResponse(c *gin.Conte
 	if err != nil {
 		return false
 	}
-	body = prs.appendConfiguredImageModelsToModelList(body, kind)
+	relayKey, _ := prs.relayKeyForRequest(c)
+	body = prs.appendConfiguredImageModelsToModelList(body, kind, relayKey)
 	if !strings.Contains(string(body), `"id"`) {
 		return false
 	}
@@ -1105,18 +1164,21 @@ func (prs *ProviderRelayService) writeConfiguredImageModelsResponse(c *gin.Conte
 	return true
 }
 
-func (prs *ProviderRelayService) hasOpenAIImageProvider(model string) bool {
-	candidates, _, err := prs.openAIImageProviderCandidates(model)
+func (prs *ProviderRelayService) hasOpenAIImageProvider(model string, relayKey *CodexRelayKey) bool {
+	candidates, _, err := prs.openAIImageProviderCandidates(model, relayKey)
 	return err == nil && len(candidates) > 0
 }
 
-func (prs *ProviderRelayService) configuredImageModels(preferredKind string) []string {
+// configuredImageModels 列出 relay key 可访问的图片供应商上配置的图片模型
+func (prs *ProviderRelayService) configuredImageModels(preferredKind string, relayKey *CodexRelayKey) []string {
 	seenModel := map[string]bool{}
 	models := make([]string, 0)
 	providers, err := prs.providerService.LoadProviders(ProviderKindGPTImage)
 	if err != nil {
 		return models
 	}
+	allowlist, restricted := relayKeyProviderAccess(relayKey, ProviderKindGPTImage)
+	providers, _ = filterProvidersByAllowlist(allowlist, restricted, providers)
 	for _, provider := range providers {
 		if !provider.Enabled || provider.APIURL == "" || provider.APIKey == "" {
 			continue

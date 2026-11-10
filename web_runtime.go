@@ -85,7 +85,7 @@ func newAppRuntime() (*appRuntime, error) {
 	providerService.SetProvidersSavedHook(func(kind string, providers []services.Provider) {
 		pruneProviderRelayKeys(codexRelayKeys, kind, providers)
 	})
-	for _, kind := range []string{services.ProviderKindCodex, services.ProviderKindClaude} {
+	for _, kind := range []string{services.ProviderKindCodex, services.ProviderKindClaude, services.ProviderKindGPTImage} {
 		if providers, err := providerService.LoadProviders(kind); err == nil {
 			pruneProviderRelayKeys(codexRelayKeys, kind, providers)
 		} else {
@@ -108,6 +108,7 @@ func newAppRuntime() (*appRuntime, error) {
 	providerService.SetBlacklistService(blacklistService)
 	geminiService := services.NewGeminiService(relayAddr, codexRelayKeys)
 	blacklistService.SetGeminiService(geminiService)
+	providerService.SetGeminiSource(geminiService)
 	geminiService.SetProvidersSavedHook(func(providers []services.GeminiProvider) {
 		pruneGeminiProviderRelayKeys(codexRelayKeys, providers)
 	})
@@ -122,7 +123,9 @@ func newAppRuntime() (*appRuntime, error) {
 	promptService := services.NewPromptService()
 	envCheckService := services.NewEnvCheckService()
 	importService := services.NewImportService(providerService, mcpService)
+	importService.SetGeminiService(geminiService)
 	deeplinkService := services.NewDeepLinkService(providerService)
+	deeplinkService.SetGeminiService(geminiService)
 	speedTestService := services.NewSpeedTestService()
 	connectivityTestService := services.NewConnectivityTestService(providerService, blacklistService, settingsService)
 	healthCheckService := services.NewHealthCheckService(providerService, blacklistService, settingsService)

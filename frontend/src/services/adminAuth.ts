@@ -40,6 +40,7 @@ export type CodexRelayKeyListItem = {
   allowedProviderIds: number[]
   allowedClaudeProviderIds: number[]
   allowedGeminiProviderIds: string[]
+  allowedImageProviderIds: number[]
   providerBinding?: RelayKeyProviderBinding
   quota?: CodexRelayQuotaStatus
 }
@@ -56,9 +57,10 @@ export type CodexRelayKeyCreateResult = {
   allowedProviderIds: number[]
   allowedClaudeProviderIds: number[]
   allowedGeminiProviderIds: string[]
+  allowedImageProviderIds: number[]
 }
 
-export type RelayProviderKind = 'codex' | 'claude' | 'gemini'
+export type RelayProviderKind = 'codex' | 'claude' | 'gemini' | 'gpt-image'
 
 // Gemini providers use string IDs and are identified by providerRef.
 export type RelayKeyProviderBinding = {
@@ -289,6 +291,11 @@ export async function listClaudeRelayProviders(): Promise<CodexRelayProviderOpti
   return response.providers ?? []
 }
 
+export async function listImageRelayProviders(): Promise<CodexRelayProviderOption[]> {
+  const response = await adminRequest<{ providers?: CodexRelayProviderOption[] }>('/api/admin/gpt-image-providers')
+  return response.providers ?? []
+}
+
 export type GeminiRelayProviderOption = {
   id: string
   name: string
@@ -309,6 +316,7 @@ export async function createCodexRelayKey(
     allowedProviderIds?: number[]
     allowedClaudeProviderIds?: number[]
     allowedGeminiProviderIds?: string[]
+    allowedImageProviderIds?: number[]
   },
 ): Promise<CodexRelayKeyCreateResult> {
   return adminRequest<CodexRelayKeyCreateResult>('/api/admin/codex-keys', {
@@ -370,6 +378,14 @@ export async function updateCodexRelayKeyClaudeProviders(id: string, allowedClau
     body: JSON.stringify({ allowedClaudeProviderIds }),
   })
   return response.allowedClaudeProviderIds ?? []
+}
+
+export async function updateCodexRelayKeyImageProviders(id: string, allowedImageProviderIds: number[]): Promise<number[]> {
+  const response = await adminRequest<{ allowedImageProviderIds?: number[] }>(`/api/admin/codex-keys/${encodeURIComponent(id)}/image-providers`, {
+    method: 'PATCH',
+    body: JSON.stringify({ allowedImageProviderIds }),
+  })
+  return response.allowedImageProviderIds ?? []
 }
 
 export async function updateCodexRelayKeyGeminiProviders(id: string, allowedGeminiProviderIds: string[]): Promise<string[]> {

@@ -33,6 +33,12 @@ type DeepLinkImportRequest struct {
 // DeepLinkService 深度链接服务
 type DeepLinkService struct {
 	providerService *ProviderService
+	geminiService   *GeminiService // 可选：Gemini 供应商存储在 GeminiService 中
+}
+
+// SetGeminiService 注入 Gemini 服务，启用 Gemini 供应商深度链接导入
+func (s *DeepLinkService) SetGeminiService(gs *GeminiService) {
+	s.geminiService = gs
 }
 
 // NewDeepLinkService 创建深度链接服务
@@ -185,6 +191,11 @@ func (s *DeepLinkService) ImportProviderFromDeepLink(request *DeepLinkImportRequ
 		return "", fmt.Errorf("Homepage 是必需的（在 URL 或配置文件中）")
 	}
 
+	// Gemini 供应商由 GeminiService 管理（字符串 ID）
+	if merged.App == "gemini" {
+		return s.importGeminiProvider(merged)
+	}
+
 	// 3. 根据 app 类型构建 Provider
 	provider, err := s.buildProviderFromRequest(merged)
 	if err != nil {
@@ -198,9 +209,6 @@ func (s *DeepLinkService) ImportProviderFromDeepLink(request *DeepLinkImportRequ
 		kind = "claude"
 	case "codex":
 		kind = "codex"
-	case "gemini":
-		// Gemini 暂不支持通过 ProviderService 添加，返回友好提示
-		return "", fmt.Errorf("Gemini 供应商导入暂不支持，请使用 Gemini 页面手动添加")
 	default:
 		return "", fmt.Errorf("不支持的 app 类型: %s", merged.App)
 	}
@@ -220,6 +228,33 @@ func (s *DeepLinkService) ImportProviderFromDeepLink(request *DeepLinkImportRequ
 	}
 
 	return strconv.FormatInt(provider.ID, 10), nil
+}
+
+// importGeminiProvider 通过 GeminiService 新增深度链接中的 Gemini 供应商（默认禁用）
+func (s *DeepLinkService) importGeminiProvider(request *DeepLinkImportRequest) (string, error) {
+	if s.geminiService == nil {
+		return "", fmt.Errorf("Gemini 服务未初始化")
+	}
+	provider := GeminiProvider{
+		ID:         fmt.Sprintf("gemini-deeplink-%d", time.Now().UnixNano()),
+		Name:       request.Name,
+		BaseURL:    request.Endpoint,
+		APIKey:     request.APIKey,
+		WebsiteURL: request.Homepage,
+		Category:   "custom",
+		Enabled:    false, // 与 Claude/Codex 一致：默认禁用，用户需手动启用
+		Level:      1,
+	}
+	if request.Model != nil {
+		provider.Model = strings.TrimSpace(*request.Model)
+	}
+	if request.Notes != nil {
+		provider.Description = strings.TrimSpace(*request.Notes)
+	}
+	if err := s.geminiService.AddProvider(provider); err != nil {
+		return "", fmt.Errorf("保存供应商失败: %w", err)
+	}
+	return provider.ID, nil
 }
 
 // buildProviderFromRequest 从深度链接请求构建 Provider
@@ -393,21 +428,29 @@ func (s *DeepLinkService) mergeCodexConfig(request *DeepLinkImportRequest, confi
 
 // mergeGeminiConfig 合并 Gemini 配置
 func (s *DeepLinkService) mergeGeminiConfig(request *DeepLinkImportRequest, config map[string]interface{}) {
-	// Gemini 使用扁平化的 env 结构
-	if request.APIKey == "" {
-		if apiKey, ok := config["GEMINI_API_KEY"].(string); ok {
-			request.APIKey = apiKey
+	// Gemini 使用扁平化的 env 结构（与 ~/.gemini/.env 一致），也兼容包在 env 字段中的写法
+	if env, ok := config["env"].(map[string]interface{}); ok {
+		config = env
+	}
+	firstString := func(keys ...string) string {
+		for _, key := range keys {
+			if value, ok := config[key].(string); ok && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
 		}
+		return ""
+	}
+
+	if request.APIKey == "" {
+		request.APIKey = firstString("GEMINI_API_KEY", "GOOGLE_API_KEY")
 	}
 
 	if request.Endpoint == "" {
-		if baseURL, ok := config["GEMINI_BASE_URL"].(string); ok {
-			request.Endpoint = baseURL
-		}
+		request.Endpoint = firstString("GOOGLE_GEMINI_BASE_URL", "GEMINI_BASE_URL")
 	}
 
 	if request.Model == nil {
-		if model, ok := config["GEMINI_MODEL"].(string); ok {
+		if model := firstString("GEMINI_MODEL"); model != "" {
 			request.Model = &model
 		}
 	}

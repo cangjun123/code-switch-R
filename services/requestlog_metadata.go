@@ -46,10 +46,16 @@ type responseModelObserver struct {
 	entry    *ReqeustLog
 	line     []byte
 	skipping bool
+	parse    func(string, *ReqeustLog)
 }
 
 func newResponseModelObserver(entry *ReqeustLog) *responseModelObserver {
-	return &responseModelObserver{entry: entry}
+	return &responseModelObserver{entry: entry, parse: captureResponseModel}
+}
+
+// newResponseUsageObserver 同时提取上游模型和 token 用量（usage 字段取最大值，兼容累计上报）
+func newResponseUsageObserver(entry *ReqeustLog) *responseModelObserver {
+	return &responseModelObserver{entry: entry, parse: CodexParseTokenUsageFromResponse}
 }
 
 func (o *responseModelObserver) Write(data []byte) {
@@ -78,7 +84,7 @@ func (o *responseModelObserver) Write(data []byte) {
 
 func (o *responseModelObserver) Finish() {
 	if !o.skipping {
-		parseEventPayload(string(o.line), captureResponseModel, o.entry)
+		parseEventPayload(string(o.line), o.parse, o.entry)
 	}
 	o.line = o.line[:0]
 	o.skipping = false
