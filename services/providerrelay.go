@@ -5417,7 +5417,7 @@ func (prs *ProviderRelayService) forwardModelsRequest(
 		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("读取响应失败: %v", err)})
 		return fmt.Errorf("failed to read response: %w", err)
 	}
-	body = prs.appendConfiguredImageModelsToModelList(body, kind)
+	body = prs.appendConfiguredImageModelsToModelList(body, kind, relayKey)
 
 	// 复制响应头
 	for key, values := range resp.Header {

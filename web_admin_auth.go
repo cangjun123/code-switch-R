@@ -49,6 +49,8 @@ type codexRelayKeyCreateRequest struct {
 	AllowedClaudeIDsSnake   []int64         `json:"allowed_claude_provider_ids"`
 	AllowedGeminiIDs        []string        `json:"allowedGeminiProviderIds"`
 	AllowedGeminiIDsSnake   []string        `json:"allowed_gemini_provider_ids"`
+	AllowedImageIDs         []int64         `json:"allowedImageProviderIds"`
+	AllowedImageIDsSnake    []int64         `json:"allowed_image_provider_ids"`
 }
 
 // UnmarshalJSON keeps the admin endpoint tolerant of clients that encode an
@@ -70,6 +72,8 @@ func (r *codexRelayKeyCreateRequest) UnmarshalJSON(data []byte) error {
 		AllowedClaudeIDsSnake   []int64         `json:"allowed_claude_provider_ids"`
 		AllowedGeminiIDs        []string        `json:"allowedGeminiProviderIds"`
 		AllowedGeminiIDsSnake   []string        `json:"allowed_gemini_provider_ids"`
+		AllowedImageIDs         []int64         `json:"allowedImageProviderIds"`
+		AllowedImageIDsSnake    []int64         `json:"allowed_image_provider_ids"`
 	}
 	var raw rawRequest
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -81,6 +85,7 @@ func (r *codexRelayKeyCreateRequest) UnmarshalJSON(data []byte) error {
 		AllowedProviderIDs: raw.AllowedProviderIDs, AllowedProviderIDsSnake: raw.AllowedProviderIDsSnake,
 		AllowedClaudeIDs: raw.AllowedClaudeIDs, AllowedClaudeIDsSnake: raw.AllowedClaudeIDsSnake,
 		AllowedGeminiIDs: raw.AllowedGeminiIDs, AllowedGeminiIDsSnake: raw.AllowedGeminiIDsSnake,
+		AllowedImageIDs: raw.AllowedImageIDs, AllowedImageIDsSnake: raw.AllowedImageIDsSnake,
 	}
 	tokenRaw := raw.TokenLimit
 	if len(tokenRaw) == 0 {
@@ -104,6 +109,11 @@ type codexRelayKeyProviderAccessRequest struct {
 type codexRelayKeyClaudeProviderAccessRequest struct {
 	AllowedClaudeIDs      []int64 `json:"allowedClaudeProviderIds"`
 	AllowedClaudeIDsSnake []int64 `json:"allowed_claude_provider_ids"`
+}
+
+type codexRelayKeyImageProviderAccessRequest struct {
+	AllowedImageIDs      []int64 `json:"allowedImageProviderIds"`
+	AllowedImageIDsSnake []int64 `json:"allowed_image_provider_ids"`
 }
 
 type codexRelayKeyGeminiProviderAccessRequest struct {
@@ -378,8 +388,11 @@ func validateAllowedGeminiProviderIDs(rt *appRuntime, requested []string) ([]str
 
 func validateAllowedProviderIDs(rt *appRuntime, kind string, requested []int64) ([]int64, error) {
 	label := "Codex"
-	if kind == services.ProviderKindClaude {
+	switch kind {
+	case services.ProviderKindClaude:
 		label = "Claude"
+	case services.ProviderKindGPTImage:
+		label = "GPT Image"
 	}
 	normalized, err := services.NormalizeCodexAllowedProviderIDs(requested)
 	if err != nil || len(normalized) == 0 {
@@ -556,6 +569,7 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 	}
 	router.GET("/api/admin/codex-providers", authRequired, listProviderOptions(services.ProviderKindCodex, "Codex"))
 	router.GET("/api/admin/claude-providers", authRequired, listProviderOptions(services.ProviderKindClaude, "Claude"))
+	router.GET("/api/admin/gpt-image-providers", authRequired, listProviderOptions(services.ProviderKindGPTImage, "GPT Image"))
 	router.GET("/api/admin/gemini-providers", authRequired, func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 		if rt.geminiService == nil {
@@ -634,6 +648,11 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: accessErr.Error()}})
 			return
 		}
+		allowedImageIDs, accessErr := validateAllowedProviderIDs(rt, services.ProviderKindGPTImage, requestAllowedProviderIDs(request.AllowedImageIDs, request.AllowedImageIDsSnake))
+		if accessErr != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: accessErr.Error()}})
+			return
+		}
 		allowedGeminiIDs, accessErr := validateAllowedGeminiProviderIDs(rt, requestAllowedGeminiProviderIDs(request.AllowedGeminiIDs, request.AllowedGeminiIDsSnake))
 		if accessErr != nil {
 			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: accessErr.Error()}})
@@ -673,6 +692,11 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 			return
 		}
 		result.AllowedGeminiProviderIDs = append([]string{}, allowedGeminiIDs...)
+		if err := rt.codexRelayKeys.UpdateAllowedImageProviderIDs(result.ID, allowedImageIDs); err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: err.Error()}})
+			return
+		}
+		result.AllowedImageProviderIDs = append([]int64{}, allowedImageIDs...)
 		c.JSON(http.StatusOK, result)
 	})
 
@@ -891,6 +915,35 @@ func registerAdminAuthRoutes(router *gin.Engine, rt *appRuntime) {
 	}
 	router.PATCH("/api/admin/codex-keys/:id/gemini-providers", originRequired, authRequired, updateGeminiProviderAccess)
 	router.PUT("/api/admin/codex-keys/:id/gemini-providers", originRequired, authRequired, updateGeminiProviderAccess)
+
+	updateImageProviderAccess := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		var request codexRelayKeyImageProviderAccessRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_request", Message: err.Error()}})
+			return
+		}
+		if request.AllowedImageIDs == nil && request.AllowedImageIDsSnake == nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_request", Message: "allowedImageProviderIds is required"}})
+			return
+		}
+		providerIDs, err := validateAllowedProviderIDs(rt, services.ProviderKindGPTImage, requestAllowedProviderIDs(request.AllowedImageIDs, request.AllowedImageIDsSnake))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_provider_access", Message: err.Error()}})
+			return
+		}
+		if err := rt.codexRelayKeys.UpdateAllowedImageProviderIDs(c.Param("id"), providerIDs); err != nil {
+			status := http.StatusBadRequest
+			if strings.Contains(err.Error(), "未找到") {
+				status = http.StatusNotFound
+			}
+			c.JSON(status, apiErrorResponse{Error: apiError{Code: "update_provider_access_failed", Message: err.Error()}})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"allowedImageProviderIds": append([]int64{}, providerIDs...)})
+	}
+	router.PATCH("/api/admin/codex-keys/:id/image-providers", originRequired, authRequired, updateImageProviderAccess)
+	router.PUT("/api/admin/codex-keys/:id/image-providers", originRequired, authRequired, updateImageProviderAccess)
 
 	resetQuota := func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")

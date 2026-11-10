@@ -85,7 +85,7 @@ func newAppRuntime() (*appRuntime, error) {
 	providerService.SetProvidersSavedHook(func(kind string, providers []services.Provider) {
 		pruneProviderRelayKeys(codexRelayKeys, kind, providers)
 	})
-	for _, kind := range []string{services.ProviderKindCodex, services.ProviderKindClaude} {
+	for _, kind := range []string{services.ProviderKindCodex, services.ProviderKindClaude, services.ProviderKindGPTImage} {
 		if providers, err := providerService.LoadProviders(kind); err == nil {
 			pruneProviderRelayKeys(codexRelayKeys, kind, providers)
 		} else {

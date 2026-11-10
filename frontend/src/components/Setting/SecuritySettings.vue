@@ -12,6 +12,7 @@ import {
   listCodexRelayProviders,
   listClaudeRelayProviders,
   listGeminiRelayProviders,
+  listImageRelayProviders,
   listCodexRelayUnpricedModels,
   logoutAdmin,
   resetCodexRelayKeyQuota,
@@ -19,6 +20,7 @@ import {
   updateCodexRelayKeyProviders,
   updateCodexRelayKeyClaudeProviders,
   updateCodexRelayKeyGeminiProviders,
+  updateCodexRelayKeyImageProviders,
   updateCodexRelayKeyQuota,
   upsertCodexRelayModelPrice,
   updateAdminCredentials,
@@ -53,14 +55,14 @@ const createName = ref('')
 type QuotaMode = 'usd' | 'token'
 type QuotaPeriod = 'once' | 'daily' | 'weekly' | 'monthly'
 type QuotaDraft = { mode: QuotaMode; tokenLimit: string; usdLimit: string; period: QuotaPeriod }
-// Codex/Claude 使用数字 provider ID，Gemini 使用字符串 ID
+// Codex/Claude/GPT 生图使用数字 provider ID，Gemini 使用字符串 ID
 type ProviderID = number | string
 type ProviderOption = { id: ProviderID; name: string; enabled: boolean }
 type AccessDraft = { restricted: boolean; allowedProviderIds: ProviderID[] }
 
 // 各平台的 provider ID 各自独立分配，白名单也分开保存
-const providerKinds: RelayProviderKind[] = ['codex', 'claude', 'gemini']
-const providerKindLabel: Record<RelayProviderKind, string> = { codex: 'Codex', claude: 'Claude', gemini: 'Gemini' }
+const providerKinds: RelayProviderKind[] = ['codex', 'claude', 'gemini', 'gpt-image']
+const providerKindLabel: Record<RelayProviderKind, string> = { codex: 'Codex', claude: 'Claude', gemini: 'Gemini', 'gpt-image': 'GPT Image' }
 // 各 kind 对应的 i18n key（Codex 沿用原有 key）
 const providerKindText: Record<RelayProviderKind, { restrict: string; empty: string; loadFailed: string; scope: string }> = {
   codex: {
@@ -81,9 +83,15 @@ const providerKindText: Record<RelayProviderKind, { restrict: string; empty: str
     loadFailed: 'auth.security.loadGeminiProvidersFailed',
     scope: 'auth.security.geminiScope',
   },
+  'gpt-image': {
+    restrict: 'auth.security.restrictImageProviders',
+    empty: 'auth.security.noImageProviders',
+    loadFailed: 'auth.security.loadImageProvidersFailed',
+    scope: 'auth.security.imageScope',
+  },
 }
 
-const emptyKindRecord = <T,>(make: () => T): Record<RelayProviderKind, T> => ({ codex: make(), claude: make(), gemini: make() })
+const emptyKindRecord = <T,>(make: () => T): Record<RelayProviderKind, T> => ({ codex: make(), claude: make(), gemini: make(), 'gpt-image': make() })
 
 const createQuotaMode = ref<QuotaMode>('usd')
 const createTokenLimit = ref('0')
@@ -165,6 +173,7 @@ const loadProviders = async () => {
     codex: listCodexRelayProviders,
     claude: listClaudeRelayProviders,
     gemini: listGeminiRelayProviders,
+    'gpt-image': listImageRelayProviders,
   }
   await Promise.all(providerKinds.map(async (kind) => {
     try {
@@ -196,6 +205,8 @@ const allowedIdsForKey = (key: CodexRelayKeyListItem, kind: RelayProviderKind): 
       return key.allowedClaudeProviderIds ?? []
     case 'gemini':
       return key.allowedGeminiProviderIds ?? []
+    case 'gpt-image':
+      return key.allowedImageProviderIds ?? []
   }
 }
 
@@ -203,6 +214,7 @@ const accessDraftsFromKey = (key: CodexRelayKeyListItem | undefined): Record<Rel
   codex: accessDraftFromIds(key ? allowedIdsForKey(key, 'codex') : []),
   claude: accessDraftFromIds(key ? allowedIdsForKey(key, 'claude') : []),
   gemini: accessDraftFromIds(key ? allowedIdsForKey(key, 'gemini') : []),
+  'gpt-image': accessDraftFromIds(key ? allowedIdsForKey(key, 'gpt-image') : []),
 })
 
 const accessDraftFromIds = (ids: ProviderID[]): AccessDraft => ({
@@ -335,6 +347,7 @@ const handleCreateKey = async () => {
       allowedProviderIds: createAllowed('codex') as number[],
       allowedClaudeProviderIds: createAllowed('claude') as number[],
       allowedGeminiProviderIds: createAllowed('gemini').map(String),
+      allowedImageProviderIds: createAllowed('gpt-image') as number[],
     })
     createName.value = ''
     createQuotaMode.value = 'usd'
@@ -362,6 +375,7 @@ const handleUpdateProviderAccess = async (key: CodexRelayKeyListItem) => {
     codex: (id, ids) => updateCodexRelayKeyProviders(id, ids as number[]),
     claude: (id, ids) => updateCodexRelayKeyClaudeProviders(id, ids as number[]),
     gemini: (id, ids) => updateCodexRelayKeyGeminiProviders(id, ids.map(String)),
+    'gpt-image': (id, ids) => updateCodexRelayKeyImageProviders(id, ids as number[]),
   }
   const sortedKey = (ids: ProviderID[]) => ids.map(String).sort().join(',')
   accessBusyId.value = key.id

@@ -40,7 +40,11 @@ type providerKeyEnsureResponse struct {
 
 func providerKeyKind(raw string) (string, bool) {
 	kind := services.RelayPlatformForKind(raw)
-	return kind, kind == services.ProviderKindCodex || kind == services.ProviderKindClaude || kind == services.ProviderKindGemini
+	switch kind {
+	case services.ProviderKindCodex, services.ProviderKindClaude, services.ProviderKindGemini, services.ProviderKindGPTImage:
+		return kind, true
+	}
+	return kind, false
 }
 
 // providerKeyName builds the display name of a dedicated key from its
@@ -53,6 +57,8 @@ func providerKeyName(kind, providerName string) string {
 		label = "Claude"
 	case services.ProviderKindGemini:
 		label = "Gemini"
+	case services.ProviderKindGPTImage:
+		label = "GPT Image"
 	}
 	cleaned := strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
@@ -117,7 +123,7 @@ func registerProviderKeyRoutes(router *gin.Engine, rt *appRuntime, originRequire
 		c.Header("Cache-Control", "no-store")
 		kind, ok := providerKeyKind(c.Query("kind"))
 		if !ok {
-			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_kind", Message: "kind 仅支持 codex、claude 或 gemini"}})
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_kind", Message: "kind 仅支持 codex、claude、gemini 或 gpt-image"}})
 			return
 		}
 		keys, err := rt.codexRelayKeys.ListProviderKeys(kind)
@@ -146,7 +152,7 @@ func registerProviderKeyRoutes(router *gin.Engine, rt *appRuntime, originRequire
 		}
 		kind, ok := providerKeyKind(request.Kind)
 		if !ok {
-			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_kind", Message: "kind 仅支持 codex、claude 或 gemini"}})
+			c.JSON(http.StatusBadRequest, apiErrorResponse{Error: apiError{Code: "invalid_kind", Message: "kind 仅支持 codex、claude、gemini 或 gpt-image"}})
 			return
 		}
 		if kind == services.ProviderKindGemini {

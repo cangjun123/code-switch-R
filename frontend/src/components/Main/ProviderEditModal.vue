@@ -275,8 +275,8 @@ const modalTitle = computed(() =>
             </div>
           </div>
         </div>
-        <!-- 上游协议类型（Gemini 仅支持原生协议）-->
-        <div v-if="tabId !== 'gemini'" class="form-field">
+        <!-- 上游协议类型（Gemini 仅支持原生协议；GPT 生图固定走 OpenAI Images 接口）-->
+        <div v-if="tabId !== 'gemini' && tabId !== 'gpt-image'" class="form-field">
           <span>{{ t('components.main.form.labels.upstreamProtocol') }}</span>
           <Listbox v-model="form.upstreamProtocol" v-slot="{ open: protoOpen }" class="w-full">
             <div class="level-select">

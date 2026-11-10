@@ -1655,6 +1655,7 @@ onMounted(async () => {
   void loadDedicatedKeys('codex')
   void loadDedicatedKeys('claude')
   void loadDedicatedKeys('gemini')
+  void loadDedicatedKeys('gpt-image')
   await Promise.all(providerTabIds.map(refreshProxyState))
   await Promise.all(providerTabIds.map((tab) => refreshDirectAppliedStatus(tab)))
   await Promise.all(providerTabIds.map((tab) => loadProviderStats(tab)))
@@ -2486,10 +2487,11 @@ const remove = async (id: number, tabId: ProviderTab = activeTab.value) => {
   }
 }
 
-// 供应商专属 Key：Claude/Codex 按数字 providerId、Gemini 按字符串 ID 记录脱敏后的 Key
-const dedicatedKeys = reactive<Record<RelayProviderKind, Record<string, string>>>({ codex: {}, claude: {}, gemini: {} })
+// 供应商专属 Key：Claude/Codex/GPT 生图按数字 providerId、Gemini 按字符串 ID 记录脱敏后的 Key
+const dedicatedKeys = reactive<Record<RelayProviderKind, Record<string, string>>>({ codex: {}, claude: {}, gemini: {}, 'gpt-image': {} })
 
-const isDedicatedKeyTab = (tab: ProviderTab): tab is RelayProviderKind => tab === 'codex' || tab === 'claude' || tab === 'gemini'
+const isDedicatedKeyTab = (tab: ProviderTab): tab is RelayProviderKind =>
+  tab === 'codex' || tab === 'claude' || tab === 'gemini' || tab === 'gpt-image'
 
 // Gemini 卡片 id 是前端生成的序号，真实 ID 在 sourceProviderId
 const dedicatedKeyProvider = (tab: RelayProviderKind, card: AutomationCard): string =>
