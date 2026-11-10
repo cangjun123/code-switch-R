@@ -4161,21 +4161,21 @@ func ReplaceModelInRequestBody(bodyBytes []byte, newModel string) ([]byte, error
 	return modified, nil
 }
 
-// geminiUpstreamStatusError 上游返回非 2xx 时的错误，保留状态码和响应体，
+// upstreamStatusError 上游返回非 2xx 时的错误（Gemini / 图片转发共用），保留状态码和响应体，
 // 便于调度层区分客户端请求错误（不计入拉黑）并在全部失败时把原始错误回给客户端。
-type geminiUpstreamStatusError struct {
+type upstreamStatusError struct {
 	StatusCode  int
 	Body        string
 	ContentType string
 }
 
-func (e *geminiUpstreamStatusError) Error() string {
+func (e *upstreamStatusError) Error() string {
 	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Body)
 }
 
 // isClientRequestError 请求本身有问题（参数/体积），换 provider 可能成功但不应计入 provider 失败。
 // Google 对无效 API Key 也返回 400，这类属于 provider 配置问题，仍计入失败。
-func (e *geminiUpstreamStatusError) isClientRequestError() bool {
+func (e *upstreamStatusError) isClientRequestError() bool {
 	if e.StatusCode != http.StatusBadRequest && e.StatusCode != http.StatusRequestEntityTooLarge {
 		return false
 	}
@@ -4222,7 +4222,7 @@ func writeGeminiError(c *gin.Context, code int, message string) {
 // writeGeminiFinalFailure 所有 provider 失败后的响应：最后一个错误是客户端请求错误时
 // 原样返回上游状态码和响应体，让 CLI 看到真实原因；否则返回 502。
 func writeGeminiFinalFailure(c *gin.Context, lastErr error, lastProvider string, totalAttempts int) {
-	var statusErr *geminiUpstreamStatusError
+	var statusErr *upstreamStatusError
 	if errors.As(lastErr, &statusErr) && statusErr.isClientRequestError() && statusErr.Body != "" {
 		contentType := statusErr.ContentType
 		if contentType == "" {
@@ -4423,7 +4423,7 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 							provider.Name, retryCount+1, maxRetryPerProvider, err)
 
 						// 客户端请求错误：同 provider 重试无意义，也不计入失败，直接换下一个
-						var statusErr *geminiUpstreamStatusError
+						var statusErr *upstreamStatusError
 						if errors.As(err, &statusErr) && statusErr.isClientRequestError() {
 							fmt.Printf("[Gemini] 请求被 %s 拒绝（HTTP %d），不计入失败，切换到下一个\n", provider.Name, statusErr.StatusCode)
 							break
@@ -4507,7 +4507,7 @@ func (prs *ProviderRelayService) geminiProxyHandler(apiVersion string) gin.Handl
 				// 失败，记录并继续（客户端请求错误不计入失败）
 				lastErr = err
 				lastProvider = provider.Name
-				var statusErr *geminiUpstreamStatusError
+				var statusErr *upstreamStatusError
 				if !(errors.As(err, &statusErr) && statusErr.isClientRequestError()) {
 					_ = prs.blacklistService.RecordFailure("gemini", provider.Name)
 				}
@@ -4763,7 +4763,7 @@ func (prs *ProviderRelayService) forwardGeminiRequest(
 		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, codexErrorBodyMaxBytes))
 		fmt.Printf("[Gemini]   ✗ 失败: %s | HTTP %d | 耗时: %.2fs\n", provider.Name, resp.StatusCode, providerDuration)
 		setRequestLogError(requestLog, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(errorBody)))
-		return false, &geminiUpstreamStatusError{
+		return false, &upstreamStatusError{
 			StatusCode:  resp.StatusCode,
 			Body:        string(errorBody),
 			ContentType: resp.Header.Get("Content-Type"),

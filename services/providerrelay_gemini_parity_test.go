@@ -205,7 +205,7 @@ func TestGeminiUpstreamStatusErrorClassification(t *testing.T) {
 		{500, `boom`, false},
 	}
 	for _, tc := range cases {
-		err := &geminiUpstreamStatusError{StatusCode: tc.status, Body: tc.body}
+		err := &upstreamStatusError{StatusCode: tc.status, Body: tc.body}
 		if got := err.isClientRequestError(); got != tc.client {
 			t.Errorf("status %d body %q: isClientRequestError=%v, want %v", tc.status, tc.body, got, tc.client)
 		}

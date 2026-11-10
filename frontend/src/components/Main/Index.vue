@@ -1776,7 +1776,8 @@ const getDefaultEndpoint = (platform: string, upstreamProtocol = 'auto', openAIE
   }
   const defaults: Record<string, string> = {
     claude: '/v1/messages',
-    'gpt-image': '/v1/images/generations',
+    // 生图供应商默认探测模型列表（GET，不计费）；需要验证真实生图时可手动改为 /v1/images/generations
+    'gpt-image': '/v1/models',
     // {model} 由后端替换为测试模型
     gemini: '/v1beta/models/{model}:generateContent',
   }

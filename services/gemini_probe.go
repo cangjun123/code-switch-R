@@ -44,6 +44,18 @@ func resolveGeminiProbeEndpoint(template, model string, stream bool) string {
 	return endpoint
 }
 
+// defaultImageProbeEndpoint 生图供应商的默认可用性探测端点（GET 模型列表，不计费）
+const defaultImageProbeEndpoint = "/v1/models"
+
+// isModelListProbeEndpoint 端点是否为模型列表（以 GET 方式探测）
+func isModelListProbeEndpoint(endpoint string) bool {
+	path := strings.ToLower(strings.TrimSpace(endpoint))
+	if idx := strings.Index(path, "?"); idx >= 0 {
+		path = path[:idx]
+	}
+	return strings.HasSuffix(strings.TrimRight(path, "/"), "/models")
+}
+
 // isGeminiProbeEndpoint 判断端点是否为 Gemini 原生 generateContent 接口
 func isGeminiProbeEndpoint(endpoint string) bool {
 	lower := strings.ToLower(endpoint)

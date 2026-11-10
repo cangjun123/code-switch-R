@@ -168,7 +168,11 @@ func (prs *ProviderRelayService) openAIImagesProxyHandler(endpoint string) gin.H
 				fmt.Printf("[Images] 客户端中断，停止重试: %s/%s\n", candidate.kind, candidate.provider.Name)
 				return
 			}
-			if prs.blacklistService != nil {
+			// 内容审核/参数错误等请求问题（400/413）换供应商可能通过，但不计入拉黑
+			var statusErr *upstreamStatusError
+			if errors.As(err, &statusErr) && statusErr.isClientRequestError() {
+				fmt.Printf("[Images] 请求被 %s 拒绝（HTTP %d），不计入失败\n", candidate.provider.Name, statusErr.StatusCode)
+			} else if prs.blacklistService != nil {
 				if err := prs.blacklistService.RecordFailure(candidate.kind, candidate.provider.Name); err != nil {
 					fmt.Printf("[Images] 记录失败到黑名单失败: %v\n", err)
 				}
@@ -191,9 +195,15 @@ func (prs *ProviderRelayService) openAIImagesProxyHandler(endpoint string) gin.H
 			}
 		}
 
+		// 最后一个错误是请求本身的问题时原样返回上游状态码和错误体，客户端能看到真实原因（如内容审核）
+		var statusErr *upstreamStatusError
+		if errors.As(lastErr, &statusErr) && statusErr.isClientRequestError() && statusErr.Body != "" {
+			c.Data(statusErr.StatusCode, firstNonEmpty(statusErr.ContentType, "application/json"), []byte(statusErr.Body))
+			return
+		}
 		errorMsg := "unknown upstream error"
 		if lastErr != nil {
-			errorMsg = lastErr.Error()
+			errorMsg = truncateErrorMessage(lastErr.Error())
 		}
 		c.JSON(http.StatusBadGateway, gin.H{
 			"error":          fmt.Sprintf("all image providers failed, last error: %s", errorMsg),
@@ -773,20 +783,22 @@ func (prs *ProviderRelayService) forwardOpenAIImageRequest(
 		if err != nil {
 			return false, err
 		}
-		captureResponseModel(string(body), requestLog)
+		CodexParseTokenUsageFromResponse(string(body), requestLog)
 		copyOpenAIImageResponseHeaders(c.Writer.Header(), resp.Header)
 		c.Data(resp.StatusCode, firstNonEmpty(resp.Header.Get("Content-Type"), "application/json"), body)
 		return true, nil
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, codexErrorBodyMaxBytes))
 	if err != nil {
 		return false, err
 	}
-	if len(body) > 512 {
-		body = append(body[:512], []byte("...")...)
+	setRequestLogError(requestLog, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
+	return false, &upstreamStatusError{
+		StatusCode:  resp.StatusCode,
+		Body:        strings.TrimSpace(string(body)),
+		ContentType: resp.Header.Get("Content-Type"),
 	}
-	return false, fmt.Errorf("upstream status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
 const asyncImagePollTimeout = 30 * time.Minute // 异步生图任务最长等待时间（官方示例约 5 分钟，复杂任务/图编辑可能更久，留足余量）
@@ -809,7 +821,7 @@ func (prs *ProviderRelayService) handleAsyncImageResponse(
 		return false, err
 	}
 
-	captureResponseModel(string(createBody), requestLog)
+	CodexParseTokenUsageFromResponse(string(createBody), requestLog)
 	taskID := strings.TrimSpace(gjson.GetBytes(createBody, "id").String())
 	if taskID == "" {
 		// 兜底：上游已直接返回完整 OpenAI 响应（含 data 数组），原样透传
@@ -840,7 +852,7 @@ func (prs *ProviderRelayService) handleAsyncImageResponse(
 		return false, fmt.Errorf("异步生图任务未成功 (task=%s, state=%s)", taskID, state)
 	}
 
-	captureResponseModel(string(taskBody), requestLog)
+	CodexParseTokenUsageFromResponse(string(taskBody), requestLog)
 	openAIBody, err := buildOpenAIImageResponseFromTask(taskBody)
 	if err != nil {
 		return false, fmt.Errorf("异步生图结果转换失败 (task=%s): %w", taskID, err)
@@ -1011,7 +1023,7 @@ func streamOpenAIImageResponse(w http.ResponseWriter, resp *http.Response, force
 		flusher.Flush()
 	}
 
-	observer := newResponseModelObserver(requestLog)
+	observer := newResponseUsageObserver(requestLog)
 	defer observer.Finish()
 	buf := make([]byte, 32*1024)
 	for {

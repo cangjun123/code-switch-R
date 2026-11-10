@@ -105,27 +105,30 @@ func (cts *ConnectivityTestService) TestProvider(ctx context.Context, provider P
 		LastChecked:  time.Now(),
 	}
 
-	// 构建测试请求
-	reqBody, contentField := cts.buildTestRequest(platform, &provider)
-	if reqBody == nil {
-		result.Status = StatusMissing
-		result.Message = "未配置测试模型，请在供应商设置中配置 ConnectivityTestModel"
-		return result
-	}
-
 	// 根据用户配置的端点拼接目标 URL
 	targetURL := cts.buildTargetURL(&provider, platform)
-	upstreamProtocol := provider.ResolveUpstreamProtocol(cts.getEffectiveEndpoint(&provider, platform))
+	effectiveEndpoint := cts.getEffectiveEndpoint(&provider, platform)
+	upstreamProtocol := provider.ResolveUpstreamProtocol(effectiveEndpoint)
 	authType := cts.getEffectiveAuthType(&provider, platform)
 
-	// 调试日志：打印最终请求信息
-	fmt.Printf("[DEBUG] 连通性测试请求:\n")
-	fmt.Printf("  targetURL: %s\n", targetURL)
-	fmt.Printf("  authType:  %s\n", authType)
-	fmt.Printf("  reqBody:   %s\n", string(reqBody))
-
-	// 创建 HTTP 请求
-	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(reqBody))
+	// 构建测试请求：模型列表端点以 GET 探测（生图供应商默认，不产生计费）
+	var req *http.Request
+	var err error
+	contentField := ""
+	if isModelListProbeEndpoint(effectiveEndpoint) {
+		contentField = "data"
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	} else {
+		var reqBody []byte
+		reqBody, contentField = cts.buildTestRequest(platform, &provider)
+		if reqBody == nil {
+			result.Status = StatusMissing
+			result.Message = "未配置测试模型，请在供应商设置中配置 ConnectivityTestModel"
+			return result
+		}
+		fmt.Printf("[DEBUG] 连通性测试请求: targetURL=%s authType=%s reqBody=%s\n", targetURL, authType, string(reqBody))
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(reqBody))
+	}
 	if err != nil {
 		result.Message = fmt.Sprintf("创建请求失败: %v", err)
 		result.SubStatus = SubStatusNetworkError
@@ -133,7 +136,9 @@ func (cts *ConnectivityTestService) TestProvider(ctx context.Context, provider P
 	}
 
 	// 设置 Headers
-	req.Header.Set("Content-Type", "application/json")
+	if req.Method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if provider.APIKey != "" {
 		// authType 已在上方获取
 		authTypeLower := strings.ToLower(authType)
@@ -237,7 +242,8 @@ func resolveConnectivityEndpoint(provider *Provider, platform string) string {
 	case "codex":
 		return provider.ResolveOpenAIUpstreamEndpoint("/responses")
 	case "gpt-image":
-		return "/v1/images/generations"
+		// 默认探测模型列表，避免每次测试都真实生图计费
+		return defaultImageProbeEndpoint
 	case ProviderKindGemini:
 		return geminiProbeEndpointTemplate
 	default:
