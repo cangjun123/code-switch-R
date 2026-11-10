@@ -116,7 +116,7 @@ func (cts *ConnectivityTestService) TestProvider(ctx context.Context, provider P
 	var err error
 	contentField := ""
 	if isModelListProbeEndpoint(effectiveEndpoint) {
-		contentField = "data"
+		// 模型列表格式各异（OpenAI: data，Gemini: models），仅按状态码判定
 		req, err = http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	} else {
 		var reqBody []byte

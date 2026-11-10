@@ -94,8 +94,8 @@ func TestImageHealthCheckDefaultsToModelsProbe(t *testing.T) {
 		t.Fatalf("manual image connectivity test should GET models: %+v method=%s", manual, method)
 	}
 
-	// 显式配置生图端点时仍走真实生图，并使用更长的默认超时
-	provider := Provider{AvailabilityConfig: &AvailabilityConfig{TestEndpoint: "/v1/images/generations"}}
+	// 生产端点即生图接口、未单独配置测试端点时走真实生图，并使用更长的默认超时
+	provider := Provider{APIEndpoint: "/v1/images/generations"}
 	if got := hcs.getEffectiveTimeout(&provider, ProviderKindGPTImage); got != DefaultImageProbeTimeoutMs {
 		t.Fatalf("generation probe timeout = %d", got)
 	}
@@ -106,3 +106,46 @@ func ioNopCloser(s string) *nopReadCloser { return &nopReadCloser{strings.NewRea
 type nopReadCloser struct{ *strings.Reader }
 
 func (nopReadCloser) Close() error { return nil }
+
+func TestLegacyDefaultImageProbeUsesModelList(t *testing.T) {
+	hcs := NewHealthCheckService(NewProviderService(), nil, nil)
+	legacy := Provider{AvailabilityConfig: &AvailabilityConfig{TestEndpoint: "/v1/images/generations", Timeout: 15000}}
+	if got := hcs.getEffectiveEndpoint(&legacy, ProviderKindGPTImage); got != defaultImageProbeEndpoint {
+		t.Fatalf("legacy default image probe should use %s, got %s", defaultImageProbeEndpoint, got)
+	}
+	custom := Provider{AvailabilityConfig: &AvailabilityConfig{TestEndpoint: "/v1/images/generations", Timeout: 90000}}
+	if got := hcs.getEffectiveEndpoint(&custom, ProviderKindGPTImage); got != "/v1/images/generations" {
+		t.Fatalf("explicit generation probe must be kept, got %s", got)
+	}
+	if got := hcs.getEffectiveTimeout(&custom, ProviderKindGPTImage); got != 90000 {
+		t.Fatalf("explicit timeout must be kept, got %d", got)
+	}
+	// 非生图平台不受影响
+	claude := Provider{AvailabilityConfig: &AvailabilityConfig{TestEndpoint: "/v1/images/generations", Timeout: 15000}}
+	if got := hcs.getEffectiveEndpoint(&claude, ProviderKindClaude); got != "/v1/images/generations" {
+		t.Fatalf("legacy migration must only apply to gpt-image, got %s", got)
+	}
+}
+
+func TestDedicatedImageKeyListsImageModels(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+	}))
+	defer upstream.Close()
+	router, relay := newImageAccessEnv(t, []Provider{
+		{ID: 1, Name: "ImgA", APIURL: upstream.URL, APIKey: "a", Enabled: true, SupportedModels: map[string]bool{"image-model-a": true}},
+		{ID: 2, Name: "ImgB", APIURL: upstream.URL, APIKey: "b", Enabled: true, SupportedModels: map[string]bool{"image-model-b": true}},
+	})
+	key, _, err := relay.codexRelayKeys.EnsureProviderKey(ProviderKindGPTImage, 2, "GPT Image · ImgB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+key.Key)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "image-model-b") || strings.Contains(w.Body.String(), "image-model-a") {
+		t.Fatalf("dedicated image key should list only its image models, got %d: %s", w.Code, w.Body.String())
+	}
+}

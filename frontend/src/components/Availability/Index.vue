@@ -260,6 +260,10 @@ async function saveConfig() {
     })
     showConfigModal.value = false
     await loadData()
+    // 通知主页面重新加载供应商，避免其持有的旧配置在下次保存时覆盖本次修改
+    window.dispatchEvent(new CustomEvent('providers-updated', {
+      detail: { platform: activeProvider.value?.platform, providerId: activeProvider.value?.providerId },
+    }))
   } catch (error) {
     console.error('Failed to save availability config:', error)
   } finally {

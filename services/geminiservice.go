@@ -243,9 +243,10 @@ func (s *GeminiService) ProvidersAsProviders() []Provider {
 	return result
 }
 
-// ApplyProviderUpdates 把通用 Provider 视图上的可共享字段写回 Gemini 供应商（按 NumericID 匹配）。
-// 仅更新可用性监控、永不拉黑、模型白名单/映射、Level、启用状态；
-// 新增/删除供应商仍须通过 GeminiService 自身的方法完成。
+// ApplyProviderUpdates 把通用 Provider 视图上的可用性监控字段写回 Gemini 供应商（按 NumericID 匹配）。
+// 调用方（可用性监控的开关/高级配置）基于快照修改单个字段后整体保存，
+// 因此只写回可用性字段，避免用旧快照覆盖期间通过 GeminiService 更新的其他配置。
+// 新增/删除/编辑供应商仍须通过 GeminiService 自身的方法完成。
 func (s *GeminiService) ApplyProviderUpdates(providers []Provider) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -262,11 +263,6 @@ func (s *GeminiService) ApplyProviderUpdates(providers []Provider) error {
 		target.AvailabilityMonitorEnabled = update.AvailabilityMonitorEnabled
 		target.ConnectivityAutoBlacklist = update.ConnectivityAutoBlacklist
 		target.AvailabilityConfig = update.AvailabilityConfig
-		target.NeverBlacklist = update.NeverBlacklist
-		target.SupportedModels = update.SupportedModels
-		target.ModelMapping = update.ModelMapping
-		target.Level = update.Level
-		target.Enabled = update.Enabled
 	}
 	return s.saveProviders()
 }

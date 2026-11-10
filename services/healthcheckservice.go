@@ -32,15 +32,15 @@ const (
 
 // 默认配置常量
 const (
-	DefaultOperationalThresholdMs = 6000  // 默认正常阈值（毫秒）
+	DefaultOperationalThresholdMs = 6000   // 默认正常阈值（毫秒）
 	DefaultTimeoutMs              = 15000  // 默认超时（毫秒）
 	DefaultImageProbeTimeoutMs    = 120000 // 真实生图探测的默认超时（毫秒）
-	DefaultPollIntervalSeconds    = 60    // 默认检测间隔（秒）
-	DefaultFailureThreshold       = 2     // 默认拉黑阈值（连续失败次数）
-	MaxConcurrentChecks           = 5     // 最大并发检测数
-	MaxHistoryPerProvider         = 60    // 每个 Provider 最多保留历史数
-	MinPollIntervalSeconds        = 30    // 最小检测间隔（秒），防止高频探活打爆上游
-	MaxPollIntervalSeconds        = 3600  // 最大检测间隔（秒），超过则失去监控意义
+	DefaultPollIntervalSeconds    = 60     // 默认检测间隔（秒）
+	DefaultFailureThreshold       = 2      // 默认拉黑阈值（连续失败次数）
+	MaxConcurrentChecks           = 5      // 最大并发检测数
+	MaxHistoryPerProvider         = 60     // 每个 Provider 最多保留历史数
+	MinPollIntervalSeconds        = 30     // 最小检测间隔（秒），防止高频探活打爆上游
+	MaxPollIntervalSeconds        = 3600   // 最大检测间隔（秒），超过则失去监控意义
 )
 
 // HealthCheckResult 健康检查结果
@@ -716,7 +716,23 @@ func (hcs *HealthCheckService) getEffectiveModel(provider *Provider, platform st
 }
 
 // getEffectiveEndpoint 获取有效的测试端点
+// isLegacyDefaultImageProbe 旧版前端保存生图供应商时总会自动写入
+// testEndpoint=/v1/images/generations、timeout=15000 作为默认值。这类配置视为"未自定义"，
+// 改用默认的模型列表探测，避免每次轮询都真实生图计费、并在 15s 内超时误判故障。
+// 真正需要生图探测时，把超时设为其他值即可。
+func isLegacyDefaultImageProbe(provider *Provider, platform string) bool {
+	if !strings.EqualFold(platform, ProviderKindGPTImage) || provider.AvailabilityConfig == nil {
+		return false
+	}
+	cfg := provider.AvailabilityConfig
+	return strings.EqualFold(strings.TrimSpace(cfg.TestEndpoint), "/v1/images/generations") &&
+		(cfg.Timeout == 0 || cfg.Timeout == DefaultTimeoutMs)
+}
+
 func (hcs *HealthCheckService) getEffectiveEndpoint(provider *Provider, platform string) string {
+	if isLegacyDefaultImageProbe(provider, platform) {
+		return defaultImageProbeEndpoint
+	}
 	if strings.EqualFold(platform, ProviderKindGemini) {
 		template := ""
 		stream := false
@@ -767,7 +783,7 @@ func (hcs *HealthCheckService) getEffectiveEndpoint(provider *Provider, platform
 // getEffectiveTimeout 获取有效的超时时间（毫秒）
 func (hcs *HealthCheckService) getEffectiveTimeout(provider *Provider, platform string) int {
 	// 优先使用用户配置
-	if provider.AvailabilityConfig != nil && provider.AvailabilityConfig.Timeout > 0 {
+	if provider.AvailabilityConfig != nil && provider.AvailabilityConfig.Timeout > 0 && !isLegacyDefaultImageProbe(provider, platform) {
 		return provider.AvailabilityConfig.Timeout
 	}
 	// 真实生图探测通常需要数十秒到数分钟

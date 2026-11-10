@@ -54,7 +54,9 @@ export type AutomationCard = {
   availabilityConfig?: {
     testModel?: string      // 测试用模型
     testEndpoint?: string   // 测试端点路径
-    timeout?: number        // 超时时间（毫秒）
+    timeout?: number        // 超时时间（毫秒），0/缺省使用后端默认值
+    maxTokens?: number      // 探测 max_tokens 覆盖
+    stream?: boolean        // 探测是否流式
   }
 
   // === 旧连通性字段（已废弃，仅用于兼容旧数据） ===

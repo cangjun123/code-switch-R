@@ -5298,6 +5298,11 @@ func (prs *ProviderRelayService) forwardModelsRequest(
 	allowlist, restricted := relayKeyProviderAccess(relayKey, kind)
 	providers, _ = filterProvidersByAllowlist(allowlist, restricted, providers)
 	if restricted && len(providers) == 0 {
+		// 生图专属 Key：只返回其可访问的图片模型
+		if relayKey != nil && relayKey.ProviderBinding != nil && relayKey.ProviderBinding.Kind == ProviderKindGPTImage &&
+			prs.writeConfiguredImageModelsResponse(c, kind) {
+			return nil
+		}
 		writeOpenAIProviderAccessDenied(c)
 		return fmt.Errorf("relay key is not allowed to access %s providers", kind)
 	}

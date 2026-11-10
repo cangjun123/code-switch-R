@@ -904,11 +904,13 @@ const serializeProviders = (providers: AutomationCard[]) =>
     availabilityMonitorEnabled: !!provider.availabilityMonitorEnabled,
     connectivityAutoBlacklist: !!provider.connectivityAutoBlacklist,
     neverBlacklist: !!provider.neverBlacklist,
+    // 保留可用性页面设置的全部字段（maxTokens/stream 等）；timeout 为 0 表示使用后端按端点区分的默认值
     availabilityConfig: provider.availabilityConfig
       ? {
+          ...provider.availabilityConfig,
           testModel: provider.availabilityConfig.testModel || '',
           testEndpoint: provider.availabilityConfig.testEndpoint || '',
-          timeout: provider.availabilityConfig.timeout || 15000,
+          timeout: provider.availabilityConfig.timeout || 0,
         }
       : undefined,
     // 清除旧连通性字段（避免再次写入配置文件）
@@ -1913,6 +1915,8 @@ type VendorForm = {
     testModel?: string
     testEndpoint?: string
     timeout?: number
+    maxTokens?: number
+    stream?: boolean
   }
   // === 旧连通性字段（已废弃） ===
   /** @deprecated */
@@ -2020,7 +2024,7 @@ const defaultFormValues = (platform?: string): VendorForm => ({
   availabilityConfig: {
     testModel: '',
     testEndpoint: getDefaultEndpoint(platform || 'claude', 'auto', 'auto'),
-    timeout: 15000,
+    timeout: 0,
   },
   // 旧连通性字段（已废弃，置空）
   connectivityCheck: false,
@@ -2161,7 +2165,9 @@ const openEditModal = (card: AutomationCard) => {
         card.availabilityConfig?.testEndpoint ||
         card.connectivityTestEndpoint ||
         getDefaultEndpoint(activeTab.value, card.upstreamProtocol || 'auto', card.openAIEndpointMode || 'auto'),
-      timeout: card.availabilityConfig?.timeout || 15000,
+      timeout: card.availabilityConfig?.timeout || 0,
+      maxTokens: card.availabilityConfig?.maxTokens,
+      stream: card.availabilityConfig?.stream,
     },
     // 旧连通性字段不再写入表单
     connectivityCheck: false,
@@ -2344,7 +2350,9 @@ const submitModal = async (): Promise<boolean> => {
         testEndpoint:
           modalState.form.availabilityConfig?.testEndpoint ||
           getDefaultEndpoint(modalState.tabId, modalState.form.upstreamProtocol || 'auto', modalState.form.openAIEndpointMode || 'auto'),
-        timeout: modalState.form.availabilityConfig?.timeout || 15000,
+        timeout: modalState.form.availabilityConfig?.timeout || 0,
+        maxTokens: modalState.form.availabilityConfig?.maxTokens,
+        stream: modalState.form.availabilityConfig?.stream,
       },
       // 旧连通性字段清空（避免再次写入）
       connectivityCheck: false,
@@ -2397,7 +2405,9 @@ const submitModal = async (): Promise<boolean> => {
         testEndpoint:
           modalState.form.availabilityConfig?.testEndpoint ||
           getDefaultEndpoint(modalState.tabId, modalState.form.upstreamProtocol || 'auto', modalState.form.openAIEndpointMode || 'auto'),
-        timeout: modalState.form.availabilityConfig?.timeout || 15000,
+        timeout: modalState.form.availabilityConfig?.timeout || 0,
+        maxTokens: modalState.form.availabilityConfig?.maxTokens,
+        stream: modalState.form.availabilityConfig?.stream,
       },
       // 旧连通性字段清空
       connectivityCheck: false,

@@ -81,21 +81,45 @@ func TestProviderServiceGeminiFacade(t *testing.T) {
 	p.AvailabilityMonitorEnabled = true
 	p.ConnectivityAutoBlacklist = true
 	p.AvailabilityConfig = &AvailabilityConfig{TestModel: "gemini-2.5-pro", Timeout: 20000}
+	// 不可通过通用视图修改的字段（只写回可用性字段，避免旧快照覆盖其他配置）
 	p.NeverBlacklist = true
-	p.APIURL = "https://ignored.test" // 不可通过通用视图修改的字段
+	p.Enabled = false
+	p.Level = 9
+	p.APIURL = "https://ignored.test"
 	if err := providerService.SaveProviders(ProviderKindGemini, []Provider{p}); err != nil {
 		t.Fatal(err)
 	}
 	stored := gemini.GetProviders()[0]
-	if !stored.AvailabilityMonitorEnabled || !stored.ConnectivityAutoBlacklist || !stored.NeverBlacklist ||
+	if !stored.AvailabilityMonitorEnabled || !stored.ConnectivityAutoBlacklist ||
 		stored.AvailabilityConfig == nil || stored.AvailabilityConfig.TestModel != "gemini-2.5-pro" {
 		t.Fatalf("availability fields not written back: %+v", stored)
 	}
-	if stored.BaseURL != "https://example.test" {
-		t.Fatalf("BaseURL must not change via facade, got %q", stored.BaseURL)
+	if stored.BaseURL != "https://example.test" || stored.NeverBlacklist || !stored.Enabled || stored.Level != 2 {
+		t.Fatalf("non-availability fields must not change via facade: %+v", stored)
+	}
+
+	// 永不拉黑通过 GeminiService 设置后，经 facade 可见
+	stored.NeverBlacklist = true
+	if err := gemini.UpdateProvider(stored); err != nil {
+		t.Fatal(err)
 	}
 	if !providerService.IsNeverBlacklist(ProviderKindGemini, "Facade") {
 		t.Fatal("IsNeverBlacklist should see Gemini provider through facade")
+	}
+}
+
+func TestGeminiConnectivityModelListProbeIgnoresBodyShape(t *testing.T) {
+	var captured capturedProbe
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured.path = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[{"name":"models/gemini-2.5-flash"}]}`))
+	}))
+	defer server.Close()
+	cts := NewConnectivityTestService(NewProviderService(), nil, nil)
+	manual := cts.TestProviderManual(ProviderKindGemini, server.URL, "k", "", "/v1beta/models", "x-goog-api-key")
+	if !manual.Success || captured.path != "/v1beta/models" {
+		t.Fatalf("Gemini model list probe should succeed: %+v path=%q", manual, captured.path)
 	}
 }
 
