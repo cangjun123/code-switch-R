@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 	_ "modernc.org/sqlite" // SQLite driver
@@ -71,6 +72,12 @@ type ConfigImportResult struct {
 type ImportService struct {
 	providerService *ProviderService
 	mcpService      *MCPService
+	geminiService   *GeminiService // 可选：未注入时跳过 Gemini 供应商导入
+}
+
+// SetGeminiService 注入 Gemini 服务，启用 cc-switch Gemini 供应商导入
+func (is *ImportService) SetGeminiService(gs *GeminiService) {
+	is.geminiService = gs
 }
 
 func NewImportService(ps *ProviderService, ms *MCPService) *ImportService {
@@ -187,7 +194,7 @@ func (is *ImportService) evaluateStatus(cfg *ccSwitchConfig) (ConfigImportStatus
 	if err != nil {
 		return status, err
 	}
-	providerCount := len(pendingProviders["claude"]) + len(pendingProviders["codex"])
+	providerCount := len(pendingProviders["claude"]) + len(pendingProviders["codex"]) + len(pendingProviders["gemini"])
 	status.PendingProviders = providerCount > 0
 	status.PendingProviderCount = providerCount
 
@@ -278,6 +285,7 @@ func loadCcSwitchConfigFromSQLite(path string) (*ccSwitchConfig, bool, error) {
 	cfg := &ccSwitchConfig{
 		Claude: ccProviderSection{Providers: map[string]ccProviderEntry{}},
 		Codex:  ccProviderSection{Providers: map[string]ccProviderEntry{}},
+		Gemini: ccProviderSection{Providers: map[string]ccProviderEntry{}},
 		MCP: ccMCPSection{
 			Claude: ccMCPPlatform{Servers: map[string]ccMCPServerEntry{}},
 			Codex:  ccMCPPlatform{Servers: map[string]ccMCPServerEntry{}},
@@ -372,6 +380,11 @@ func loadProvidersFromSQLite(db *sql.DB, cfg *ccSwitchConfig) error {
 				if entry.Settings.Env["ANTHROPIC_BASE_URL"] == "" {
 					entry.Settings.Env["ANTHROPIC_BASE_URL"] = url
 				}
+			} else if kind == "gemini" {
+				// Gemini: 补充 GOOGLE_GEMINI_BASE_URL
+				if entry.Settings.Env["GOOGLE_GEMINI_BASE_URL"] == "" {
+					entry.Settings.Env["GOOGLE_GEMINI_BASE_URL"] = url
+				}
 			} else if kind == "codex" {
 				// Codex: 如果没有 Config，生成最小 TOML
 				if entry.Settings.Config == "" {
@@ -386,6 +399,8 @@ func loadProvidersFromSQLite(db *sql.DB, cfg *ccSwitchConfig) error {
 		// 添加到对应平台
 		if kind == "codex" {
 			cfg.Codex.Providers[id] = entry
+		} else if kind == "gemini" {
+			cfg.Gemini.Providers[id] = entry
 		} else {
 			cfg.Claude.Providers[id] = entry
 		}
@@ -482,6 +497,7 @@ func firstRunMarkerPath() (string, error) {
 type ccSwitchConfig struct {
 	Claude ccProviderSection `json:"claude"`
 	Codex  ccProviderSection `json:"codex"`
+	Gemini ccProviderSection `json:"gemini"`
 	MCP    ccMCPSection      `json:"mcp"`
 }
 
@@ -534,6 +550,7 @@ type providerCandidate struct {
 	APIKey string
 	Site   string
 	Icon   string
+	Model  string // 仅 Gemini 使用
 }
 
 func (is *ImportService) pendingProviders(cfg *ccSwitchConfig) (map[string][]providerCandidate, error) {
@@ -551,6 +568,13 @@ func (is *ImportService) pendingProviders(cfg *ccSwitchConfig) (map[string][]pro
 	}
 	result["claude"] = diffProviderCandidates("claude", cfg.Claude.Providers, claudeExisting)
 	result["codex"] = diffProviderCandidates("codex", cfg.Codex.Providers, codexExisting)
+	if is.geminiService != nil {
+		geminiExisting := make([]Provider, 0)
+		for _, provider := range is.geminiService.GetProviders() {
+			geminiExisting = append(geminiExisting, Provider{Name: provider.Name, APIURL: provider.BaseURL})
+		}
+		result["gemini"] = diffProviderCandidates("gemini", cfg.Gemini.Providers, geminiExisting)
+	}
 	return result, nil
 }
 
@@ -638,6 +662,16 @@ func parseProviderEntry(kind, key string, entry ccProviderEntry) (providerCandid
 			return providerCandidate{}, false
 		}
 		return providerCandidate{Name: name, APIURL: apiURL, APIKey: apiKey, Site: site}, true
+	case "gemini":
+		apiURL := strings.TrimSpace(entry.Settings.Env["GOOGLE_GEMINI_BASE_URL"])
+		apiKey := pickFirstNonEmpty(entry.Settings.Env["GEMINI_API_KEY"], entry.Settings.Env["GOOGLE_API_KEY"])
+		if apiURL == "" || apiKey == "" {
+			// 官方 OAuth 登录的条目没有 Base URL/Key，无法经中转使用
+			log.Printf("ℹ️  cc-switch: 跳过 gemini provider [%s]: 缺少 GOOGLE_GEMINI_BASE_URL 或 GEMINI_API_KEY", key)
+			return providerCandidate{}, false
+		}
+		return providerCandidate{Name: name, APIURL: apiURL, APIKey: apiKey, Site: site,
+			Model: strings.TrimSpace(entry.Settings.Env["GEMINI_MODEL"])}, true
 	default:
 		return providerCandidate{}, false
 	}
@@ -724,7 +758,37 @@ func (is *ImportService) importProviders(cfg *ccSwitchConfig, pending map[string
 		}
 		total += added
 	}
+	if candidates := pending["gemini"]; len(candidates) > 0 && is.geminiService != nil {
+		added, err := is.saveGeminiProviders(candidates)
+		if err != nil {
+			return total, err
+		}
+		total += added
+	}
 	return total, nil
+}
+
+// saveGeminiProviders 通过 GeminiService 新增导入的 Gemini 供应商
+func (is *ImportService) saveGeminiProviders(candidates []providerCandidate) (int, error) {
+	added := 0
+	for index, candidate := range candidates {
+		provider := GeminiProvider{
+			ID:         fmt.Sprintf("gemini-import-%d-%d", time.Now().UnixNano(), index),
+			Name:       candidate.Name,
+			BaseURL:    candidate.APIURL,
+			APIKey:     candidate.APIKey,
+			WebsiteURL: candidate.Site,
+			Model:      candidate.Model,
+			Category:   "custom",
+			Enabled:    true,
+			Level:      1,
+		}
+		if err := is.geminiService.AddProvider(provider); err != nil {
+			return added, err
+		}
+		added++
+	}
+	return added, nil
 }
 
 func (is *ImportService) saveProviders(kind string, candidates []providerCandidate) (int, error) {
