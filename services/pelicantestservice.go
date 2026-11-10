@@ -116,7 +116,7 @@ func (service *PelicanTestService) StartTest(platform string, providerID int64, 
 	}
 	customID := strings.TrimPrefix(platform, "custom:")
 	validCustom := strings.HasPrefix(platform, "custom:") && customID != "" && customID != "." && customID != ".." && !strings.ContainsAny(customID, "/\\\x00")
-	if platform != "claude" && platform != "codex" && !validCustom {
+	if platform != "claude" && platform != "codex" && platform != ProviderKindGemini && !validCustom {
 		return PelicanTestResult{}, errors.New("该平台不支持鹈鹕测试")
 	}
 	if service.providerService == nil {
@@ -325,6 +325,9 @@ func (service *PelicanTestService) run(ctx context.Context, session *pelicanSess
 }
 
 func (service *PelicanTestService) request(ctx context.Context, session *pelicanSession, provider *Provider, platform string) error {
+	if platform == ProviderKindGemini {
+		return service.requestGemini(ctx, session, provider)
+	}
 	endpoint := resolveConnectivityEndpoint(provider, platform)
 	anthropic := provider.ResolveUpstreamProtocol(endpoint) == UpstreamProtocolAnthropic
 	responses := !anthropic && strings.Contains(strings.ToLower(endpoint), "/responses")
@@ -383,6 +386,113 @@ func (service *PelicanTestService) request(ctx context.Context, session *pelican
 		return &pelicanError{code: "response_limit", message: "上游响应超过读取限制"}
 	}
 	return err
+}
+
+// requestGemini 使用 Gemini 原生 streamGenerateContent（SSE）执行鹈鹕测试
+func (service *PelicanTestService) requestGemini(ctx context.Context, session *pelicanSession, provider *Provider) error {
+	endpoint := resolveGeminiProbeEndpoint("", session.result.ActualModel, true)
+	body := buildGeminiProbeRequest(PelicanPrompt, 0)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, joinURL(provider.APIURL, endpoint), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	if provider.APIKey != "" {
+		req.Header.Set(geminiProbeAuthHeader, provider.APIKey)
+	}
+	response, err := service.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return &pelicanError{code: "http_error", message: fmt.Sprintf("上游返回 HTTP %d", response.StatusCode)}
+	}
+	limited := &io.LimitedReader{R: response.Body, N: pelicanResponseLimit + 1}
+	err = consumeGeminiPelicanSSE(limited, func(text string) error { return service.appendText(session, text) })
+	if limited.N == 0 {
+		return &pelicanError{code: "response_limit", message: "上游响应超过读取限制"}
+	}
+	return err
+}
+
+// geminiPelicanStopReason 把 Gemini finishReason 映射到 pelicanStopError 识别的终止原因
+func geminiPelicanStopReason(finishReason string) string {
+	switch strings.ToUpper(finishReason) {
+	case "STOP":
+		return "stop"
+	case "MAX_TOKENS":
+		return "length"
+	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY":
+		return "content_filter"
+	default:
+		return "incomplete"
+	}
+}
+
+// consumeGeminiPelicanSSE 解析 Gemini SSE：拼接非思考 part 的文本，按 finishReason 判定结束状态
+func consumeGeminiPelicanSSE(reader io.Reader, appendText func(string) error) error {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 4096), pelicanResponseLimit)
+	stop := ""
+	for scanner.Scan() {
+		payload, ok := strings.CutPrefix(scanner.Text(), "data:")
+		if !ok {
+			continue
+		}
+		payload = strings.TrimSpace(payload)
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var event struct {
+			Error      json.RawMessage `json:"error"`
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text    string `json:"text"`
+						Thought bool   `json:"thought"`
+					} `json:"parts"`
+				} `json:"content"`
+				FinishReason string `json:"finishReason"`
+			} `json:"candidates"`
+			PromptFeedback struct {
+				BlockReason string `json:"blockReason"`
+			} `json:"promptFeedback"`
+		}
+		if json.Unmarshal([]byte(payload), &event) != nil {
+			return &pelicanError{code: "invalid_response", message: "上游流式响应格式无效"}
+		}
+		if len(event.Error) > 0 && string(event.Error) != "null" {
+			return &pelicanError{code: "upstream_error", message: "上游报告生成失败"}
+		}
+		if event.PromptFeedback.BlockReason != "" {
+			return pelicanStopError("content_filter")
+		}
+		if len(event.Candidates) == 0 {
+			continue
+		}
+		candidate := event.Candidates[0]
+		var text strings.Builder
+		for _, part := range candidate.Content.Parts {
+			if !part.Thought {
+				text.WriteString(part.Text)
+			}
+		}
+		if err := appendText(text.String()); err != nil {
+			return err
+		}
+		if candidate.FinishReason != "" {
+			stop = geminiPelicanStopReason(candidate.FinishReason)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return &pelicanError{code: "response_limit", message: "上游流式事件超过读取限制"}
+		}
+		return err
+	}
+	return pelicanStopError(stop)
 }
 
 func pelicanStopError(stop string) error {

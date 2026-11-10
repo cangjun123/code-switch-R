@@ -40,6 +40,8 @@ const props = defineProps<{
   connectivityIndicatorClass: string
   connectivityTooltip: string
   showModelTraceButton: boolean
+  // 鹈鹕测试额外支持 Gemini（模型真伪检测的指纹库不含 Gemini）
+  showPelicanTestButton?: boolean
   supportsDedicatedKey: boolean
   // Masked dedicated key, or empty when none has been created yet.
   dedicatedKey: string
@@ -318,7 +320,7 @@ const showBlBadge = computed(() => {
 
       <!-- 模型真伪检测按钮 -->
       <button
-        v-if="showModelTraceButton"
+        v-if="showPelicanTestButton ?? showModelTraceButton"
         class="ghost-icon"
         type="button"
         :aria-label="t('components.main.pelicanTest.title')"

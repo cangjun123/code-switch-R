@@ -2,6 +2,7 @@ package services
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -411,5 +412,71 @@ func TestPelicanRedirectDoesNotRetryOrLeakCredentials(t *testing.T) {
 	result := awaitPelicanTest(t, service, started.SessionID)
 	if result.ErrorCode != "http_error" || calls.Load() != 1 {
 		t.Fatalf("result=%+v calls=%d", result, calls.Load())
+	}
+}
+
+func TestPelicanGeminiStream(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	half := len(pelicanTestHTML) / 2
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1beta/models/actual-model:streamGenerateContent" || request.URL.Query().Get("alt") != "sse" {
+			t.Errorf("unexpected Gemini endpoint %s", request.URL.RequestURI())
+		}
+		if request.Header.Get("x-goog-api-key") != "gemini-secret" {
+			t.Errorf("x-goog-api-key = %q", request.Header.Get("x-goog-api-key"))
+		}
+		var body struct {
+			Contents []struct {
+				Parts []struct{ Text string } `json:"parts"`
+			} `json:"contents"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || len(body.Contents) != 1 || body.Contents[0].Parts[0].Text != PelicanPrompt {
+			t.Errorf("unexpected Gemini request: %+v %v", body, err)
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(writer, ": ping\n\n")
+		io.WriteString(writer, pelicanSSE(map[string]any{"candidates": []any{map[string]any{"content": map[string]any{"parts": []any{
+			map[string]any{"text": "thinking...", "thought": true},
+			map[string]any{"text": pelicanTestHTML[:half]},
+		}}}}}))
+		io.WriteString(writer, pelicanSSE(map[string]any{"candidates": []any{map[string]any{
+			"content":      map[string]any{"parts": []any{map[string]any{"text": pelicanTestHTML[half:]}}},
+			"finishReason": "STOP",
+		}}}))
+	}))
+	defer upstream.Close()
+
+	gemini := NewGeminiService("")
+	if err := gemini.AddProvider(GeminiProvider{ID: "pelican-gemini", Name: "PelicanGemini", BaseURL: upstream.URL, APIKey: "gemini-secret", Enabled: true,
+		ModelMapping: map[string]string{"alias": "actual-model"}}); err != nil {
+		t.Fatal(err)
+	}
+	providers := NewProviderService()
+	providers.SetGeminiSource(gemini)
+	service := NewPelicanTestService(providers)
+	defer service.Stop()
+
+	started, err := service.StartTest(ProviderKindGemini, gemini.GetProviders()[0].NumericID, "alias")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := awaitPelicanTest(t, service, started.SessionID)
+	if result.Status != "completed" || result.HTML != pelicanTestHTML || result.RawOutput != pelicanTestHTML {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestConsumeGeminiPelicanSSEStopReasons(t *testing.T) {
+	cases := map[string]string{"MAX_TOKENS": "truncated", "SAFETY": "refused", "": "incomplete"}
+	for reason, code := range cases {
+		candidate := map[string]any{"content": map[string]any{"parts": []any{map[string]any{"text": "x"}}}}
+		if reason != "" {
+			candidate["finishReason"] = reason
+		}
+		err := consumeGeminiPelicanSSE(strings.NewReader(pelicanSSE(map[string]any{"candidates": []any{candidate}})), func(string) error { return nil })
+		var failure *pelicanError
+		if !errors.As(err, &failure) || failure.code != code {
+			t.Errorf("finishReason %q: err=%v, want code %s", reason, err, code)
+		}
 	}
 }

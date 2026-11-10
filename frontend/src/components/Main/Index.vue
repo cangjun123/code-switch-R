@@ -274,6 +274,7 @@
             :connectivity-indicator-class="getConnectivityIndicatorClass(card.id)"
             :connectivity-tooltip="getConnectivityTooltip(card.id)"
             :show-model-trace-button="showModelTraceButton"
+            :show-pelican-test-button="showPelicanTestButton"
             :supports-dedicated-key="isDedicatedKeyTab(activeTab)"
             :dedicated-key="dedicatedKeyFor(activeTab, card)"
             @dragstart="onDragStart"
@@ -2215,14 +2216,17 @@ const closeConfirm = () => {
 }
 
 // 模型真伪检测弹窗状态
-// 仅 claude / codex / others（已选自定义工具）平台支持：这些平台的 provider
-// 有配置文件与稳定 ID；Gemini 卡片 ID 是前端合成的（300+index），gpt-image 不在指纹场景
+// 仅 claude / codex / others（已选自定义工具）平台支持：指纹库只覆盖 GPT/Claude 模型，
+// Gemini 与 gpt-image 不在指纹场景
 const showModelTraceButton = computed(
   () =>
     activeTab.value === 'claude' ||
     activeTab.value === 'codex' ||
     (activeTab.value === 'others' && !!selectedToolId.value),
 )
+
+// 鹈鹕测试只依赖文本生成，额外支持 Gemini（卡片 ID 为后端稳定的 numericId）
+const showPelicanTestButton = computed(() => showModelTraceButton.value || activeTab.value === 'gemini')
 
 const modelTraceState = reactive({
   open: false,
