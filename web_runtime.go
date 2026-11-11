@@ -103,6 +103,7 @@ func newAppRuntime() (*appRuntime, error) {
 	eventHub := services.NewEventHub()
 	notificationService := services.NewNotificationService(appSettings)
 	notificationService.SetEventEmitter(eventHub)
+	services.SetActiveRequestEventEmitter(eventHub)
 	blacklistService := services.NewBlacklistService(settingsService, notificationService)
 	blacklistService.SetProviderService(providerService)
 	providerService.SetBlacklistService(blacklistService)
