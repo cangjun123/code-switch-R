@@ -31,7 +31,9 @@ func InitDatabase() error {
 	// 2. 初始化 xdb 连接池
 	// 【修复】移除 DSN 中的 PRAGMA 参数，modernc.org/sqlite 需要显式执行 PRAGMA
 	// _pragma=busy_timeout 对池中每条新连接生效（下方 db.Exec 只作用于单条连接）
-	dbPath := filepath.Join(configDir, "app.db?cache=shared&mode=rwc&_pragma=busy_timeout(30000)")
+	// 不使用 cache=shared：共享缓存在连接间加表级锁，读会等待写事务且不走 busy_timeout，
+	// 抵消 WAL"读写互不阻塞"的优势；文件数据库各连接独立缓存即可。
+	dbPath := filepath.Join(configDir, "app.db?mode=rwc&_pragma=busy_timeout(30000)")
 	if err := xdb.Inits([]xdb.Config{
 		{
 			Name:   "default",
