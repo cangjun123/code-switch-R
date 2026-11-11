@@ -133,8 +133,10 @@ func (ls *LogService) visitRequestLogs(start, end time.Time, platform string, vi
 	if err != nil {
 		return err
 	}
-	query := `SELECT COALESCE(platform,''), COALESCE(model,''), COALESCE(provider,''), COALESCE(http_code,0), COALESCE(input_tokens,0), COALESCE(output_tokens,0), COALESCE(reasoning_tokens,0), COALESCE(cache_create_tokens,0), COALESCE(cache_read_tokens,0), created_at FROM request_log WHERE datetime(created_at) >= ?`
-	args := []any{formatSQLiteUTC(start)}
+	query := `SELECT COALESCE(platform,''), COALESCE(model,''), COALESCE(provider,''), COALESCE(http_code,0), COALESCE(input_tokens,0), COALESCE(output_tokens,0), COALESCE(reasoning_tokens,0), COALESCE(cache_create_tokens,0), COALESCE(cache_read_tokens,0), created_at FROM request_log WHERE created_at >= ? AND datetime(created_at) >= ?`
+	// created_at >= <起始日期前一天> 是可走索引的粗过滤：所有存储格式都以 ISO 日期开头，
+	// 提前一天可容纳带时区偏移的写法；精确比较仍由 datetime() 完成，结果不变。
+	args := []any{start.UTC().AddDate(0, 0, -1).Format("2006-01-02"), formatSQLiteUTC(start)}
 	if !end.IsZero() {
 		query += " AND datetime(created_at) < ?"
 		args = append(args, formatSQLiteUTC(end))
