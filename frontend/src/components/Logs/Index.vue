@@ -363,6 +363,7 @@
 
 <script setup lang="ts">
 import { computed, reactive, ref, onMounted, watch, onUnmounted, onActivated, onDeactivated } from 'vue'
+import { Events } from '@wailsio/runtime'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import BaseButton from '../common/BaseButton.vue'
@@ -791,7 +792,7 @@ const startCountdown = () => {
   timer = window.setInterval(() => {
     if (countdown.value <= 1) {
       countdown.value = currentInterval.value
-      void loadDashboard()
+      requestDashboardRefresh()
     } else {
       countdown.value -= 1
     }
@@ -853,6 +854,54 @@ const loadDashboard = async () => {
   syncProviderOptionsFromLogs(logs.value)
 }
 
+// 同一时间只保留一个刷新：上一次未完成时只记一次待刷新，避免短间隔/慢网络下请求堆积
+let dashboardInFlight = false
+let dashboardPending = false
+const requestDashboardRefresh = () => {
+  if (dashboardInFlight) {
+    dashboardPending = true
+    return
+  }
+  dashboardInFlight = true
+  void loadDashboard().finally(() => {
+    dashboardInFlight = false
+    if (dashboardPending) {
+      dashboardPending = false
+      requestDashboardRefresh()
+    }
+  })
+}
+
+// 后端在中转请求开始/结束时推送事件：立即刷新（进行中的请求会把轮询切到快速档），
+// 不必等慢速轮询周期才发现新请求。短时间内的多个事件合并为一次刷新。
+const REQUEST_LOG_CHANGED_EVENT = 'request-log:changed'
+let requestEventTimer: number | undefined
+let unsubscribeRequestEvents: (() => void) | undefined
+const handleRequestLogChanged = () => {
+  if (requestEventTimer) return
+  requestEventTimer = window.setTimeout(() => {
+    requestEventTimer = undefined
+    resetTimer()
+    requestDashboardRefresh()
+  }, 300)
+}
+const subscribeRequestEvents = () => {
+  if (unsubscribeRequestEvents) return
+  try {
+    unsubscribeRequestEvents = Events.On(REQUEST_LOG_CHANGED_EVENT, handleRequestLogChanged)
+  } catch (error) {
+    console.error('failed to subscribe request log events', error)
+  }
+}
+const unsubscribeRequestEventsNow = () => {
+  unsubscribeRequestEvents?.()
+  unsubscribeRequestEvents = undefined
+  if (requestEventTimer) {
+    clearTimeout(requestEventTimer)
+    requestEventTimer = undefined
+  }
+}
+
 const loadPollIntervals = async () => {
   try {
     const s = await fetchAppSettings()
@@ -880,12 +929,12 @@ const applyFilters = async () => {
 }
 
 const refreshLogs = () => {
-  void loadDashboard()
+  requestDashboardRefresh()
 }
 
 const manualRefresh = () => {
   resetTimer()
-  void loadDashboard()
+  requestDashboardRefresh()
 }
 
 const nextPage = () => {
@@ -1152,22 +1201,34 @@ watch(
   },
 )
 
+let activatedOnce = false
+
 onMounted(async () => {
+  subscribeRequestEvents()
   await Promise.all([loadDashboard(), loadMaintenanceInfo(), loadPollIntervals()])
   startCountdown()
   window.addEventListener('app-settings-updated', loadPollIntervals)
 })
 
 onActivated(() => {
+  subscribeRequestEvents()
+  // keep-alive 首次挂载也会触发 activated，此时 onMounted 已在加载
+  if (activatedOnce) {
+    // 离开期间可能错过事件，回到页面时补一次刷新
+    requestDashboardRefresh()
+  }
+  activatedOnce = true
   startCountdown()
 })
 
 onDeactivated(() => {
   stopCountdown()
+  unsubscribeRequestEventsNow()
 })
 
 onUnmounted(() => {
   stopCountdown()
+  unsubscribeRequestEventsNow()
   window.removeEventListener('app-settings-updated', loadPollIntervals)
 })
 </script>

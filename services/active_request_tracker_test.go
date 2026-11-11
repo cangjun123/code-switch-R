@@ -105,3 +105,27 @@ func TestListRequestLogsPrependsActiveRequests(t *testing.T) {
 		t.Fatalf("second log = status %q provider %q, want completed completed-provider", logs[1].Status, logs[1].Provider)
 	}
 }
+
+func TestActiveRequestTrackerEmitsChangeEvents(t *testing.T) {
+	tracker := newActiveRequestTracker()
+	hub := NewEventHub()
+	events, cancel := hub.Subscribe(8)
+	defer cancel()
+	tracker.emitter = hub
+
+	id := tracker.Start(&ReqeustLog{Platform: "claude", Provider: "p"}, time.Now())
+	tracker.Finish(id)
+	tracker.Finish(id) // 重复结束不再推送
+
+	var got []RequestLogChangedPayload
+	for len(events) > 0 {
+		event := <-events
+		if event.Name != RequestLogChangedEvent {
+			t.Fatalf("unexpected event %q", event.Name)
+		}
+		got = append(got, event.Data.(RequestLogChangedPayload))
+	}
+	if len(got) != 2 || got[0] != (RequestLogChangedPayload{Platform: "claude", Active: 1}) || got[1] != (RequestLogChangedPayload{Platform: "claude", Active: 0}) {
+		t.Fatalf("unexpected events: %+v", got)
+	}
+}
