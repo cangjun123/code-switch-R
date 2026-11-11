@@ -7,6 +7,8 @@ CLAUDE.md
 .ace-tool/
 reference/
 codeswitch-web
+# `go build ./` in the repo root writes the module-named binary here
+/codeswitch
 /.claude/worktrees/
 /.test/
 /build.sh
