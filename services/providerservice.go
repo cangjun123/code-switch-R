@@ -859,11 +859,19 @@ func (p *Provider) GetEffectiveModel(requestedModel string) string {
 		return mappedModel
 	}
 
-	// 查找通配符映射
-	for pattern, replacement := range p.ModelMapping {
-		if matchWildcard(pattern, requestedModel) {
-			return applyWildcardMapping(pattern, replacement, requestedModel)
+	// 查找通配符映射：多个模式同时命中时取最具体的（字面字符最多），
+	// 并以模式字符串排序兜底，避免 map 随机遍历导致每次请求映射结果不同
+	bestPattern := ""
+	for pattern := range p.ModelMapping {
+		if !matchWildcard(pattern, requestedModel) {
+			continue
 		}
+		if bestPattern == "" || moreSpecificWildcard(pattern, bestPattern) {
+			bestPattern = pattern
+		}
+	}
+	if bestPattern != "" {
+		return applyWildcardMapping(bestPattern, p.ModelMapping[bestPattern], requestedModel)
 	}
 
 	// 无映射，返回原模型名
@@ -1100,6 +1108,16 @@ func (p *Provider) ValidateConfiguration() []string {
 
 // matchWildcard 通配符匹配函数
 // 支持 * 通配符，如 "claude-*" 匹配 "claude-sonnet-4"
+// moreSpecificWildcard 判断通配符模式 a 是否比 b 更具体（字面字符更多；相同时按字典序，保证确定性）
+func moreSpecificWildcard(a, b string) bool {
+	literalA := len(strings.ReplaceAll(a, "*", ""))
+	literalB := len(strings.ReplaceAll(b, "*", ""))
+	if literalA != literalB {
+		return literalA > literalB
+	}
+	return a < b
+}
+
 func matchWildcard(pattern, text string) bool {
 	// 如果没有通配符，使用精确匹配
 	if !strings.Contains(pattern, "*") {

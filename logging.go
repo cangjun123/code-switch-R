@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/daodao97/xgo/xlog"
@@ -38,7 +39,22 @@ func parseLogLevel(raw string) slog.Level {
 	}
 }
 
-// truncatingHandler 在交给底层 handler 前截断过长的字段值
+// credentialPatterns 匹配日志中可能出现的凭证（xrequest 失败时以 WARN 记录完整 curl，含认证头）
+var credentialPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(authorization:\s*(?:bearer|basic)\s+)[^'"\s\\]+`),
+	regexp.MustCompile(`(?i)((?:x-api-key|x-goog-api-key|api-key|x-code-switch-key):\s*)[^'"\s\\]+`),
+	regexp.MustCompile(`(?i)([?&](?:key|api_key|access_token)=)[^&'"\s\\]+`),
+}
+
+// redactCredentials 把认证头/查询参数中的密钥替换为 ***
+func redactCredentials(text string) string {
+	for _, pattern := range credentialPatterns {
+		text = pattern.ReplaceAllString(text, "${1}***")
+	}
+	return text
+}
+
+// truncatingHandler 在交给底层 handler 前脱敏凭证并截断过长的字段值
 // （xlog 的 PrettyHandler 自行格式化字段，不支持 ReplaceAttr）。
 type truncatingHandler struct{ slog.Handler }
 
@@ -63,6 +79,10 @@ func (h truncatingHandler) WithGroup(name string) slog.Handler {
 }
 
 func truncateLogAttr(attr slog.Attr) slog.Attr {
+	// xrequest 的 curl 字段包含完整请求体（对话内容）和认证头；url/status/error 已单独记录，整体省略
+	if attr.Key == "curl" {
+		return slog.String(attr.Key, "(omitted)")
+	}
 	value := attr.Value.Resolve()
 	var text string
 	switch value.Kind() {
@@ -84,13 +104,15 @@ func truncateLogAttr(attr slog.Attr) slog.Attr {
 	default:
 		return attr
 	}
-	if len(text) <= maxLoggedAttrBytes {
+	redacted := redactCredentials(text)
+	if len(redacted) <= maxLoggedAttrBytes && redacted == text {
 		return attr
 	}
-	return slog.String(attr.Key, truncateLogText(text))
+	return slog.String(attr.Key, truncateLogText(redacted))
 }
 
 func truncateLogText(text string) string {
+	text = redactCredentials(text)
 	if len(text) <= maxLoggedAttrBytes {
 		return text
 	}

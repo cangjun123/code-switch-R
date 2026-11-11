@@ -92,12 +92,13 @@ func (bs *BlacklistService) RecordSuccess(platform string, providerName string) 
 	var lastRecoveredAt sql.NullTime
 	var lastDegradeHour int
 	var blacklistedUntil sql.NullTime
+	var failureCount int
 
 	err = db.QueryRow(`
-		SELECT id, blacklist_level, last_recovered_at, last_degrade_hour, blacklisted_until
+		SELECT id, blacklist_level, last_recovered_at, last_degrade_hour, blacklisted_until, failure_count
 		FROM provider_blacklist
 		WHERE platform = ? AND provider_name = ?
-	`, platform, providerName).Scan(&id, &blacklistLevel, &lastRecoveredAt, &lastDegradeHour, &blacklistedUntil)
+	`, platform, providerName).Scan(&id, &blacklistLevel, &lastRecoveredAt, &lastDegradeHour, &blacklistedUntil, &failureCount)
 
 	if err == sql.ErrNoRows {
 		// 没有失败记录，无需操作
@@ -116,8 +117,12 @@ func (bs *BlacklistService) RecordSuccess(platform string, providerName string) 
 		log.Printf("🔓 Provider %s/%s 从黑名单恢复（L%d），开始降级计时", platform, providerName, blacklistLevel)
 	}
 
-	// 如果功能关闭，只清零失败计数
+	// 如果功能关闭，只清零失败计数（已为 0 时跳过写库：成功请求是热路径，避免每次同步 UPDATE）
 	if !levelConfig.EnableLevelBlacklist {
+		// 固定模式不持久化恢复时间（justRecovered 会一直为真），只看失败计数
+		if failureCount == 0 {
+			return nil
+		}
 		err = GlobalDBQueue.Exec(`
 			UPDATE provider_blacklist
 			SET failure_count = 0
@@ -163,6 +168,11 @@ func (bs *BlacklistService) RecordSuccess(platform string, providerName string) 
 					platform, providerName, blacklistLevel, newLevel, degradeCount)
 			}
 		}
+	}
+
+	// 无任何变化时跳过写库
+	if failureCount == 0 && !justRecovered && newLevel == blacklistLevel && newLastDegradeHour == lastDegradeHour {
+		return nil
 	}
 
 	// 更新数据库

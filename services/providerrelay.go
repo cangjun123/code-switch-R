@@ -935,7 +935,12 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 						// 等待后重试（除非是最后一次）
 						if retryCount < maxRetryPerProvider-1 {
 							fmt.Printf("[INFO] ⏳ 等待 %d 秒后重试...\n", retryWaitSeconds)
-							time.Sleep(time.Duration(retryWaitSeconds) * time.Second)
+							// 客户端已断开时不再等待和重试
+							select {
+							case <-c.Request.Context().Done():
+								return
+							case <-time.After(time.Duration(retryWaitSeconds) * time.Second):
+							}
 						}
 					}
 				}
@@ -5151,7 +5156,12 @@ func (prs *ProviderRelayService) customCliProxyHandler() gin.HandlerFunc {
 						// 等待后重试（除非是最后一次）
 						if retryCount < maxRetryPerProvider-1 {
 							fmt.Printf("[CustomCLI][INFO] ⏳ 等待 %d 秒后重试...\n", retryWaitSeconds)
-							time.Sleep(time.Duration(retryWaitSeconds) * time.Second)
+							// 客户端已断开时不再等待和重试
+							select {
+							case <-c.Request.Context().Done():
+								return
+							case <-time.After(time.Duration(retryWaitSeconds) * time.Second):
+							}
 						}
 					}
 				}
