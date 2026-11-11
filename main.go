@@ -14,6 +14,7 @@ import (
 )
 
 func main() {
+	configureLogging()
 	setMemorySoftLimit()
 
 	UpdatePolicy = "web"
