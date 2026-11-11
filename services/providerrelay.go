@@ -1450,6 +1450,17 @@ func (prs *ProviderRelayService) forwardRequest(
 
 	status := requestLog.HttpCode
 
+	// 上游未实现 count_tokens（New API 等返回 404/405/501）：回退到本地估算，
+	// 不记为失败、不触发降级，客户端仍拿到可用的 token 数。
+	if kind == ProviderKindClaude && strings.HasSuffix(endpoint, "/count_tokens") && isUnsupportedEndpointStatus(status) {
+		if resp.RawResponse != nil && resp.RawResponse.Body != nil {
+			_ = resp.RawResponse.Body.Close()
+		}
+		requestLog.SkipLog = true
+		c.JSON(http.StatusOK, gin.H{"input_tokens": estimateInputTokens(bodyBytes)})
+		return true, nil
+	}
+
 	if resp.Error() != nil {
 		if isClientAbortError(c.Request.Context(), resp.Error()) {
 			requestLog.SkipLog = true
@@ -1604,6 +1615,11 @@ func (prs *ProviderRelayService) forwardRequest(
 	}
 	setRequestLogError(requestLog, fmt.Sprintf("upstream status %d", status))
 	return false, fmt.Errorf("upstream status %d", status)
+}
+
+// isUnsupportedEndpointStatus 上游表示"该接口不存在/不支持"的状态码
+func isUnsupportedEndpointStatus(status int) bool {
+	return status == http.StatusNotFound || status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented
 }
 
 func isResponsesEndpoint(endpoint string) bool {

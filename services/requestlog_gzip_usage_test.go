@@ -80,3 +80,30 @@ func TestForwardRequestCountsUsageFromGzipSSE(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// TestCountTokensFallsBackWhenUpstreamUnsupported 上游不支持 count_tokens（404）时回退本地估算
+func TestCountTokensFallsBackWhenUpstreamUnsupported(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setupRelayTestEnv(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"Invalid URL (POST /v1/messages/count_tokens)"}}`))
+	}))
+	defer upstream.Close()
+
+	prs := &ProviderRelayService{httpClient: newRelayHTTPClient()}
+	provider := Provider{Name: "count-tokens-404", APIURL: upstream.URL, APIKey: "sk-test"}
+	body := []byte(`{"model":"claude-opus-4","messages":[{"role":"user","content":"hello world, count my tokens please"}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", bytes.NewReader(body))
+
+	ok, err := prs.forwardRequest(c, "claude", provider, "/v1/messages/count_tokens", nil, map[string]string{"Content-Type": "application/json"}, body, false, "claude-opus-4")
+	if !ok || err != nil {
+		t.Fatalf("count_tokens 404 should fall back to local estimate: ok=%v err=%v", ok, err)
+	}
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"input_tokens":`) {
+		t.Fatalf("expected local estimate response, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
