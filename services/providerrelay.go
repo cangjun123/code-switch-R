@@ -1258,13 +1258,13 @@ func (prs *ProviderRelayService) forwardRequest(
 			}
 		}
 	}
-	if kind == ProviderKindCodex {
-		// Let net/http negotiate compression itself so RawResponse.Body is
-		// transparently decompressed before quota usage parsing and the various
-		// Responses/Chat compatibility hooks inspect it.  Keeping a client-sent
-		// Accept-Encoding header would disable Go's automatic decompression.
-		deleteHeaderCaseInsensitive(headers, "accept-encoding")
-	}
+	// Let net/http negotiate compression itself so RawResponse.Body is
+	// transparently decompressed before usage parsing, quota settlement and the
+	// various compatibility hooks inspect it.  Keeping a client-sent
+	// Accept-Encoding header (Claude Code sends gzip) disables Go's automatic
+	// decompression: upstreams that gzip SSE (e.g. CLIProxyAPI) then reach the
+	// usage hooks as compressed bytes and every request is logged with 0 tokens.
+	deleteHeaderCaseInsensitive(headers, "accept-encoding")
 
 	removeInboundAuthHeaders(headers)
 
