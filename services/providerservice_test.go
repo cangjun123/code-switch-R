@@ -1548,3 +1548,17 @@ func TestLoadProvidersCachesCustomKindSeparately(t *testing.T) {
 		t.Fatalf("custom kind cached content: %+v", cached)
 	}
 }
+
+func TestGetEffectiveModelWildcardIsDeterministic(t *testing.T) {
+	p := &Provider{ModelMapping: map[string]string{
+		"claude-*":        "generic-*",
+		"claude-opus-*":   "opus-*",
+		"*-20250514":      "dated",
+		"claude-opus-4-*": "opus4-*",
+	}}
+	for i := 0; i < 50; i++ {
+		if got := p.GetEffectiveModel("claude-opus-4-1"); got != "opus4-1" {
+			t.Fatalf("iteration %d: got %q, want most specific mapping opus4-1", i, got)
+		}
+	}
+}
